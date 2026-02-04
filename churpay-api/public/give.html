@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Churpay - Give</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 20px;
+      padding: 40px 30px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      text-align: center;
+    }
+    .logo {
+      font-size: 48px;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 10px;
+    }
+    .subtitle {
+      color: #666;
+      font-size: 18px;
+      margin-bottom: 30px;
+    }
+    .message {
+      color: #333;
+      font-size: 16px;
+      margin-bottom: 30px;
+      line-height: 1.5;
+    }
+    .button {
+      display: block;
+      width: 100%;
+      padding: 16px 24px;
+      margin-bottom: 15px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .button:active {
+      transform: scale(0.98);
+    }
+    .button-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+    .button-primary:hover {
+      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+    }
+    .button-secondary {
+      background: white;
+      color: #667eea;
+      border: 2px solid #667eea;
+    }
+    .button-secondary:hover {
+      background: #f8f9ff;
+    }
+    .info {
+      color: #999;
+      font-size: 12px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">Churpay</div>
+    <div class="subtitle">Digital Giving Made Simple</div>
+    <div class="message">
+      <strong>Enter the amount in the app</strong>
+    </div>
+    
+    <a href="#" id="openApp" class="button button-primary">
+      Open in Churpay App
+    </a>
+    
+    <a href="https://www.churpay.com/download" class="button button-secondary">
+      Get the App
+    </a>
+    
+    <div class="info" id="debugInfo"></div>
+  </div>
+
+  <script>
+    // Read query parameters
+    const params = new URLSearchParams(window.location.search);
+    const churchId = params.get('churchId');
+    const fundId = params.get('fundId');
+    
+    // Build deep link (without amount)
+    let deepLink = 'churpay://give';
+    const linkParams = [];
+    
+    if (churchId) {
+      linkParams.push(`churchId=${encodeURIComponent(churchId)}`);
+    }
+    if (fundId) {
+      linkParams.push(`fundId=${encodeURIComponent(fundId)}`);
+    }
+    
+    if (linkParams.length > 0) {
+      deepLink += '?' + linkParams.join('&');
+    }
+    
+    // Set the deep link href
+    document.getElementById('openApp').href = deepLink;
+    
+    // Optional: Show debug info in development
+    if (churchId || fundId) {
+      const debugInfo = document.getElementById('debugInfo');
+      debugInfo.textContent = `Church: ${churchId || 'N/A'} | Fund: ${fundId || 'N/A'}`;
+    }
+  </script>
+</body>
+</html>

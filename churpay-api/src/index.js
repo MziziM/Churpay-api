@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import path from "path";
 import cors from "cors";
 import payments from "./routes.payments.js";
 import webhooks from "./routes.webhooks.js";
@@ -10,6 +11,14 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/health", (_, res) => res.json({ ok: true }));
+
+// Serve static files from public directory
+app.use(express.static("public"));
+
+// Serve the give landing page
+app.get("/give", (req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "give.html"));
+});
 
 app.use("/api", payments);
 app.use("/webhooks", webhooks);
