@@ -174,18 +174,18 @@
     const params = new URLSearchParams(window.location.search);
     const churchId = params.get('churchId') || 'unknown';
     const fundId = params.get('fund') || '';
-    const amount = params.get('amount') || '100';
+    const amount = params.get('amount');
 
     // TODO: Fetch church name and fund details from API
     // For now, show placeholders
     document.querySelector('.church-name').textContent = 'Your Church Name';
     document.getElementById('fundName').textContent = 'Building Fund';
-    document.getElementById('amount').textContent = `R ${parseFloat(amount || 0).toFixed(2)}`;
+    document.getElementById('amount').textContent = amount ? `R ${parseFloat(amount || 0).toFixed(2)}` : 'Enter amount in the app';
 
     // Open in app using deep link
     function openInApp() {
       // Try deep link first
-      const deepLink = `churpaydemo://give?fund=${fundId}&amount=${amount}`;
+      const deepLink = `churpaydemo://give?churchId=${churchId}&fund=${fundId}`;
       window.location.href = deepLink;
       
       // Fallback after timeout

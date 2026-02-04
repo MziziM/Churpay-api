@@ -9,8 +9,10 @@ import { db } from "./db.js";
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 app.get("/health", (_, res) => res.json({ ok: true }));
+app.get("/api/health", (_, res) => res.json({ ok: true }));
 
 // Serve static files from public directory
 app.use(express.static("public"));

@@ -1,5 +1,5 @@
 import express from "express";
-import { buildPayfastRedirect } from "./payfast.js";
+import { buildPayfastRedirect, generateSignature } from "./payfast.js";
 import { db } from "./db.js";
 import crypto from "node:crypto";
 
@@ -7,6 +7,49 @@ const router = express.Router();
 
 function makeMpaymentId() {
   return "CP-" + crypto.randomBytes(8).toString("hex").toUpperCase();
+}
+
+const UUID_REGEX = /^[0-9a-fA-F-]{36}$/;
+
+async function ensurePaymentIntentsTable() {
+  await db.none(`
+    create extension if not exists pgcrypto;
+    create table if not exists payment_intents (
+      id uuid primary key default gen_random_uuid(),
+      church_id uuid not null,
+      fund_id uuid not null,
+      amount numeric(12,2) not null,
+      currency text default 'ZAR',
+      status text not null default 'PENDING',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      member_name text,
+      member_phone text,
+      channel text,
+      provider text,
+      provider_payment_id text,
+      m_payment_id text,
+      item_name text
+    );
+    alter table payment_intents
+      add column if not exists currency text default 'ZAR',
+      add column if not exists updated_at timestamptz default now(),
+      add column if not exists provider_payment_id text,
+      add column if not exists m_payment_id text,
+      add column if not exists item_name text,
+      add column if not exists provider text,
+      add column if not exists channel text,
+      add column if not exists member_name text,
+      add column if not exists member_phone text;
+    create index if not exists idx_payment_intents_church on payment_intents (church_id);
+    create index if not exists idx_payment_intents_fund on payment_intents (fund_id);
+  `);
+}
+
+function normalizeBaseUrl() {
+  const base = process.env.BASE_URL || process.env.PUBLIC_BASE_URL;
+  if (!base) return null;
+  return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 router.get("/churches/:churchId/funds", async (req, res) => {
   try {
@@ -188,48 +231,11 @@ router.post("/funds", async (req, res) => {
   }
 });
 
-// Latest transactions for member/admin history
-router.get("/churches/:churchId/transactions", async (req, res) => {
-  try {
-    const { churchId } = req.params;
-    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
-
-    const rows = await db.manyOrNone(
-      `
-      select
-        t.id,
-        t.amount,
-        t.reference,
-        t.channel,
-        t.provider,
-        t.provider_payment_id,
-        t.created_at,
-        f.id as fund_id,
-        f.code as fund_code,
-        f.name as fund_name
-      from transactions t
-      join funds f on f.id = t.fund_id
-      where t.church_id = $1
-      order by t.created_at desc
-      limit $2
-      `,
-      [churchId, limit]
-    );
-
-    res.json({ transactions: rows });
-  } catch (err) {
-    console.error("[transactions] error", err?.message || err, err?.stack);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
 
 router.post("/payment-intents", async (req, res) => {
   try {
     let { churchId, fundId, amount, memberName, memberPhone, channel = "app" } = req.body || {};
-
-    if (!process.env.PUBLIC_BASE_URL) {
-      return res.status(500).json({ error: "Server misconfigured: PUBLIC_BASE_URL missing" });
-    }
+    await ensurePaymentIntentsTable();
 
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
@@ -297,6 +303,181 @@ router.post("/payment-intents", async (req, res) => {
   } catch (err) {
     console.error("[payments] POST /payment-intents error", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ==========================
+// PayFast: initiate payment
+// ==========================
+router.post("/payfast/initiate", async (req, res) => {
+  try {
+    let { churchId, fundId, amount, memberName, memberPhone, channel = "app" } = req.body || {};
+
+    const baseUrl = normalizeBaseUrl();
+    if (!baseUrl) return res.status(500).json({ error: "Server misconfigured: BASE_URL missing" });
+
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "Invalid amount" });
+
+    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
+    fundId = typeof fundId === "string" ? fundId.trim() : fundId;
+    memberName = typeof memberName === "string" ? memberName.trim() : memberName;
+    memberPhone = typeof memberPhone === "string" ? memberPhone.trim() : memberPhone;
+    channel = typeof channel === "string" ? channel.trim() : channel;
+
+    if (!churchId || !UUID_REGEX.test(churchId)) return res.status(400).json({ error: "Invalid churchId" });
+    if (!fundId || !UUID_REGEX.test(fundId)) return res.status(400).json({ error: "Invalid fundId" });
+
+    const fund = await db.oneOrNone("select id, name from funds where id=$1 and church_id=$2", [fundId, churchId]);
+    if (!fund) return res.status(404).json({ error: "Fund not found" });
+
+    await ensurePaymentIntentsTable();
+
+    const itemNameRaw = `${fund.name}`;
+    const itemName = itemNameRaw
+      .normalize("NFKD")
+      .replace(/[^\x20-\x7E]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100);
+
+    const intent = await db.one(
+      `insert into payment_intents (
+         church_id, fund_id, amount, status, member_name, member_phone, channel, provider, m_payment_id, item_name
+       ) values (
+         $1, $2, $3, 'PENDING', $4, $5, $6, 'payfast', gen_random_uuid(), $7
+       ) returning id, amount, church_id, fund_id, m_payment_id, item_name`,
+      [churchId, fundId, amt, memberName || null, memberPhone || null, channel || null, itemName]
+    );
+
+    const mode = (process.env.PAYFAST_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
+    const merchantId = process.env.PAYFAST_MERCHANT_ID;
+    const merchantKey = process.env.PAYFAST_MERCHANT_KEY;
+    const passphrase = process.env.PAYFAST_PASSPHRASE;
+
+    if (!merchantId || !merchantKey) {
+      return res.status(500).json({ error: "Server misconfigured: PayFast merchant keys missing" });
+    }
+
+    const returnUrl = `${baseUrl}/give?success=true`;
+    const cancelUrl = `${baseUrl}/give?cancelled=true`;
+    const notifyUrl = `${baseUrl}/api/payfast/itn`;
+
+    const paymentUrl = buildPayfastRedirect({
+      mode,
+      merchantId,
+      merchantKey,
+      passphrase,
+      mPaymentId: intent.m_payment_id || intent.id,
+      amount: amt,
+      itemName: intent.item_name || fund.name,
+      returnUrl,
+      cancelUrl,
+      notifyUrl,
+      customStr1: churchId,
+      customStr2: fundId,
+      nameFirst: memberName,
+      emailAddress: undefined,
+    });
+
+    return res.json({ paymentUrl, id: intent.id });
+  } catch (err) {
+    console.error("[payfast/initiate] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ==========================
+// PayFast ITN handler
+// ==========================
+router.post("/payfast/itn", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const merchantId = process.env.PAYFAST_MERCHANT_ID;
+    const passphrase = process.env.PAYFAST_PASSPHRASE;
+
+    if (!merchantId) return res.status(400).send("missing merchant");
+
+    const { signature: incomingSig, ...rest } = body;
+    const computedSig = generateSignature(rest, passphrase);
+    if (!incomingSig || incomingSig !== computedSig) {
+      console.warn("[payfast/itn] signature mismatch", { incomingSig, computedSig });
+      return res.status(400).send("bad signature");
+    }
+
+    if (rest.merchant_id !== merchantId) {
+      console.warn("[payfast/itn] merchant mismatch", rest.merchant_id);
+      return res.status(400).send("bad merchant");
+    }
+
+    const paymentId = String(rest.m_payment_id || "").trim();
+    const pfPaymentId = rest.pf_payment_id;
+    const paymentStatus = rest.payment_status;
+    const amount = Number(rest.amount);
+
+    if (!paymentId) {
+      console.warn("[payfast/itn] missing payment id");
+      return res.status(400).send("bad payment id");
+    }
+
+    // PayFast sends back whatever we provided as m_payment_id.
+    // In our system it can be either the intent UUID OR a human-readable string like CP-XXXX.
+    let intent = null;
+    if (UUID_REGEX.test(paymentId)) {
+      intent = await db.oneOrNone(
+        "select id, church_id, fund_id, amount, status, channel from payment_intents where id=$1 or m_payment_id=$1",
+        [paymentId]
+      );
+    } else {
+      intent = await db.oneOrNone(
+        "select id, church_id, fund_id, amount, status, channel from payment_intents where m_payment_id=$1",
+        [paymentId]
+      );
+    }
+    if (!intent) {
+      console.warn("[payfast/itn] intent not found", paymentId);
+      return res.status(404).send("not found");
+    }
+
+    if (Number(intent.amount).toFixed(2) !== amount.toFixed(2)) {
+      console.warn("[payfast/itn] amount mismatch", intent.amount, amount);
+      return res.status(400).send("amount mismatch");
+    }
+
+    if (paymentStatus !== "COMPLETE") {
+      console.warn("[payfast/itn] status not complete", paymentStatus);
+      return res.status(400).send("status not complete");
+    }
+
+    await db.tx(async (t) => {
+      await t.none(
+        "update payment_intents set status='PAID', provider_payment_id=$2, updated_at=now() where id=$1",
+        [intent.id, pfPaymentId]
+      );
+
+      await t.none(
+        `insert into transactions (
+          church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at
+        ) values (
+          $1, $2, $3, $4, $5, $6, 'payfast', $7, now()
+        )`,
+        [
+          intent.church_id,
+          intent.fund_id,
+          intent.id,
+          intent.amount,
+          rest.item_name || paymentId,
+          intent.channel || "payfast",
+          pfPaymentId,
+        ]
+      );
+    });
+
+    return res.status(200).send("OK");
+  } catch (err) {
+    console.error("[payfast/itn] error", err?.message || err, err?.stack);
+    res.status(200).send("OK");
   }
 });
 

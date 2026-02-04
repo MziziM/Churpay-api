@@ -1,7 +1,33 @@
-import { Pool } from "pg";
+import pg from "pg";
+const { Pool } = pg;
+
+// SSL handling for managed Postgres (DigitalOcean) and local dev.
+// - If PGSSLMODE is set (require/verify-full), enable SSL.
+// - Prefer DATABASE_CA_CERT (PEM string). If missing and PGSSLINSECURE=1, allow insecure.
+const sslmode = (process.env.PGSSLMODE || "").toLowerCase();
+const hasSslMode = !!sslmode && sslmode !== "disable";
+const caFromEnv = process.env.DATABASE_CA_CERT;
+const insecure = String(process.env.PGSSLINSECURE || "").trim() === "1";
+
+let ssl;
+if (hasSslMode) {
+  if (caFromEnv && caFromEnv.trim().length > 0) {
+    ssl = { ca: caFromEnv, rejectUnauthorized: true };
+  } else if (insecure) {
+    ssl = { rejectUnauthorized: false };
+  } else {
+    ssl = { rejectUnauthorized: true };
+  }
+}
+
+console.log("DB SSL:", { hasCA: !!caFromEnv, insecure, sslmode: sslmode || null });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ...(ssl ? { ssl } : {}),
+  max: Number(process.env.PG_POOL_MAX || 10),
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000),
 });
 
 pool.on("error", (err) => {

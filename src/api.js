@@ -1,5 +1,4 @@
-const API_BASE = "http://192.168.68.121:3001/api";
-const CHURCH_ID = "09f9c0f2-c1b0-481b-8058-67853fb9b9dd";
+import { API_BASE_URL as API_BASE, PILOT_CHURCH_ID as CHURCH_ID } from "../config/api";
 
 async function safeFetch(url, options) {
   const res = await fetch(url, options);

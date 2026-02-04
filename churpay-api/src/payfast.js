@@ -49,6 +49,8 @@ export function buildPayfastRedirect({
   notifyUrl,
   customStr1,
   customStr2,
+  nameFirst,
+  emailAddress,
 }) {
   const base = {
     merchant_id: merchantId,
@@ -61,6 +63,8 @@ export function buildPayfastRedirect({
     item_name: itemName,
     custom_str1: customStr1,
     custom_str2: customStr2,
+    name_first: nameFirst,
+    email_address: emailAddress,
   };
 
   const signature = generateSignature(base, passphrase);

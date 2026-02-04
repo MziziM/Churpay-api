@@ -1,4 +1,4 @@
-const API_BASE = "http://192.168.68.121:3001/api";
+const API_BASE = "https://www.churpay.com/api";
 const CHURCH_ID = "09f9c0f2-c1b0-481b-8058-67853fb9b9dd";
 
 export async function apiGetTransactions({ limit = 50, offset = 0, channel, fundId, from, to } = {}) {
