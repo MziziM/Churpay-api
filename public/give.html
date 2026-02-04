@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Churpay - Give</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .container {
+      max-width: 420px;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      padding: 32px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .logo {
+      font-size: 32px;
+      font-weight: 900;
+      background: linear-gradient(135deg, #00d4ff, #7b2ff7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .church-name {
+      font-size: 20px;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.6);
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .summary {
+      background: rgba(0, 212, 255, 0.1);
+      border: 1px solid rgba(0, 212, 255, 0.2);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .summary-label {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.6);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .summary-value {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .button-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .button {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      display: inline-block;
+      text-align: center;
+    }
+    .button-primary {
+      background: linear-gradient(135deg, #00d4ff, #7b2ff7);
+      color: #fff;
+    }
+    .button-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0, 212, 255, 0.3);
+    }
+    .button-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .button-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+    .divider {
+      text-align: center;
+      margin: 16px 0;
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.4);
+    }
+    .contact {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+    .contact-text {
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.7);
+      margin-bottom: 8px;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.4);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">⛪ churpay</div>
+    
+    <div id="churchInfo">
+      <div class="church-name">—</div>
+      <div class="subtitle">Secure giving • receipts • transparency</div>
+    </div>
+
+    <div class="summary">
+      <div class="summary-label">Purpose</div>
+      <div class="summary-value" id="fundName">—</div>
+      <div class="summary-label" style="margin-top: 12px;">Amount</div>
+      <div class="summary-value" id="amount">—</div>
+    </div>
+
+    <div class="button-group">
+      <button class="button button-primary" onclick="openInApp()">
+        Open in App
+      </button>
+      <button class="button button-secondary" onclick="installApp()">
+        Install Churpay App
+      </button>
+    </div>
+
+    <div class="divider">—</div>
+
+    <div class="contact">
+      <div class="contact-text">Questions? Contact your church admin:</div>
+      <button class="button button-secondary" onclick="whatsappAdmin()" style="margin-top: 8px;">
+        WhatsApp Admin
+      </button>
+    </div>
+
+    <div class="footer">
+      Powered by churpay • <a href="#" style="color: rgba(255, 255, 255, 0.4); text-decoration: none;">Privacy</a>
+    </div>
+  </div>
+
+  <script>
+    // Parse URL params
+    const params = new URLSearchParams(window.location.search);
+    const churchId = params.get('churchId') || 'unknown';
+    const fundId = params.get('fund') || '';
+    const amount = params.get('amount') || '100';
+
+    // TODO: Fetch church name and fund details from API
+    // For now, show placeholders
+    document.querySelector('.church-name').textContent = 'Your Church Name';
+    document.getElementById('fundName').textContent = 'Building Fund';
+    document.getElementById('amount').textContent = `R ${parseFloat(amount || 0).toFixed(2)}`;
+
+    // Open in app using deep link
+    function openInApp() {
+      // Try deep link first
+      const deepLink = `churpaydemo://give?fund=${fundId}&amount=${amount}`;
+      window.location.href = deepLink;
+      
+      // Fallback after timeout
+      setTimeout(() => {
+        alert('Churpay app not found. Please install it first.');
+      }, 2000);
+    }
+
+    // Install app redirect
+    function installApp() {
+      // iOS App Store or Google Play
+      const ua = navigator.userAgent.toLowerCase();
+      if (ua.indexOf('iphone') > -1 || ua.indexOf('ipad') > -1) {
+        window.location.href = 'https://apps.apple.com/app/churpay'; // Update with real URL
+      } else {
+        window.location.href = 'https://play.google.com/store/apps/details?id=com.churgroup.churpaydemo'; // Update with real package
+      }
+    }
+
+    // WhatsApp contact
+    function whatsappAdmin() {
+      // TODO: Get church admin phone from API
+      const adminPhone = '27658769444'; // Placeholder
+      const message = encodeURIComponent(`Hi, I scanned a Churpay QR but don't have the app installed.`);
+      window.location.href = `https://wa.me/${adminPhone}?text=${message}`;
+    }
+  </script>
+</body>
+</html>

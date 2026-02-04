@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "churpay-demo",
+    "slug": "churpay-demo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "churpaydemo",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.churgroup.churpaydemo"
+    },
+    "android": {
+      "package": "com.churgroup.churpaydemo"
+    },
+    "plugins": [
+      "expo-asset"
+    ]
+  }
+}
