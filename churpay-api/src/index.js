@@ -97,7 +97,8 @@ app.get("/api/churches/:id/transactions", async (req, res) => {
     res.status(500).json({ error: "Failed to load transactions" });
   }
 });
-const port = process.env.PORT || 3001;
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Churpay API running on 0.0.0.0:${port}`);
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Churpay API running on port ${PORT}`);
 });
