@@ -103,4 +103,6 @@ Currently using Option A: same folder copied in both repos.
 - `/churpay-api/brand/` (and copy to `/churpay-api/public/brand/tokens.css`)
 - `/churpay-app/brand/`
 
+Short-term mirror: `/churpay-api/public/brand/tokens.css` is a mirror for the web `/give` page; keep it identical to this source until an auto-sync script is added.
+
 Future: Move to shared package or auto-generate CSS from JS.

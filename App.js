@@ -25,6 +25,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { apiGetTransactions } from "./src/api";
+import { Brand, Logo } from "./brand";
 
 /**
  * ===========================
@@ -63,22 +64,8 @@ const maskPhone = (phone) => {
   return `${prefix}•••${suffix}`;
 };
 
-// ====== CHURPAY BRAND TOKENS (keep consistent) ======
-const BRAND = {
-  colors: {
-    bg: "#070A12", // midnight navy
-    card: "#0B1020", // deep panel
-    line: "rgba(248,250,252,0.10)",
-    lineStrong: "rgba(248,250,252,0.14)",
-    text: "#F8FAFC", // soft white
-    textMuted: "rgba(248,250,252,0.72)",
-    teal: "#22D3EE", // electric teal
-    tealSoft: "rgba(34,211,238,0.18)",
-    danger: "#F87171",
-    ok: "#34D399",
-    warn: "#FCA5A5",
-  },
-};
+// ====== CHURPAY BRAND TOKENS (single source from /brand) ======
+const BRAND = Brand;
 
 const theme = {
   ...DefaultTheme,
@@ -88,7 +75,7 @@ const theme = {
     card: BRAND.colors.card,
     text: BRAND.colors.text,
     border: BRAND.colors.line,
-    primary: BRAND.colors.teal,
+    primary: BRAND.colors.primary,
   },
 };
 
@@ -102,8 +89,8 @@ const STORAGE = {
   memberProfile: "churpay.memberProfile",
 };
 
-// ====== OFFICIAL LOGO IMAGE (place file in /assets) ======
-const LOGO_IMAGE = require("./assets/churpay-logo.png");
+// ====== OFFICIAL LOGO IMAGE (sourced via /brand) ======
+const LOGO_IMAGE = Logo.source;
 
 // ====== PDF LOGO (base64) ======
 let _logoDataUri = null;
@@ -1153,9 +1140,12 @@ function ContributeScreen({
 }) {
   const preFund = route?.params?.fund;
   const preAmount = route?.params?.amount;
+  const source = route?.params?.source;
   const behalfName = route?.params?.behalfName || "";
   const behalfPhone = route?.params?.behalfPhone || "";
   const behalfNote = route?.params?.note || "";
+
+  const isQrSource = source === "qr" || !!preFund;
 
   // Step flow: purpose -> amount -> confirm
   const [step, setStep] = useState("purpose"); // purpose | amount | confirm
@@ -1164,14 +1154,15 @@ function ContributeScreen({
     preFund && allFunds.some((f) => f.id === preFund) ? preFund : activeFunds[0]?.id;
 
   const [fundId, setFundId] = useState(initialFund || "");
-  const [amount, setAmount] = useState(preAmount ? String(preAmount) : "100");
+  const [amount, setAmount] = useState(isQrSource ? "" : preAmount ? String(preAmount) : "100");
   const [reference, setReference] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (preFund && allFunds.some((f) => f.id === preFund)) setFundId(preFund);
-    if (preAmount) setAmount(String(preAmount));
-  }, [preFund, preAmount, allFunds]);
+    if (!isQrSource && preAmount) setAmount(String(preAmount));
+    if (isQrSource && !preAmount) setAmount("");
+  }, [preFund, preAmount, allFunds, isQrSource]);
 
   // If funds load after mount and no fund is selected yet, default to first active fund.
   useEffect(() => {
@@ -1186,7 +1177,7 @@ function ContributeScreen({
   const canContinuePurpose = !!selectedFund;
   const canContinueAmount = !!selectedFund && validAmount;
 
-  const channel = behalfName || behalfPhone || behalfNote ? "request" : preFund || preAmount ? "qr" : "member";
+  const channel = behalfName || behalfPhone || behalfNote ? "request" : isQrSource ? "qr" : "member";
 
   const setQuickAmount = (n) => setAmount(String(n));
 
@@ -1611,7 +1602,6 @@ function MemberHistory({ tx }) {
 
 function QRScreen({ demoMode, activeFunds, churchName }) {
   const [fundId, setFundId] = useState(activeFunds[0]?.id || "");
-  const [amount, setAmount] = useState("200");
 
   // If funds load after mount and no fund is selected yet, default to first active fund.
   useEffect(() => {
@@ -1621,9 +1611,8 @@ function QRScreen({ demoMode, activeFunds, churchName }) {
   const url = useMemo(() => {
     const base = "https://churpay.com/give";
     const f = encodeURIComponent(fundId || "");
-    const a = encodeURIComponent(amount || "");
-    return `${base}?churchId=${DEFAULT_CHURCH_ID}&fund=${f}&amount=${a}`;
-  }, [fundId, amount]);
+    return `${base}?churchId=${DEFAULT_CHURCH_ID}&fund=${f}`;
+  }, [fundId]);
 
   const copy = async () => {
     await Clipboard.setStringAsync(url);
@@ -1656,26 +1645,13 @@ function QRScreen({ demoMode, activeFunds, churchName }) {
             })}
           </View>
 
-          <Text style={[s.label, { alignSelf: "flex-start", marginTop: 12 }]}>Prefill amount</Text>
-          <TextInput
-            value={amount}
-            onChangeText={(t) => setAmount(t.replace(/[^\d.]/g, ""))}
-            keyboardType={Platform.select({ ios: "decimal-pad", android: "numeric" })}
-            placeholder="e.g. 200"
-            placeholderTextColor={BRAND.colors.textMuted}
-            style={[s.input, { width: "100%" }]}
-          />
-
           <View style={{ marginTop: 20, width: "100%", alignItems: "center", gap: 8 }}>
             <Text style={[s.label, { alignSelf: "center" }]}>QR Label (for printing)</Text>
             <View style={{ backgroundColor: "rgba(248,250,252,0.04)", padding: 12, borderRadius: 12, width: "100%" }}>
               <Text style={[s.sectionTitle, { textAlign: "center", fontSize: 16 }]}>
                 {activeFunds.find(f => f.id === fundId)?.name || "Select a fund"}
               </Text>
-              {amount ? (
-                <Text style={[s.p, { textAlign: "center", marginTop: 4 }]}>Suggested {money(amount)}</Text>
-              ) : null}
-              <Text style={[s.muted, { textAlign: "center", marginTop: 8 }]}>Scan to give</Text>
+              <Text style={[s.muted, { textAlign: "center", marginTop: 8 }]}>Scan to give (enter amount manually)</Text>
             </View>
           </View>
 

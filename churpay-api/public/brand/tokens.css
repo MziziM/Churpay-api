@@ -1,27 +1,31 @@
 /* brand/tokens.css - CSS variables derived from tokens.js */
 :root {
-  /* Brand colors from logo */
+  /* Brand colors from official logo */
   --cp-navy: #1E3A5F;
   --cp-teal: #0EA5B7;
   
-  /* UI backgrounds */
-  --cp-bg: #F7F9FC;
-  --cp-surface: #FFFFFF;
-  --cp-card: #FFFFFF;
-  --cp-card-border: #E2E8F0;
+  /* UI backgrounds (dark, calm, trustworthy) */
+  --cp-bg: #070A12;
+  --cp-surface: #0B1020;
+  --cp-card: #0B1020;
+  --cp-card-border: rgba(255, 255, 255, 0.10);
+  --cp-line: rgba(248, 250, 252, 0.10);
+  --cp-line-strong: rgba(248, 250, 252, 0.14);
 
   /* Text colors */
-  --cp-text: #1E3A5F;
-  --cp-text-muted: #64748B;
-  --cp-text-faint: #94A3B8;
+  --cp-text: #F8FAFC;
+  --cp-text-muted: rgba(248, 250, 252, 0.72);
+  --cp-text-faint: rgba(248, 250, 252, 0.55);
   --cp-text-on-primary: #FFFFFF;
 
   /* Semantic colors */
   --cp-primary: #0EA5B7;
   --cp-primary-dark: #0C8A9A;
   --cp-accent: #1E3A5F;
-  --cp-danger: #EF4444;
-  --cp-success: #22C55E;
+  --cp-teal-soft: rgba(14, 165, 183, 0.20);
+  --cp-danger: #F87171;
+  --cp-success: #34D399;
+  --cp-warn: #FCA5A5;
 
   --cp-r-sm: 10px;
   --cp-r-md: 16px;
@@ -38,8 +42,11 @@
   --cp-h2: 22px;
   --cp-body: 16px;
   --cp-small: 13px;
+  --cp-weight-bold: 700;
+  --cp-weight-semi: 600;
+  --cp-weight-regular: 400;
 
-  --cp-shadow: 0 12px 40px rgba(0,0,0,0.35);
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 
-  --cp-hero: linear-gradient(135deg, rgba(14,165,183,0.25), rgba(29,78,216,0.20), rgba(11,18,32,1));
+  --cp-hero: linear-gradient(140deg, rgba(14, 165, 183, 0.30), rgba(27, 59, 95, 0.28), #070A12);
 }
