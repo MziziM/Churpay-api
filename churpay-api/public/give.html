@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Churpay - Give</title>
+  <title>Give with Churpay</title>
   <style>
     * {
       margin: 0;
@@ -11,8 +11,8 @@
       box-sizing: border-box;
     }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #F7F9FC;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -21,86 +21,106 @@
     }
     .container {
       background: white;
-      border-radius: 20px;
-      padding: 40px 30px;
+      border-radius: 16px;
+      padding: 48px 32px;
       max-width: 400px;
       width: 100%;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
       text-align: center;
     }
     .logo {
-      font-size: 48px;
-      font-weight: bold;
-      color: #667eea;
-      margin-bottom: 10px;
+      font-size: 32px;
+      font-weight: 700;
+      color: #0EA5E9;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    .title {
+      color: #1E293B;
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      line-height: 1.3;
     }
     .subtitle {
-      color: #666;
-      font-size: 18px;
-      margin-bottom: 30px;
-    }
-    .message {
-      color: #333;
+      color: #64748B;
       font-size: 16px;
-      margin-bottom: 30px;
+      font-weight: 400;
+      margin-bottom: 32px;
       line-height: 1.5;
     }
-    .button {
+    .helper-text {
+      color: #475569;
+      font-size: 15px;
+      margin-bottom: 32px;
+      line-height: 1.5;
+      font-weight: 500;
+    }
+    .button-primary {
       display: block;
       width: 100%;
       padding: 16px 24px;
-      margin-bottom: 15px;
+      margin-bottom: 16px;
       border: none;
       border-radius: 12px;
       font-size: 16px;
       font-weight: 600;
       cursor: pointer;
       text-decoration: none;
-      transition: transform 0.2s, box-shadow 0.2s;
-    }
-    .button:active {
-      transform: scale(0.98);
-    }
-    .button-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      transition: all 0.2s ease;
+      background: #0EA5E9;
       color: white;
-      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+      box-shadow: 0 2px 8px rgba(14, 165, 233, 0.25);
     }
     .button-primary:hover {
-      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+      background: #0284C7;
+      box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+      transform: translateY(-1px);
+    }
+    .button-primary:active {
+      transform: translateY(0);
     }
     .button-secondary {
-      background: white;
-      color: #667eea;
-      border: 2px solid #667eea;
+      display: block;
+      width: 100%;
+      padding: 12px 24px;
+      border: none;
+      background: transparent;
+      color: #64748B;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: color 0.2s ease;
+      text-align: center;
     }
     .button-secondary:hover {
-      background: #f8f9ff;
+      color: #0EA5E9;
     }
-    .info {
-      color: #999;
-      font-size: 12px;
-      margin-top: 20px;
+    /* Loading state for auto-redirect */
+    .redirecting {
+      opacity: 0;
+      animation: fadeIn 0.3s ease-in 0.5s forwards;
+    }
+    @keyframes fadeIn {
+      to { opacity: 1; }
     }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container redirecting">
     <div class="logo">Churpay</div>
-    <div class="subtitle">Digital Giving Made Simple</div>
-    <div class="message">
-      <strong>Enter the amount in the app</strong>
-    </div>
+    <h1 class="title">Give with Churpay</h1>
+    <p class="subtitle">Secure digital giving for your church</p>
+    <p class="helper-text">You'll enter the amount in the app</p>
     
-    <a href="#" id="openApp" class="button button-primary">
-      Open in Churpay App
+    <a href="#" id="openApp" class="button-primary">
+      Open Churpay App
     </a>
     
-    <a href="https://www.churpay.com/download" class="button button-secondary">
-      Get the App
+    <a href="https://www.churpay.com/download" class="button-secondary">
+      Don't have the app? Get it here
     </a>
-    
-    <div class="info" id="debugInfo"></div>
   </div>
 
   <script>
@@ -125,13 +145,23 @@
     }
     
     // Set the deep link href
-    document.getElementById('openApp').href = deepLink;
+    const openAppButton = document.getElementById('openApp');
+    openAppButton.href = deepLink;
     
-    // Optional: Show debug info in development
-    if (churchId || fundId) {
-      const debugInfo = document.getElementById('debugInfo');
-      debugInfo.textContent = `Church: ${churchId || 'N/A'} | Fund: ${fundId || 'N/A'}`;
-    }
+    // Auto-attempt deep link on load
+    // Wait a moment for page to be visible, then try to open app
+    setTimeout(() => {
+      // Create invisible iframe to attempt deep link without navigation
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = deepLink;
+      document.body.appendChild(iframe);
+      
+      // Clean up iframe after attempt
+      setTimeout(() => {
+        document.body.removeChild(iframe);
+      }, 1000);
+    }, 500);
   </script>
 </body>
 </html>
