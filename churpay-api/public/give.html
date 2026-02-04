@@ -13,7 +13,7 @@
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: var(--cp-hero);
+      background: var(--cp-bg);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -21,22 +21,24 @@
       padding: var(--cp-s-lg);
     }
     .container {
-      background: var(--cp-card);
+      background: var(--cp-surface);
       border: 1px solid var(--cp-card-border);
       border-radius: var(--cp-r-lg);
       padding: var(--cp-s-xl) var(--cp-s-xl);
       max-width: 400px;
       width: 100%;
-      box-shadow: var(--cp-shadow);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
       text-align: center;
-      backdrop-filter: blur(12px);
     }
     .logo {
       font-size: var(--cp-h1);
       font-weight: var(--cp-weight-bold);
-      color: var(--cp-primary);
+      color: var(--cp-navy);
       margin-bottom: var(--cp-s-sm);
       letter-spacing: -0.5px;
+    }
+    .logo .teal {
+      color: var(--cp-teal);
     }
     .title {
       color: var(--cp-text);
@@ -76,8 +78,8 @@
       box-shadow: 0 2px 8px rgba(14, 165, 183, 0.35);
     }
     .button-primary:hover {
-      background: #0C8A9A;
-      box-shadow: 0 4px 16px rgba(14, 165, 183, 0.5);
+      background: var(--cp-primary-dark);
+      box-shadow: 0 4px 16px rgba(14, 165, 183, 0.35);
       transform: translateY(-1px);
     }
     .button-primary:active {
@@ -112,7 +114,7 @@
 </head>
 <body>
   <div class="container redirecting">
-    <div class="logo">Churpay</div>
+    <div class="logo">Chur<span class="teal">Pay</span></div>
     <h1 class="title">Give with Churpay</h1>
     <p class="subtitle">Secure digital giving for your church</p>
     <p class="helper-text">You'll enter the amount in the app</p>

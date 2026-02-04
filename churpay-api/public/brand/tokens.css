@@ -1,16 +1,25 @@
 /* brand/tokens.css - CSS variables derived from tokens.js */
 :root {
-  --cp-bg: #0B1220;
-  --cp-surface: #111A2E;
-  --cp-card: rgba(255,255,255,0.06);
-  --cp-card-border: rgba(255,255,255,0.10);
+  /* Brand colors from logo */
+  --cp-navy: #1E3A5F;
+  --cp-teal: #0EA5B7;
+  
+  /* UI backgrounds */
+  --cp-bg: #F7F9FC;
+  --cp-surface: #FFFFFF;
+  --cp-card: #FFFFFF;
+  --cp-card-border: #E2E8F0;
 
-  --cp-text: #FFFFFF;
-  --cp-text-muted: rgba(255,255,255,0.72);
-  --cp-text-faint: rgba(255,255,255,0.55);
+  /* Text colors */
+  --cp-text: #1E3A5F;
+  --cp-text-muted: #64748B;
+  --cp-text-faint: #94A3B8;
+  --cp-text-on-primary: #FFFFFF;
 
+  /* Semantic colors */
   --cp-primary: #0EA5B7;
-  --cp-primary2: #1D4ED8;
+  --cp-primary-dark: #0C8A9A;
+  --cp-accent: #1E3A5F;
   --cp-danger: #EF4444;
   --cp-success: #22C55E;
 

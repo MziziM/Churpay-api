@@ -3,17 +3,26 @@ export const Brand = {
   name: "Churpay",
 
   colors: {
-    bg: "#0B1220",
-    surface: "#111A2E",
-    card: "rgba(255,255,255,0.06)",
-    cardBorder: "rgba(255,255,255,0.10)",
+    // Brand colors from logo
+    navy: "#1E3A5F",          // Chur (navy)
+    teal: "#0EA5B7",          // Pay (teal)
+    
+    // UI backgrounds
+    bg: "#F7F9FC",            // light background
+    surface: "#FFFFFF",       // white surface
+    card: "#FFFFFF",
+    cardBorder: "#E2E8F0",
 
-    text: "#FFFFFF",
-    textMuted: "rgba(255,255,255,0.72)",
-    textFaint: "rgba(255,255,255,0.55)",
+    // Text colors
+    text: "#1E3A5F",          // navy for primary text
+    textMuted: "#64748B",     // muted gray
+    textFaint: "#94A3B8",     // faint gray
+    textOnPrimary: "#FFFFFF", // white text on teal buttons
 
-    primary: "#0EA5B7",       // teal
-    primary2: "#1D4ED8",      // blue accent
+    // Semantic colors
+    primary: "#0EA5B7",       // teal (from logo)
+    primaryDark: "#0C8A9A",   // darker teal for hover
+    accent: "#1E3A5F",        // navy accent
     danger: "#EF4444",
     success: "#22C55E",
   },
