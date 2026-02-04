@@ -1,0 +1,36 @@
+/* brand/tokens.css - CSS variables derived from tokens.js */
+:root {
+  --cp-bg: #0B1220;
+  --cp-surface: #111A2E;
+  --cp-card: rgba(255,255,255,0.06);
+  --cp-card-border: rgba(255,255,255,0.10);
+
+  --cp-text: #FFFFFF;
+  --cp-text-muted: rgba(255,255,255,0.72);
+  --cp-text-faint: rgba(255,255,255,0.55);
+
+  --cp-primary: #0EA5B7;
+  --cp-primary2: #1D4ED8;
+  --cp-danger: #EF4444;
+  --cp-success: #22C55E;
+
+  --cp-r-sm: 10px;
+  --cp-r-md: 16px;
+  --cp-r-lg: 22px;
+  --cp-r-pill: 999px;
+
+  --cp-s-xs: 6px;
+  --cp-s-sm: 10px;
+  --cp-s-md: 16px;
+  --cp-s-lg: 24px;
+  --cp-s-xl: 32px;
+
+  --cp-h1: 28px;
+  --cp-h2: 22px;
+  --cp-body: 16px;
+  --cp-small: 13px;
+
+  --cp-shadow: 0 12px 40px rgba(0,0,0,0.35);
+
+  --cp-hero: linear-gradient(135deg, rgba(14,165,183,0.25), rgba(29,78,216,0.20), rgba(11,18,32,1));
+}

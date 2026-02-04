@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Give with Churpay</title>
+  <link rel="stylesheet" href="/brand/tokens.css">
   <style>
     * {
       margin: 0;
@@ -12,69 +13,71 @@
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: #F7F9FC;
+      background: var(--cp-hero);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: var(--cp-s-lg);
     }
     .container {
-      background: white;
-      border-radius: 16px;
-      padding: 48px 32px;
+      background: var(--cp-card);
+      border: 1px solid var(--cp-card-border);
+      border-radius: var(--cp-r-lg);
+      padding: var(--cp-s-xl) var(--cp-s-xl);
       max-width: 400px;
       width: 100%;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      box-shadow: var(--cp-shadow);
       text-align: center;
+      backdrop-filter: blur(12px);
     }
     .logo {
-      font-size: 32px;
-      font-weight: 700;
-      color: #0EA5E9;
-      margin-bottom: 8px;
+      font-size: var(--cp-h1);
+      font-weight: var(--cp-weight-bold);
+      color: var(--cp-primary);
+      margin-bottom: var(--cp-s-sm);
       letter-spacing: -0.5px;
     }
     .title {
-      color: #1E293B;
-      font-size: 24px;
-      font-weight: 600;
-      margin-bottom: 8px;
+      color: var(--cp-text);
+      font-size: var(--cp-h2);
+      font-weight: var(--cp-weight-semi);
+      margin-bottom: var(--cp-s-sm);
       line-height: 1.3;
     }
     .subtitle {
-      color: #64748B;
-      font-size: 16px;
-      font-weight: 400;
-      margin-bottom: 32px;
+      color: var(--cp-text-muted);
+      font-size: var(--cp-body);
+      font-weight: var(--cp-weight-regular);
+      margin-bottom: var(--cp-s-xl);
       line-height: 1.5;
     }
     .helper-text {
-      color: #475569;
-      font-size: 15px;
-      margin-bottom: 32px;
+      color: var(--cp-text-faint);
+      font-size: var(--cp-body);
+      margin-bottom: var(--cp-s-xl);
       line-height: 1.5;
-      font-weight: 500;
+      font-weight: var(--cp-weight-regular);
     }
     .button-primary {
       display: block;
       width: 100%;
-      padding: 16px 24px;
-      margin-bottom: 16px;
+      padding: var(--cp-s-md) var(--cp-s-lg);
+      margin-bottom: var(--cp-s-md);
       border: none;
-      border-radius: 12px;
-      font-size: 16px;
-      font-weight: 600;
+      border-radius: var(--cp-r-pill);
+      font-size: var(--cp-body);
+      font-weight: var(--cp-weight-semi);
       cursor: pointer;
       text-decoration: none;
       transition: all 0.2s ease;
-      background: #0EA5E9;
-      color: white;
-      box-shadow: 0 2px 8px rgba(14, 165, 233, 0.25);
+      background: var(--cp-primary);
+      color: var(--cp-text);
+      box-shadow: 0 2px 8px rgba(14, 165, 183, 0.35);
     }
     .button-primary:hover {
-      background: #0284C7;
-      box-shadow: 0 4px 12px rgba(14, 165, 233, 0.35);
+      background: #0C8A9A;
+      box-shadow: 0 4px 16px rgba(14, 165, 183, 0.5);
       transform: translateY(-1px);
     }
     .button-primary:active {
@@ -83,19 +86,19 @@
     .button-secondary {
       display: block;
       width: 100%;
-      padding: 12px 24px;
+      padding: var(--cp-s-sm) var(--cp-s-lg);
       border: none;
       background: transparent;
-      color: #64748B;
-      font-size: 14px;
-      font-weight: 500;
+      color: var(--cp-text-muted);
+      font-size: var(--cp-small);
+      font-weight: var(--cp-weight-regular);
       cursor: pointer;
       text-decoration: none;
       transition: color 0.2s ease;
       text-align: center;
     }
     .button-secondary:hover {
-      color: #0EA5E9;
+      color: var(--cp-primary);
     }
     /* Loading state for auto-redirect */
     .redirecting {
