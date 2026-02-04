@@ -1,30 +1,60 @@
-import pg from "pg";
-const { Pool } = pg;
+import { Pool } from "pg";
 
-// SSL handling for managed Postgres (DigitalOcean) and local dev.
-// - If PGSSLMODE is set (require/verify-full), enable SSL.
-// - Prefer DATABASE_CA_CERT (PEM string). If missing and PGSSLINSECURE=1, allow insecure.
-const sslmode = (process.env.PGSSLMODE || "").toLowerCase();
-const hasSslMode = !!sslmode && sslmode !== "disable";
-const caFromEnv = process.env.DATABASE_CA_CERT;
-const insecure = String(process.env.PGSSLINSECURE || "").trim() === "1";
+const connectionString = process.env.DATABASE_URL;
 
-let ssl;
-if (hasSslMode) {
-  if (caFromEnv && caFromEnv.trim().length > 0) {
-    ssl = { ca: caFromEnv, rejectUnauthorized: true };
-  } else if (insecure) {
-    ssl = { rejectUnauthorized: false };
-  } else {
-    ssl = { rejectUnauthorized: true };
+function getSslConfig() {
+  // Pull sslmode from env OR from DATABASE_URL (?sslmode=require)
+  let sslmode = process.env.PGSSLMODE || null;
+  let uselibpqcompat = false;
+
+  try {
+    if (connectionString) {
+      const u = new URL(connectionString);
+      sslmode = sslmode || u.searchParams.get("sslmode");
+      uselibpqcompat = (u.searchParams.get("uselibpqcompat") || "").toLowerCase() === "true";
+    }
+  } catch {
+    // ignore parse errors
   }
+
+  const insecure = process.env.PGSSLINSECURE === "1";
+  const ca = process.env.DATABASE_CA_CERT;
+
+  // If no sslmode is set anywhere, return no SSL config.
+  if (!sslmode) {
+    return { ssl: undefined, sslmode: null, insecure };
+  }
+
+  // Normalize common values
+  const mode = String(sslmode).toLowerCase();
+
+  // Preferred secure path: provide CA cert
+  if (ca && ca.trim().length > 0) {
+    return {
+      ssl: { ca, rejectUnauthorized: true },
+      sslmode: mode,
+      insecure,
+    };
+  }
+
+  // Practical DO Managed PG path: if CA not provided, allow insecure SSL for now.
+  if (insecure || mode === "require" || mode === "verify-full" || mode === "verify-ca" || mode === "prefer") {
+    return {
+      ssl: { rejectUnauthorized: false },
+      sslmode: mode,
+      insecure: true,
+    };
+  }
+
+  return { ssl: undefined, sslmode: mode, insecure };
 }
 
-console.log("DB SSL:", { hasCA: !!caFromEnv, insecure, sslmode: sslmode || null });
+const sslInfo = getSslConfig();
+console.log("DB SSL:", { hasCA: !!process.env.DATABASE_CA_CERT, insecure: sslInfo.insecure, sslmode: sslInfo.sslmode });
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ...(ssl ? { ssl } : {}),
+  connectionString,
+  ssl: sslInfo.ssl,
   max: Number(process.env.PG_POOL_MAX || 10),
   idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
   connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000),
