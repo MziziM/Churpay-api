@@ -13,7 +13,7 @@ app.use(express.json());
 
 // Do not pre-parse PayFast ITN as urlencoded; that route captures raw body for signature.
 app.use((req, res, next) => {
-  if (req.originalUrl === "/webhooks/payfast/itn") return next();
+  if (req.originalUrl.startsWith("/webhooks/payfast/itn")) return next();
   return express.urlencoded({ extended: false })(req, res, next);
 });
 

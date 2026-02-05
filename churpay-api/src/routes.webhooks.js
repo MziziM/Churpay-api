@@ -13,7 +13,13 @@ router.get("/payfast/itn", (req, res) => {
 // Route-specific raw body capture to rebuild the signature exactly as PayFast expects.
 router.post(
   "/payfast/itn",
-  express.raw({ type: "application/x-www-form-urlencoded" }),
+  // Accept charset variants; ensure raw body available for signature.
+  express.raw({
+    type: (req) =>
+      (req.headers["content-type"] || "")
+        .toLowerCase()
+        .startsWith("application/x-www-form-urlencoded"),
+  }),
   async (req, res) => {
     try {
       const debug = String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1";
@@ -25,8 +31,16 @@ router.post(
         ? req.body
         : "";
 
+      if (debug) {
+        console.log("[itn] raw body", rawBody.slice(0, 2000));
+      }
+
       // Parse as form-urlencoded without pre-modifying the body
       const params = Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (debug) {
+        console.log("[itn] parsed keys", Object.keys(params));
+      }
 
       const receivedSig = params.signature;
       if (!receivedSig) return res.status(400).send("missing signature");
