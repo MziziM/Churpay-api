@@ -64,10 +64,8 @@ router.post(
       const sigParts = [];
       for (const k of keys) {
         const v = params[k];
-        if (v === undefined || v === null) continue;
-        const s = String(v);
-        if (s === "") continue; // skip empty values per PayFast rules
-        sigParts.push(`${k}=${encodePF(s)}`);
+        const s = v === undefined || v === null ? "" : String(v);
+        sigParts.push(`${encodePF(k)}=${encodePF(s)}`);
       }
 
       if (passphrase) {
