@@ -1,6 +1,7 @@
 import express from "express";
 import { buildPayfastRedirect, generateSignature } from "./payfast.js";
 import { db } from "./db.js";
+import { requireAuth, requireAdmin } from "./auth.js";
 import crypto from "node:crypto";
 
 const router = express.Router();
@@ -10,6 +11,43 @@ function makeMpaymentId() {
 }
 
 const UUID_REGEX = /^[0-9a-fA-F-]{36}$/;
+
+function toBoolean(val) {
+  if (typeof val === "undefined" || val === null) return undefined;
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return !!val;
+  const str = String(val).toLowerCase();
+  return ["1", "true", "yes", "on"].includes(str);
+}
+
+function normalizeFundCode(code, fallbackName) {
+  const src = typeof code === "string" && code.trim() ? code.trim() : fallbackName;
+  if (!src || typeof src !== "string") return null;
+  const slug = src
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 50);
+  return slug || null;
+}
+
+async function loadMember(userId) {
+  return db.one(
+    `select m.id, m.full_name, m.phone, m.role, m.church_id, c.name as church_name
+     from members m
+     left join churches c on c.id = m.church_id
+     where m.id=$1`,
+    [userId]
+  );
+}
+
+function requireChurch(req, res) {
+  if (!req.user?.church_id) {
+    res.status(400).json({ error: "Join a church first" });
+    return null;
+  }
+  return req.user.church_id;
+}
 
 async function ensurePaymentIntentsTable() {
   await db.none(`
@@ -51,13 +89,29 @@ function normalizeBaseUrl() {
   if (!base) return null;
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
-router.get("/churches/:churchId/funds", async (req, res) => {
+router.get("/funds", requireAuth, async (req, res) => {
   try {
-    const { churchId } = req.params;
-    const funds = await db.manyOrNone(
-      "select id, code, name, active from funds where church_id=$1 and active=true order by name asc",
-      [churchId]
-    );
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
+    const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
+    const funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+    res.json({ funds });
+  } catch (err) {
+    console.error("[funds] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
+    const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
+    const funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
     res.json({ funds });
   } catch (err) {
     console.error("[funds] error", err?.message || err, err?.stack);
@@ -66,9 +120,10 @@ router.get("/churches/:churchId/funds", async (req, res) => {
 });
 
 // Get transactions for a church with filters
-router.get("/churches/:churchId/transactions", async (req, res) => {
+router.get("/churches/:churchId/transactions", requireAdmin, async (req, res) => {
   try {
-    const { churchId } = req.params;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
 
     const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
     const offset = Math.max(Number(req.query.offset || 0), 0);
@@ -146,28 +201,43 @@ router.get("/churches/:churchId/transactions", async (req, res) => {
 });
 
 // Update fund (rename / toggle active)
-router.patch("/funds/:id", async (req, res) => {
+router.patch("/funds/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    let { churchId, name, active } = req.body || {};
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
 
-    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
+    let { name, active } = req.body || {};
+    name = typeof name === "string" ? name.trim() : name;
+    active = toBoolean(active);
 
-    if (!churchId) return res.status(400).json({ error: "Missing churchId" });
-
-    // normalize active if provided
-    if (typeof active === "string") {
-      active = active === "true" || active === "1";
-    } else if (typeof active === "number") {
-      active = !!active;
-    }
-
-    const existing = await db.oneOrNone("select id from funds where id=$1 and church_id=$2", [id, churchId]);
+    const existing = await db.oneOrNone("select id, code from funds where id=$1 and church_id=$2", [id, churchId]);
     if (!existing) return res.status(404).json({ error: "Fund not found" });
 
+    const sets = [];
+    const params = [];
+    let idx = 1;
+
+    if (typeof name === "string") {
+      sets.push(`name = $${idx++}`);
+      params.push(name);
+    }
+
+    if (typeof active !== "undefined") {
+      sets.push(`active = $${idx++}`);
+      params.push(!!active);
+    }
+
+    if (!sets.length) {
+      return res.status(400).json({ error: "No updates supplied" });
+    }
+
+    params.push(id);
+    params.push(churchId);
+
     const updated = await db.one(
-      `update funds set name = coalesce($1, name), active = coalesce($2, active) where id=$3 and church_id=$4 returning id, code, name, active`,
-      [typeof name === "string" ? name : null, typeof active === "undefined" ? null : active, id, churchId]
+      `update funds set ${sets.join(", ")} where id=$${idx++} and church_id=$${idx} returning id, code, name, active`,
+      params
     );
 
     res.json({ fund: updated });
@@ -178,29 +248,23 @@ router.patch("/funds/:id", async (req, res) => {
 });
 
 // Create a new fund
-router.post("/funds", async (req, res) => {
+router.post("/funds", requireAdmin, async (req, res) => {
   try {
-    let { churchId, code, name, active = true } = req.body || {};
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
 
-    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
+    let { code, name, active = true } = req.body || {};
+
     name = typeof name === "string" ? name.trim() : name;
+    active = toBoolean(active);
 
-    if (!churchId || !name) {
-      return res.status(400).json({ error: "Missing churchId or name" });
+    if (!name) {
+      return res.status(400).json({ error: "Name is required" });
     }
 
-    // generate a simple code if not provided
-    if (!code || typeof code !== "string" || !code.trim()) {
-      code = name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/(^-|-$)/g, "")
-        .slice(0, 40);
-    }
-
-    // validate churchId looks like a UUID to avoid DB type errors
-    if (typeof churchId !== "string" || !/^[0-9a-fA-F-]{36}$/.test(churchId)) {
-      return res.status(400).json({ error: "Invalid churchId" });
+    const normalizedCode = normalizeFundCode(code, name);
+    if (!normalizedCode) {
+      return res.status(400).json({ error: "Invalid fund code" });
     }
 
     // ensure church exists
@@ -213,15 +277,15 @@ router.post("/funds", async (req, res) => {
       throw err;
     }
 
-    // ensure uniqueness for this church
-    const existing = await db.oneOrNone("select id from funds where church_id=$1 and code=$2", [churchId, code]);
+    // ensure uniqueness for this church (code already lowercased)
+    const existing = await db.oneOrNone("select id from funds where church_id=$1 and code=$2", [churchId, normalizedCode]);
     if (existing) {
       return res.status(409).json({ error: "Fund code already exists" });
     }
 
     const row = await db.one(
       `insert into funds (church_id, code, name, active) values ($1,$2,$3,$4) returning id, code, name, active`,
-      [churchId, code, name, !!active]
+      [churchId, normalizedCode, name, typeof active === "undefined" ? true : !!active]
     );
 
     res.json({ fund: row });
@@ -231,10 +295,32 @@ router.post("/funds", async (req, res) => {
   }
 });
 
-
-router.post("/payment-intents", async (req, res) => {
+// Soft delete / deactivate a fund
+router.delete("/funds/:id", requireAdmin, async (req, res) => {
   try {
-    let { churchId, fundId, amount, memberName, memberPhone, channel = "app" } = req.body || {};
+    const { id } = req.params;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const existing = await db.oneOrNone("select id from funds where id=$1 and church_id=$2", [id, churchId]);
+    if (!existing) return res.status(404).json({ error: "Fund not found" });
+
+    const updated = await db.one(
+      "update funds set active=false where id=$1 and church_id=$2 returning id, code, name, active",
+      [id, churchId]
+    );
+
+    res.json({ fund: updated });
+  } catch (err) {
+    console.error("[funds] DELETE /funds/:id error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+router.post("/payment-intents", requireAuth, async (req, res) => {
+  try {
+    let { fundId, amount, channel = "app" } = req.body || {};
     await ensurePaymentIntentsTable();
 
     const amt = Number(amount);
@@ -242,19 +328,22 @@ router.post("/payment-intents", async (req, res) => {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
-    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
     fundId = typeof fundId === "string" ? fundId.trim() : fundId;
-
-    if (!churchId || !fundId) {
-      return res.status(400).json({ error: "Missing churchId/fundId/amount" });
-    }
-
     channel = typeof channel === "string" ? channel.trim() : channel;
+
+    const member = await loadMember(req.user.id);
+    if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
+    const churchId = member.church_id;
+
+    if (!fundId) {
+      return res.status(400).json({ error: "Missing fundId" });
+    }
 
     let fund, church;
     try {
-      fund = await db.one("select id, name from funds where id=$1 and church_id=$2", [fundId, churchId]);
+      fund = await db.one("select id, name, active from funds where id=$1 and church_id=$2", [fundId, churchId]);
       church = await db.one("select id, name from churches where id=$1", [churchId]);
+      if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
     } catch (err) {
       if (err.message.includes("Expected 1 row, got 0")) {
         return res.status(404).json({ error: "Church or fund not found" });
@@ -287,7 +376,7 @@ router.post("/payment-intents", async (req, res) => {
            ) values (
              $1,$2,$3,$4,'ZAR','PENDING',$5,$6,$7,'manual',null,$8,$9,now(),now()
            ) returning id`,
-          [intentId, churchId, fundId, amt, memberName || "", memberPhone || "", channel || "manual", reference, itemName]
+          [intentId, churchId, fundId, amt, member.full_name || "", member.phone || "", channel || "manual", reference, itemName]
         );
 
         const txRow = await db.one(
@@ -312,12 +401,15 @@ router.post("/payment-intents", async (req, res) => {
       }
     }
 
-    const intent = await db.one(`
+    const intent = await db.one(
+      `
       insert into payment_intents
         (church_id, fund_id, amount, member_name, member_phone, item_name, m_payment_id)
       values ($1,$2,$3,$4,$5,$6,$7)
       returning *
-    `, [churchId, fundId, amt, memberName || "", memberPhone || "", itemName, mPaymentId]);
+    `,
+      [churchId, fundId, amt, member.full_name || "", member.phone || "", itemName, mPaymentId]
+    );
 
     const returnUrl = `${process.env.PUBLIC_BASE_URL}/payfast/return?pi=${intent.id}`;
     const cancelUrl = `${process.env.PUBLIC_BASE_URL}/payfast/cancel?pi=${intent.id}`;
@@ -348,9 +440,9 @@ router.post("/payment-intents", async (req, res) => {
 // ==========================
 // PayFast: initiate payment
 // ==========================
-router.post("/payfast/initiate", async (req, res) => {
+router.post("/payfast/initiate", requireAuth, async (req, res) => {
   try {
-    let { churchId, fundId, amount, memberName, memberPhone, channel = "app" } = req.body || {};
+    let { fundId, amount, channel = "app" } = req.body || {};
 
     const baseUrl = normalizeBaseUrl();
     if (!baseUrl) return res.status(500).json({ error: "Server misconfigured: BASE_URL missing" });
@@ -358,17 +450,17 @@ router.post("/payfast/initiate", async (req, res) => {
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "Invalid amount" });
 
-    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
     fundId = typeof fundId === "string" ? fundId.trim() : fundId;
-    memberName = typeof memberName === "string" ? memberName.trim() : memberName;
-    memberPhone = typeof memberPhone === "string" ? memberPhone.trim() : memberPhone;
     channel = typeof channel === "string" ? channel.trim() : channel;
 
-    if (!churchId || !UUID_REGEX.test(churchId)) return res.status(400).json({ error: "Invalid churchId" });
+    const member = await loadMember(req.user.id);
+    if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
+    const churchId = member.church_id;
+
     if (!fundId || !UUID_REGEX.test(fundId)) return res.status(400).json({ error: "Invalid fundId" });
 
-    const fund = await db.oneOrNone("select id, name from funds where id=$1 and church_id=$2", [fundId, churchId]);
-    if (!fund) return res.status(404).json({ error: "Fund not found" });
+    const fund = await db.oneOrNone("select id, name, active from funds where id=$1 and church_id=$2", [fundId, churchId]);
+    if (!fund || !fund.active) return res.status(404).json({ error: "Fund not found" });
 
     await ensurePaymentIntentsTable();
 
@@ -386,7 +478,7 @@ router.post("/payfast/initiate", async (req, res) => {
        ) values (
          $1, $2, $3, 'PENDING', $4, $5, $6, 'payfast', gen_random_uuid(), $7
        ) returning id, amount, church_id, fund_id, m_payment_id, item_name`,
-      [churchId, fundId, amt, memberName || null, memberPhone || null, channel || null, itemName]
+      [churchId, fundId, amt, member.full_name || null, member.phone || null, channel || null, itemName]
     );
 
     const mode = (process.env.PAYFAST_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
@@ -415,7 +507,7 @@ router.post("/payfast/initiate", async (req, res) => {
       notifyUrl,
       customStr1: churchId,
       customStr2: fundId,
-      nameFirst: memberName,
+      nameFirst: member.full_name,
       emailAddress: undefined,
     });
 
@@ -537,26 +629,30 @@ router.get("/payment-intents/:id", async (req, res) => {
 // SIMULATED PAYMENT (MVP / DEMO MODE)
 // Creates a PAID payment_intent + inserts a transaction ledger row
 // ------------------------------------------------------------
-router.post("/simulate-payment", async (req, res) => {
+router.post("/simulate-payment", requireAuth, async (req, res) => {
   try {
-    let { churchId, fundId, amount, memberName, memberPhone, channel = "app" } = req.body || {};
+    let { fundId, amount, channel = "app" } = req.body || {};
 
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
-    churchId = typeof churchId === "string" ? churchId.trim() : churchId;
     fundId = typeof fundId === "string" ? fundId.trim() : fundId;
 
-    if (!churchId || !fundId) {
-      return res.status(400).json({ error: "Missing churchId/fundId/amount" });
+    const member = await loadMember(req.user.id);
+    if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
+    const churchId = member.church_id;
+
+    if (!fundId) {
+      return res.status(400).json({ error: "Missing fundId" });
     }
 
     // Validate church + fund exist
     let fund, church;
     try {
-      fund = await db.one("select id, name from funds where id=$1 and church_id=$2", [fundId, churchId]);
+      fund = await db.one("select id, name, active from funds where id=$1 and church_id=$2", [fundId, churchId]);
+      if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
       church = await db.one("select id, name from churches where id=$1", [churchId]);
     } catch (err) {
       if (err.message.includes("Expected 1 row, got 0")) {
@@ -589,7 +685,7 @@ router.post("/simulate-payment", async (req, res) => {
           ($1,$2,$3,'ZAR',$4,$5,'PAID','simulated',$6,$7,$8,now(),now())
         returning *
         `,
-        [churchId, fundId, amt, memberName || "", memberPhone || "", providerPaymentId, mPaymentId, itemName]
+        [churchId, fundId, amt, member.full_name || "", member.phone || "", providerPaymentId, mPaymentId, itemName]
       );
 
       // Insert ledger transaction row
@@ -626,9 +722,10 @@ router.post("/simulate-payment", async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
-router.get("/churches/:churchId/totals", async (req, res) => {
+router.get("/churches/:churchId/totals", requireAdmin, async (req, res) => {
   try {
-    const { churchId } = req.params;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
 
     const rows = await db.manyOrNone(
       `

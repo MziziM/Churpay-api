@@ -5,6 +5,8 @@ import cors from "cors";
 import payments from "./routes.payments.js";
 import webhooks from "./routes.webhooks.js";
 import superRoutes from "./routes.super.js";
+import authRoutes, { handleGetMe } from "./routes.auth.js";
+import { requireAdmin, requireAuth } from "./auth.js";
 import { db } from "./db.js";
 
 const app = express();
@@ -28,13 +30,18 @@ app.get("/give", (req, res) => {
   res.sendFile(path.join(process.cwd(), "public", "give.html"));
 });
 
+// Auth routes exposed under /api/auth for register/login and also under /api for profile endpoints
+app.use("/api/auth", authRoutes);
+app.use("/api", authRoutes);
+app.get("/api/me", requireAuth, handleGetMe);
 app.use("/api", payments);
 app.use("/api/super", superRoutes);
 app.use("/webhooks", webhooks);
 // GET /api/churches/:id/transactions
-app.get("/api/churches/:id/transactions", async (req, res) => {
+app.get("/api/churches/:id/transactions", requireAdmin, async (req, res) => {
   try {
-    const churchId = req.params.id;
+    const churchId = req.user?.church_id;
+    if (!churchId) return res.status(400).json({ error: "Join a church first" });
 
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Math.max(Number(req.query.offset || 0), 0);
