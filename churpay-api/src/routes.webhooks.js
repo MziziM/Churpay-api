@@ -3,11 +3,15 @@ import crypto from "node:crypto";
 import { db } from "./db.js";
 
 const router = express.Router();
+const BUILD = "v2026-02-05-0945";
 
 // PayFast sends application/x-www-form-urlencoded POST (ITN)
 // Debug helper: PayFast will POST ITN, but this helps confirm the route is mounted.
+router.get("/build", (req, res) => {
+  res.json({ ok: true, build: BUILD });
+});
 router.get("/payfast/itn", (req, res) => {
-  res.status(200).json({ ok: true, route: "webhooks/payfast/itn" });
+  res.status(200).json({ ok: true, route: "webhooks/payfast/itn", build: BUILD });
 });
 
 // Route-specific raw body capture to rebuild the signature exactly as PayFast expects.
@@ -55,33 +59,29 @@ router.post(
       const receivedSig = String(params.signature || "").trim();
       if (!receivedSig) return res.status(400).send("missing signature");
 
-      // Rebuild signature base the way PayFast expects
+      // PayFast ITN signature must be generated from the exact raw body as received,
+      // excluding the signature field. Avoid re-encoding/sorting which can change the string.
       const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
 
-      const keys = Object.keys(params)
-        .filter((k) => k !== "signature")
-        .sort((a, b) => a.localeCompare(b));
+      // Remove signature=... regardless of position; keep all other pairs as-is.
+      let sigBase = rawBody
+        .replace(/(^|&)signature=[^&]*/i, "")
+        .replace(/^&+/, "")
+        .replace(/&+$/, "")
+        .replace(/&&+/g, "&");
 
-      const sigParts = [];
-      for (const k of keys) {
-        const v = params[k];
-        const s = v === undefined || v === null ? "" : String(v);
-        sigParts.push(`${encodePF(k)}=${encodePF(s)}`);
-      }
-
+      // Append passphrase only if configured in PayFast dashboard
       if (passphrase) {
-        sigParts.push(`passphrase=${encodePF(passphrase)}`);
+        sigBase = sigBase
+          ? `${sigBase}&passphrase=${encodePF(passphrase)}`
+          : `passphrase=${encodePF(passphrase)}`;
       }
 
-      const sigBase = sigParts.join("&");
       const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
       const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
 
-      const maskedBase = passphrase
-        ? sigBase.replace(encodePF(passphrase), "***")
-        : sigBase;
+      const maskedBase = passphrase ? sigBase.replace(encodePF(passphrase), "***") : sigBase;
 
-      console.log("[itn] parsed keys", keys);
       console.log("[itn] sig debug", {
         submitted: receivedSig,
         computed: computedSig,
