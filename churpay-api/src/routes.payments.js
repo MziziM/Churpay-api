@@ -249,6 +249,8 @@ router.post("/payment-intents", async (req, res) => {
       return res.status(400).json({ error: "Missing churchId/fundId/amount" });
     }
 
+    channel = typeof channel === "string" ? channel.trim() : channel;
+
     let fund, church;
     try {
       fund = await db.one("select id, name from funds where id=$1 and church_id=$2", [fundId, churchId]);
@@ -261,6 +263,7 @@ router.post("/payment-intents", async (req, res) => {
       return res.status(500).json({ error: "Internal server error" });
     }
 
+    const paymentsDisabled = ["1", "true", "yes"].includes(String(process.env.PAYMENTS_DISABLED || "").toLowerCase());
     const mPaymentId = makeMpaymentId();
 
     // PayFast can be picky about special characters in item_name.
@@ -272,6 +275,42 @@ router.post("/payment-intents", async (req, res) => {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 100);
+
+    if (paymentsDisabled) {
+      try {
+        const intentId = crypto.randomUUID();
+        const reference = mPaymentId;
+
+        const intent = await db.one(
+          `insert into payment_intents (
+             id, church_id, fund_id, amount, currency, status, member_name, member_phone, channel, provider, provider_payment_id, m_payment_id, item_name, created_at, updated_at
+           ) values (
+             $1,$2,$3,$4,'ZAR','PENDING',$5,$6,$7,'manual',null,$8,$9,now(),now()
+           ) returning id`,
+          [intentId, churchId, fundId, amt, memberName || "", memberPhone || "", channel || "manual", reference, itemName]
+        );
+
+        const txRow = await db.one(
+          `insert into transactions (
+            church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at
+          ) values (
+            $1,$2,$3,$4,$5,$6,'manual',null,now()
+          ) returning id, reference, created_at`,
+          [churchId, fundId, intent.id, amt, reference, channel || "manual"]
+        );
+
+        return res.json({
+          status: "MANUAL",
+          paymentIntentId: intent.id,
+          transactionId: txRow.id,
+          reference: txRow.reference,
+          instructions: "Please pay via EFT/Cash and use this reference.",
+        });
+      } catch (err) {
+        console.error("[payments] manual fallback error", err);
+        return res.status(500).json({ error: "Unable to record manual payment intent" });
+      }
+    }
 
     const intent = await db.one(`
       insert into payment_intents

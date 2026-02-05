@@ -52,13 +52,34 @@ function getSslConfig() {
 const sslInfo = getSslConfig();
 console.log("DB SSL:", { hasCA: !!process.env.DATABASE_CA_CERT, insecure: sslInfo.insecure, sslmode: sslInfo.sslmode });
 
-const pool = new Pool({
-  connectionString,
-  ssl: sslInfo.ssl,
+let pgConfig = {
   max: Number(process.env.PG_POOL_MAX || 10),
   idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
   connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000),
-});
+  ssl: sslInfo.ssl,
+};
+
+if (!connectionString) throw new Error("DATABASE_URL is missing");
+
+let dbUrl;
+try {
+  dbUrl = new URL(connectionString);
+} catch (e) {
+  throw new Error(`Invalid DATABASE_URL: ${e?.message || e}`);
+}
+
+pgConfig = {
+  ...pgConfig,
+  host: dbUrl.hostname,
+  port: dbUrl.port ? Number(dbUrl.port) : 5432,
+  user: decodeURIComponent(dbUrl.username || ""),
+  password: decodeURIComponent(dbUrl.password || ""),
+  database: (dbUrl.pathname || "/").replace(/^\//, ""),
+};
+
+console.log("DB Target:", { host: pgConfig.host, port: pgConfig.port, db: pgConfig.database });
+
+const pool = new Pool(pgConfig);
 
 pool.on("error", (err) => {
   console.error("[db] unexpected pool error", err?.message || err, err?.stack);

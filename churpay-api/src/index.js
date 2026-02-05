@@ -4,6 +4,7 @@ import path from "path";
 import cors from "cors";
 import payments from "./routes.payments.js";
 import webhooks from "./routes.webhooks.js";
+import superRoutes from "./routes.super.js";
 import { db } from "./db.js";
 
 const app = express();
@@ -23,6 +24,7 @@ app.get("/give", (req, res) => {
 });
 
 app.use("/api", payments);
+app.use("/api/super", superRoutes);
 app.use("/webhooks", webhooks);
 // GET /api/churches/:id/transactions
 app.get("/api/churches/:id/transactions", async (req, res) => {
