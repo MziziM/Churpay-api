@@ -43,10 +43,7 @@ router.post(
       }
 
       // Decode values for business logic
-      const params = {};
-      for (const [k, v] of new URLSearchParams(rawBody)) {
-        params[k] = v;
-      }
+      const params = Object.fromEntries(new URLSearchParams(rawBody));
 
       // Rebuild signature using raw pairs (no decode/re-encode)
       const rawPairs = rawBody
