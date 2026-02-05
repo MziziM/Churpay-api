@@ -11,6 +11,7 @@ import {
   Alert,
   Image,
   Share,
+  AppState,
 } from "react-native";
 import * as Linking from "expo-linking";
 import * as Clipboard from "expo-clipboard";
@@ -87,6 +88,8 @@ const STORAGE = {
   adminPin: "churpay.adminPin",
   funds: "churpay.funds",
   tx: "churpay.tx",
+  pending: "churpay.pendingIntents",
+  pendingLegacy: "churpay.pending",
   memberProfile: "churpay.memberProfile",
 };
 
@@ -256,6 +259,8 @@ export default function App() {
   const [churchName, setChurchName] = useState("The Great Commission Church");
   const [adminPin, setAdminPin] = useState("1234");
 
+  const [pendingQueue, setPendingQueue] = useState([]);
+
   const [memberProfile, setMemberProfile] = useState({
     name: "",
     phone: "",
@@ -298,6 +303,7 @@ export default function App() {
         adminPin: next.adminPin ?? adminPin,
         funds: next.funds ?? funds,
         tx: next.tx ?? tx,
+        pending: next.pendingQueue ?? pendingQueue,
         memberProfile: next.memberProfile ?? memberProfile,
       };
 
@@ -307,25 +313,29 @@ export default function App() {
         AsyncStorage.setItem(STORAGE.adminPin, payload.adminPin),
         AsyncStorage.setItem(STORAGE.funds, JSON.stringify(payload.funds)),
         AsyncStorage.setItem(STORAGE.tx, JSON.stringify(payload.tx)),
+        AsyncStorage.setItem(STORAGE.pending, JSON.stringify(payload.pending)),
+        AsyncStorage.setItem(STORAGE.pendingLegacy, JSON.stringify(payload.pending)),
         AsyncStorage.setItem(STORAGE.memberProfile, JSON.stringify(payload.memberProfile)),
       ]);
     } catch (e) {
       // silent in demo
     }
   },
-  [demoMode, churchName, adminPin, funds, tx, memberProfile, apiBaseUrl, churchId]
+  [demoMode, churchName, adminPin, funds, tx, pendingQueue, memberProfile, apiBaseUrl, churchId]
 );
 
   useEffect(() => {
     (async () => {
       try {
         
-const [d, c, p, f, t, mp] = await Promise.all([
+const [d, c, p, f, t, pend, pendLegacy, mp] = await Promise.all([
   AsyncStorage.getItem(STORAGE.demo),
   AsyncStorage.getItem(STORAGE.church),
   AsyncStorage.getItem(STORAGE.adminPin),
   AsyncStorage.getItem(STORAGE.funds),
   AsyncStorage.getItem(STORAGE.tx),
+  AsyncStorage.getItem(STORAGE.pending),
+  AsyncStorage.getItem(STORAGE.pendingLegacy),
   AsyncStorage.getItem(STORAGE.memberProfile),
 ]);
         if (d) setDemoMode(Boolean(JSON.parse(d)));
@@ -333,6 +343,10 @@ const [d, c, p, f, t, mp] = await Promise.all([
         if (p) setAdminPin(p);
         if (f) setFunds(JSON.parse(f));
         if (t) setTx(JSON.parse(t));
+        const mergedPending = [];
+        if (pend) mergedPending.push(...JSON.parse(pend));
+        if (pendLegacy) mergedPending.push(...JSON.parse(pendLegacy));
+        if (mergedPending.length) setPendingQueue(mergedPending);
         if (mp) setMemberProfile(JSON.parse(mp));
       } catch (e) {
         // ignore boot errors
@@ -352,6 +366,7 @@ useEffect(() => {
   adminPin,
   funds,
   tx,
+  pendingQueue,
   memberProfile,
   saveAll,
 ]);
@@ -422,6 +437,90 @@ const loadTransactions = useCallback(
   },
   [apiBaseUrl, churchId]
 );
+
+  const makeManualTx = useCallback(
+    ({ payload, data, overrideId }) => {
+      const fund = funds.find((f) => f.id === payload.fundId);
+      return {
+        id: String(overrideId || data?.transactionId || uid()),
+        createdAt: data?.createdAt || new Date().toISOString(),
+        fundId: payload.fundId,
+        fundName: fund?.name || payload.fundName || "Contribution",
+        amount: Number(payload.amount || 0),
+        reference: data?.reference || payload.reference || `CHUR-${uid()}`,
+        channel: payload.channel || "member",
+        memberName: payload.memberName || "",
+        memberPhone: payload.memberPhone || "",
+        manual: true,
+        instructions: data?.instructions || "",
+        status: data?.status || "MANUAL",
+      };
+    },
+    [funds]
+  );
+
+  const enqueuePending = useCallback(
+    (payload) => {
+      const entry = { id: uid(), payload, createdAt: new Date().toISOString() };
+      setPendingQueue((prev) => {
+        const next = [entry, ...prev];
+        saveAll({ pendingQueue: next });
+        return next;
+      });
+      return entry;
+    },
+    [saveAll]
+  );
+
+  const retryPending = useCallback(async () => {
+    if (!pendingQueue.length || !apiBaseUrl) return { retried: 0, success: 0, remaining: pendingQueue.length };
+
+    const remaining = [];
+    const newTx = [];
+    let success = 0;
+
+    for (const item of pendingQueue) {
+      try {
+        const data = await apiJSON(apiBaseUrl, `/payment-intents`, {
+          method: "POST",
+          body: JSON.stringify(item.payload),
+        });
+
+        if (data?.status === "MANUAL") {
+          newTx.push(makeManualTx({ payload: item.payload, data, overrideId: item.id }));
+        }
+        success++;
+      } catch (e) {
+        remaining.push(item);
+      }
+    }
+
+    if (newTx.length) {
+      setTx((prev) => {
+        const existingMap = new Map(prev.map((p) => [p.id, p]));
+        newTx.forEach((t) => existingMap.set(t.id, t));
+        return Array.from(existingMap.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      });
+    }
+
+    if (remaining.length !== pendingQueue.length) {
+      setPendingQueue(remaining);
+      saveAll({ pendingQueue: remaining });
+    }
+
+    return { retried: pendingQueue.length, success, remaining: remaining.length };
+  }, [pendingQueue, apiBaseUrl, makeManualTx, saveAll]);
+
+  useEffect(() => {
+    retryPending();
+  }, [retryPending]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") retryPending();
+    });
+    return () => sub?.remove();
+  }, [retryPending]);
 
 useEffect(() => {
   if (booting) return;
@@ -517,6 +616,8 @@ useEffect(() => {
                   {...navProps}
                   churchName={churchName}
                   serverTotals={serverTotals}
+                  pendingQueue={pendingQueue}
+                  onRetryPending={retryPending}
                 />
               )}
             </Stack.Screen>
@@ -543,6 +644,10 @@ useEffect(() => {
                   memberProfile={memberProfile}
                   apiBaseUrl={apiBaseUrl}
                   churchId={churchId}
+                  pendingQueue={pendingQueue}
+                  onEnqueuePending={enqueuePending}
+                  onRetryPending={retryPending}
+                  makeManualTx={makeManualTx}
                   onAfterPayment={loadTotals}
                   onCreateTx={(t) => {
                     setTx((prev) => [t, ...prev]);
@@ -559,6 +664,7 @@ useEffect(() => {
                   churchName={churchName}
                   demoMode={demoMode}
                   tx={tx}
+                  onRetryPending={retryPending}
                 />
               )}
             </Stack.Screen>
@@ -862,9 +968,27 @@ function MemberGate({ churchName, profile, setProfile, onSuccess }) {
 // MEMBER APP SCREENS
 // ===========================
 
-function MemberHome({ navigation, churchName, serverTotals }) {
+function MemberHome({ navigation, churchName, serverTotals, pendingQueue = [], onRetryPending }) {
+  const [retrying, setRetrying] = useState(false);
   const grand = Number(serverTotals?.grandTotal || 0);
   const top = (serverTotals?.totals || []).slice().sort((a, b) => Number(b.total) - Number(a.total))[0];
+
+  const retryNow = async () => {
+    if (retrying || !onRetryPending) return;
+    setRetrying(true);
+    try {
+      const result = await onRetryPending();
+      if (result?.success) {
+        Alert.alert("Retried", `Sent ${result.success} pending contribution(s).`);
+      } else {
+        Alert.alert("Pending", "No pending contributions to retry.");
+      }
+    } catch (e) {
+      Alert.alert("Retry failed", e?.message || "Could not retry pending contributions.");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   return (
     <SafeAreaView style={s.safe}>
@@ -904,6 +1028,16 @@ function MemberHome({ navigation, churchName, serverTotals }) {
             <Text style={s.btnText}>My Giving</Text>
           </Pressable>
         </View>
+
+        {pendingQueue?.length ? (
+          <View style={[s.card, { borderColor: BRAND.colors.teal, borderWidth: 1 }]}>  
+            <Text style={s.sectionTitle}>Pending contributions</Text>
+            <Text style={s.p}>{pendingQueue.length} saved offline. We’ll retry automatically when you return.</Text>
+            <Pressable onPress={retryNow} style={[s.btn, { marginTop: 10 }]}> 
+              {retrying ? <ActivityIndicator color={BRAND.colors.text} /> : <Text style={s.btnText}>Retry pending</Text>}
+            </Pressable>
+          </View>
+        ) : null}
 
         <View style={s.card}>
           <Text style={s.sectionTitle}>Why we give</Text>
@@ -1133,6 +1267,10 @@ function ContributeScreen({
   onCreateTx,
   apiBaseUrl,
   churchId,
+  pendingQueue,
+  onEnqueuePending,
+  onRetryPending,
+  makeManualTx,
   onAfterPayment,
 }) {
   const preFund = route?.params?.fund;
@@ -1208,21 +1346,21 @@ function ContributeScreen({
 
     const apiReady = !!apiBaseUrl && !!churchId;
     const clientRef = reference.trim() || `CHUR-${uid()}`;
+    const payload = {
+      churchId,
+      fundId: selectedFund.id,
+      amount: Number(amountNum.toFixed(2)),
+      memberName: memberProfile?.name || "",
+      memberPhone: memberProfile?.phone || "",
+      channel,
+      reference: clientRef,
+    };
 
     try {
       setSubmitting(true);
 
       // DEMO + SERVER: write to Postgres via /simulate-payment
       if (demoMode && apiReady) {
-        const payload = {
-          churchId,
-          fundId: selectedFund.id,
-          amount: Number(amountNum.toFixed(2)),
-          memberName: memberProfile?.name || "",
-          memberPhone: memberProfile?.phone || "",
-          channel,
-        };
-
         const data = await apiJSON(apiBaseUrl, `/simulate-payment`, {
           method: "POST",
           body: JSON.stringify(payload),
@@ -1241,6 +1379,49 @@ function ContributeScreen({
           memberName: payload.memberName,
           memberPhone: payload.memberPhone,
           demo: 1,
+          behalfName: behalfName || "",
+          behalfPhone: behalfPhone || "",
+          behalfNote: behalfNote || "",
+        };
+
+        onCreateTx(t);
+        if (typeof onAfterPayment === "function") onAfterPayment();
+        return;
+      }
+
+      // SERVER: real payment intent
+      if (apiReady) {
+        const data = await apiJSON(apiBaseUrl, `/payment-intents`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+
+        if (data?.status === "MANUAL") {
+          const txItem = makeManualTx({ payload, data });
+          onCreateTx(txItem);
+          if (typeof onAfterPayment === "function") onAfterPayment();
+          return;
+        }
+
+        if (data?.checkoutUrl) {
+          Alert.alert("Complete payment", "Opening PayFast checkout.", [
+            { text: "OK", onPress: () => Linking.openURL(data.checkoutUrl) },
+          ]);
+          return;
+        }
+
+        // Fallback: record locally
+        const t = {
+          id: uid(),
+          createdAt: new Date().toISOString(),
+          fundId: selectedFund.id,
+          fundName: selectedFund.name,
+          amount: Number(amountNum.toFixed(2)),
+          reference: clientRef,
+          channel,
+          memberName: memberProfile?.name || "",
+          memberPhone: memberProfile?.phone || "",
+          demo: demoMode ? 1 : 0,
           behalfName: behalfName || "",
           behalfPhone: behalfPhone || "",
           behalfNote: behalfNote || "",
@@ -1270,7 +1451,27 @@ function ContributeScreen({
 
       onCreateTx(t);
     } catch (e) {
-      Alert.alert("Payment failed", e?.message || "Could not record payment.");
+      if (apiReady && typeof onEnqueuePending === "function") {
+        const entry = onEnqueuePending(payload);
+        const pendingRef = `PENDING-${entry.id.slice(0, 6).toUpperCase()}`;
+        const pendingTx = {
+          id: entry.id,
+          createdAt: new Date().toISOString(),
+          fundId: selectedFund.id,
+          fundName: selectedFund.name,
+          amount: Number(amountNum.toFixed(2)),
+          reference: pendingRef,
+          channel,
+          memberName: memberProfile?.name || "",
+          memberPhone: memberProfile?.phone || "",
+          pending: true,
+          status: "PENDING",
+        };
+        onCreateTx(pendingTx);
+        Alert.alert("Saved pending", "We’ll retry when you’re back online. You can also retry from Home.");
+      } else {
+        Alert.alert("Payment failed", e?.message || "Could not record payment.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1461,9 +1662,11 @@ function ContributeScreen({
     </SafeAreaView>
   );
 }
-function ReceiptScreen({ route, navigation, churchName, demoMode, tx }) {
+function ReceiptScreen({ route, navigation, churchName, demoMode, tx, onRetryPending }) {
   const id = route?.params?.id;
   const item = tx.find((t) => t.id === id);
+  const isManual = item?.manual || !!item?.instructions;
+  const isPending = item?.pending || item?.status === "PENDING";
 
   const shareReceipt = async () => {
     if (!item) return;
@@ -1537,6 +1740,27 @@ function ReceiptScreen({ route, navigation, churchName, demoMode, tx }) {
             <Text style={s.btnText}>Copy summary</Text>
           </Pressable>
         </View>
+
+        {isManual && (
+          <View style={s.card}>
+            <Text style={s.sectionTitle}>Manual Payment Instructions</Text>
+            <Text style={s.p}>
+              {item.instructions || "This contribution is recorded as pending manual payment. Please follow the treasurer's guidance and use the provided reference when paying."}
+            </Text>
+          </View>
+        )}
+
+        {isPending && (
+          <View style={s.card}>
+            <Text style={s.sectionTitle}>Pending sync</Text>
+            <Text style={s.p}>We saved this contribution and will resend when online.</Text>
+            {onRetryPending ? (
+              <Pressable onPress={onRetryPending} style={[s.btn, { marginTop: 10 }]}>
+                <Text style={s.btnText}>Retry now</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
 
         <View style={s.row}>
           <NavBtn title="Home" onPress={() => navigation.navigate("MemberHome")} />
@@ -1869,14 +2093,7 @@ function AdminFunds({ funds, setFunds, apiBaseUrl, churchId, onChanged }) {
   };
 
   const remove = (id) => {
-    Alert.alert("Remove fund", "Remove this fund from the list?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: () => setFunds((prev) => prev.filter((f) => f.id !== id)),
-      },
-    ]);
+    setFunds((prev) => prev.filter((f) => f.id !== id));
   };
 
   const addFund = async () => {
@@ -1899,6 +2116,7 @@ function AdminFunds({ funds, setFunds, apiBaseUrl, churchId, onChanged }) {
   };
 
   const activeCount = funds.filter((f) => f.active).length;
+  const totalCount = funds.length;
 
   return (
     <SafeAreaView style={s.safe}>
@@ -1907,6 +2125,8 @@ function AdminFunds({ funds, setFunds, apiBaseUrl, churchId, onChanged }) {
         <View style={s.card}>
           <Text style={s.sectionTitle}>Funds</Text>
           <Text style={s.p}>Enable/disable purposes shown to members and POS.</Text>
+
+          <Text style={[s.muted, { marginTop: 10 }]}>Active funds: {activeCount} • Total funds: {totalCount}</Text>
 
           <View style={{ flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
             <View style={s.statTileWide}>
@@ -1976,6 +2196,10 @@ function FundCard({ fund, onToggle, onRename, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(fund.name);
 
+  useEffect(() => {
+    setName(fund.name);
+  }, [fund.name]);
+
   const save = () => {
     const next = name.trim();
     if (!next) return;
@@ -1983,14 +2207,29 @@ function FundCard({ fund, onToggle, onRename, onRemove }) {
     setEditing(false);
   };
 
+  const handleToggle = () => {
+    if (fund.active) {
+      Alert.alert("Disable fund", "Hide this fund from members?", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Disable", style: "destructive", onPress: () => onToggle() },
+      ]);
+    } else {
+      onToggle();
+    }
+  };
+
+  const handleRemove = () => {
+    Alert.alert("Remove fund", "Remove this fund from the list?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: onRemove },
+    ]);
+  };
+
   return (
-    <Pressable
-      onPress={() => setEditing(true)}
-      style={[s.fundManageCard, fund.active && s.fundManageCardActive]}
-    >
+    <View style={[s.fundCardPremium, !fund.active && s.fundCardMuted]}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <View style={[s.iconBadge, fund.active ? s.iconBadgeOn : s.iconBadgeOff]}>
-          <Ionicons name={fund.active ? "checkmark" : "pause"} size={16} color={BRAND.colors.text} />
+          <Ionicons name={fund.active ? "checkbox" : "remove-circle-outline"} size={18} color={BRAND.colors.text} />
         </View>
 
         <View style={{ flex: 1 }}>
@@ -2004,41 +2243,47 @@ function FundCard({ fund, onToggle, onRename, onRemove }) {
               autoFocus
             />
           ) : (
-            <>
-              <Text style={s.fundManageTitle}>{fund.name}</Text>
-              <Text style={s.fundManageSub}>{fund.active ? "Active (visible)" : "Inactive (hidden)"}</Text>
-            </>
+            <Text style={s.fundCardTitle}>{fund.name}</Text>
           )}
+          <Text style={[s.fundCardSub, !fund.active && { opacity: 0.8 }]}>Channel • {fund.code || "--"}</Text>
+        </View>
+
+        <View style={[s.statusChip, fund.active ? s.statusChipOn : s.statusChipOff]}>
+          <Text style={[s.statusChipText, !fund.active && { opacity: 0.8 }]}>{fund.active ? "Active" : "Inactive"}</Text>
         </View>
       </View>
 
-      <View style={{ flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-        {editing ? (
+      <View style={[s.actionRow, { marginTop: 12 }]}>
+        {!editing ? (
           <>
-            <Pressable onPress={save} style={[s.tinyBtn, s.tinyBtnPrimary]}>
-              <Ionicons name="save" size={16} color={BRAND.colors.text} />
-              <Text style={s.tinyBtnText}>Save</Text>
+            <Pressable onPress={() => setEditing(true)} style={s.actionBtn}> 
+              <Text style={s.actionBtnText}>Edit name</Text>
             </Pressable>
-            <Pressable onPress={() => setEditing(false)} style={s.tinyBtn}>
-              <Ionicons name="close" size={16} color={BRAND.colors.text} />
-              <Text style={s.tinyBtnText}>Cancel</Text>
+            <Pressable onPress={handleToggle} style={[s.actionBtn, fund.active ? s.actionBtnWarn : s.actionBtnPrimary]}>
+              <Text style={s.actionBtnText}>{fund.active ? "Disable" : "Enable"}</Text>
+            </Pressable>
+            <Pressable onPress={handleRemove} style={[s.actionBtn, s.actionBtnDanger]}>
+              <Text style={s.actionBtnText}>Remove</Text>
             </Pressable>
           </>
         ) : (
-          <Pressable onPress={onToggle} style={[s.tinyBtn, fund.active && s.tinyBtnPrimary]}>
-            <Ionicons name={fund.active ? "eye-off" : "eye"} size={16} color={BRAND.colors.text} />
-            <Text style={s.tinyBtnText}>{fund.active ? "Disable" : "Enable"}</Text>
-          </Pressable>
+          <>
+            <Pressable onPress={save} style={[s.actionBtn, s.actionBtnPrimary]}>
+              <Text style={s.actionBtnText}>Save</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setEditing(false);
+                setName(fund.name);
+              }}
+              style={s.actionBtn}
+            >
+              <Text style={s.actionBtnText}>Cancel</Text>
+            </Pressable>
+          </>
         )}
-
-        <Pressable onPress={onRemove} style={[s.tinyBtn, s.tinyBtnDanger]}>
-          <Ionicons name="trash" size={16} color={BRAND.colors.text} />
-          <Text style={s.tinyBtnText}>Remove</Text>
-        </Pressable>
       </View>
-
-      {!editing && <Text style={[s.muted, { marginTop: 10 }]}>Tap card to edit name.</Text>}
-    </Pressable>
+    </View>
   );
 }
 
@@ -2437,6 +2682,8 @@ function AdminReports({ churchName, tx, totals }) {
       .sort((a, b) => b.total - a.total);
   }, [txInRange]);
 
+  const totalInRangeAmount = Math.max(0.01, byFundRows.reduce((s, r) => s + Number(r.total || 0), 0));
+
   const exportLeadershipPackPDF = async () => {
     try {
       setExportingPdf(true);
@@ -2646,7 +2893,6 @@ function AdminReports({ churchName, tx, totals }) {
   };
 
   const trendMax = Math.max(1, ...monthlyTrend.map((m) => m.total));
-  const max = Math.max(1, ...byFundRows.map((r) => r.total));
 
   return (
     <SafeAreaView style={s.safe}>
@@ -2745,11 +2991,11 @@ function AdminReports({ churchName, tx, totals }) {
         {/* MONTHLY TREND */}
         <View style={s.card}>
           <Text style={s.sectionTitle}>Monthly trend</Text>
-          <Text style={s.p}>Last 6 months (device data).</Text>
+          <Text style={s.p}>Last 6 months (filtered range).</Text>
 
           <View style={{ flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
             {monthlyTrend.map((m) => {
-              const pct = Math.max(0.06, m.total / trendMax);
+              const pct = Math.max(0.08, m.total / trendMax);
               const label = m.date.toLocaleString(undefined, { month: "short" });
               const year = String(m.date.getFullYear());
 
@@ -2769,7 +3015,7 @@ function AdminReports({ churchName, tx, totals }) {
         {/* TOP DONORS */}
         <View style={s.card}>
           <Text style={s.sectionTitle}>Top donors</Text>
-          <Text style={s.p}>Based on names captured on receipts (device data).</Text>
+          <Text style={s.p}>Based on names captured on receipts (filtered range).</Text>
 
           {topDonors.length === 0 ? (
             <Text style={[s.muted, { marginTop: 10 }]}>No donor names captured yet.</Text>
@@ -2799,21 +3045,22 @@ function AdminReports({ churchName, tx, totals }) {
 
         {/* BREAKDOWN */}
         <View style={s.card}>
-          <Text style={s.sectionTitle}>Breakdown by fund</Text>
-          <Text style={s.p}>Simple visual (device data).</Text>
+          <Text style={s.sectionTitle}>Top funds breakdown</Text>
+          <Text style={s.p}>Share of filtered range.</Text>
 
           {byFundRows.length === 0 ? (
             <Text style={[s.muted, { marginTop: 10 }]}>No records yet.</Text>
           ) : (
             <View style={{ marginTop: 12, gap: 10 }}>
               {byFundRows.slice(0, 8).map((r) => {
-                const pct = Math.max(0.06, r.total / max);
+                const pct = Math.max(0.04, Number(r.total || 0) / totalInRangeAmount);
+                const pctText = `${Math.round(pct * 100)}%`;
                 return (
                   <View key={r.name} style={s.barRow}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                       <Ionicons name="layers" size={16} color={BRAND.colors.text} />
                       <Text style={s.barName} numberOfLines={1}>{r.name}</Text>
-                      <Text style={s.barValue}>{money(r.total)}</Text>
+                      <Text style={s.barValue}>{money(r.total)} • {pctText}</Text>
                     </View>
                     <View style={s.barTrack}>
                       <View style={[s.barFill, { width: `${Math.round(pct * 100)}%` }]} />
@@ -3340,27 +3587,31 @@ const s = {
     fontSize: 11,
   },
 
-  // Fund management cards
-  fundManageCard: {
-    padding: 14,
+  // Fund management cards (premium layout)
+  fundCardPremium: {
+    padding: 16,
     borderRadius: 18,
     backgroundColor: "rgba(248,250,252,0.06)",
     borderWidth: 1,
     borderColor: "rgba(248,250,252,0.12)",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
   },
-  fundManageCardActive: {
-    backgroundColor: "rgba(34,211,238,0.10)",
-    borderColor: "rgba(34,211,238,0.35)",
+  fundCardMuted: {
+    opacity: 0.7,
   },
-  fundManageTitle: {
+  fundCardTitle: {
     color: BRAND.colors.text,
     fontWeight: "900",
-    fontSize: 15,
+    fontSize: 16,
+    letterSpacing: 0.2,
   },
-  fundManageSub: {
+  fundCardSub: {
     color: BRAND.colors.textMuted,
-    marginTop: 6,
     fontSize: 12,
+    marginTop: 4,
   },
   iconBadge: {
     width: 28,
@@ -3378,23 +3629,55 @@ const s = {
     backgroundColor: "rgba(248,250,252,0.08)",
     borderColor: "rgba(248,250,252,0.14)",
   },
-  tinyBtnPrimary: {
+  statusChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusChipOn: {
+    backgroundColor: "rgba(52,211,153,0.18)",
+    borderColor: "rgba(52,211,153,0.35)",
+  },
+  statusChipOff: {
+    backgroundColor: "rgba(248,250,252,0.04)",
+    borderColor: "rgba(248,250,252,0.10)",
+  },
+  statusChipText: {
+    color: BRAND.colors.text,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  actionRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  actionBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(248,250,252,0.14)",
+    backgroundColor: "rgba(248,250,252,0.05)",
+  },
+  actionBtnPrimary: {
     backgroundColor: BRAND.colors.tealSoft,
     borderColor: "rgba(34,211,238,0.45)",
   },
-  tinyBtnDanger: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderColor: "rgba(248,113,113,0.35)",
-    backgroundColor: "rgba(248,113,113,0.18)",
+  actionBtnWarn: {
+    backgroundColor: "rgba(251,191,36,0.18)",
+    borderColor: "rgba(251,191,36,0.35)",
   },
-  tinyBtnText: {
+  actionBtnDanger: {
+    backgroundColor: "rgba(248,113,113,0.18)",
+    borderColor: "rgba(248,113,113,0.35)",
+  },
+  actionBtnText: {
     color: BRAND.colors.text,
     fontWeight: "900",
+    fontSize: 13,
+    letterSpacing: 0.2,
   },
 
   // Transaction cards

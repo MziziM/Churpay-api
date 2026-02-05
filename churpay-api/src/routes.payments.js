@@ -47,7 +47,7 @@ async function ensurePaymentIntentsTable() {
 }
 
 function normalizeBaseUrl() {
-  const base = process.env.BASE_URL || process.env.PUBLIC_BASE_URL;
+  const base = process.env.PUBLIC_BASE_URL || process.env.BASE_URL;
   if (!base) return null;
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
