@@ -46,10 +46,11 @@ router.post(
       const parseForm = (raw) => Object.fromEntries(new URLSearchParams(raw));
       const params = parseForm(rawBody);
 
-      // Optional build marker to confirm deployed code is current
-      if (debug) {
-        console.log("[itn] build marker", "v2026-02-05-0900");
-      }
+      // Always log build marker and passphrase presence to confirm deployed code + env
+      console.log("[itn] build marker", "v2026-02-05-0900", {
+        debug,
+        passphrasePresent: Boolean(passphrase),
+      });
 
       const receivedSig = String(params.signature || "").trim();
       if (!receivedSig) return res.status(400).send("missing signature");
@@ -76,17 +77,16 @@ router.post(
       const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
       const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
 
-      if (debug) {
-        const maskedBase = passphrase
-          ? sigBase.replace(encodePF(passphrase), "***")
-          : sigBase;
-        console.log("[itn] parsed keys", keys);
-        console.log("[itn] sig debug", {
-          submitted: receivedSig,
-          computed: computedSig,
-          base: maskedBase,
-        });
-      }
+      const maskedBase = passphrase
+        ? sigBase.replace(encodePF(passphrase), "***")
+        : sigBase;
+
+      console.log("[itn] parsed keys", keys);
+      console.log("[itn] sig debug", {
+        submitted: receivedSig,
+        computed: computedSig,
+        base: maskedBase,
+      });
 
       if (!match) {
         console.warn("[itn] invalid signature", { m_payment_id: params.m_payment_id });
