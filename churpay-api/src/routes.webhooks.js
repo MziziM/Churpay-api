@@ -43,9 +43,9 @@ router.post(
       }
 
       // Decode values for business logic
+      let params = {};
       const parseForm = (raw) => Object.fromEntries(new URLSearchParams(raw));
-      const parsed = parseForm(rawBody);
-      const params = parsed; // ensure params is always defined for downstream logic
+      params = parseForm(rawBody); // ensure params is always defined for downstream logic
 
       // Rebuild signature using raw pairs (no decode/re-encode)
       const rawPairs = rawBody
@@ -70,8 +70,8 @@ router.post(
       sigPairs.sort((a, b) => a[0].localeCompare(b[0]));
 
       let sigBase = sigPairs.map(([k, v]) => `${k}=${v}`).join("&");
+      const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
       if (passphrase) {
-        const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
         sigBase += `&passphrase=${encodePF(passphrase)}`;
       }
 
@@ -80,10 +80,7 @@ router.post(
 
       if (debug) {
         const maskedBase = passphrase
-          ? sigBase.replace(
-              encodeURIComponent(passphrase).replace(/%20/g, "+"),
-              "***"
-            )
+          ? sigBase.replace(encodePF(passphrase), "***")
           : sigBase;
         console.log("[itn] sig debug", {
           submitted: receivedSig,
