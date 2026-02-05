@@ -42,46 +42,47 @@ router.post(
         });
       }
 
-      // Decode values for business logic
-      let params = {};
+      // Decode values for business logic (always define params)
       const parseForm = (raw) => Object.fromEntries(new URLSearchParams(raw));
-      params = parseForm(rawBody); // ensure params is always defined for downstream logic
+      const params = parseForm(rawBody);
 
-      // Rebuild signature using raw pairs (no decode/re-encode)
-      const rawPairs = rawBody
-        .split("&")
-        .filter(Boolean)
-        .map((pair) => {
-          const idx = pair.indexOf("=");
-          return idx === -1
-            ? [pair, ""]
-            : [pair.slice(0, idx), pair.slice(idx + 1)];
-        });
+      // Optional build marker to confirm deployed code is current
+      if (debug) {
+        console.log("[itn] build marker", "v2026-02-05-0900");
+      }
 
-      const receivedSig = params.signature;
+      const receivedSig = String(params.signature || "").trim();
       if (!receivedSig) return res.status(400).send("missing signature");
 
-      const sigPairs = rawPairs.filter(([key]) => key !== "signature");
-
-      if (debug) {
-        console.log("[itn] parsed keys", sigPairs.map(([k]) => k));
-      }
-
-      sigPairs.sort((a, b) => a[0].localeCompare(b[0]));
-
-      let sigBase = sigPairs.map(([k, v]) => `${k}=${v}`).join("&");
+      // Rebuild signature base the way PayFast expects
       const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
-      if (passphrase) {
-        sigBase += `&passphrase=${encodePF(passphrase)}`;
+
+      const keys = Object.keys(params)
+        .filter((k) => k !== "signature")
+        .sort((a, b) => a.localeCompare(b));
+
+      const sigParts = [];
+      for (const k of keys) {
+        const v = params[k];
+        if (v === undefined || v === null) continue;
+        const s = String(v);
+        if (s === "") continue; // skip empty values per PayFast rules
+        sigParts.push(`${k}=${encodePF(s)}`);
       }
 
+      if (passphrase) {
+        sigParts.push(`passphrase=${encodePF(passphrase)}`);
+      }
+
+      const sigBase = sigParts.join("&");
       const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
-      const match = computedSig.toLowerCase() === String(receivedSig).toLowerCase();
+      const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
 
       if (debug) {
         const maskedBase = passphrase
           ? sigBase.replace(encodePF(passphrase), "***")
           : sigBase;
+        console.log("[itn] parsed keys", keys);
         console.log("[itn] sig debug", {
           submitted: receivedSig,
           computed: computedSig,
