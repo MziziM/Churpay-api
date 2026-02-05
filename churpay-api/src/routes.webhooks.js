@@ -43,7 +43,9 @@ router.post(
       }
 
       // Decode values for business logic
-      const params = Object.fromEntries(new URLSearchParams(rawBody));
+      const parseForm = (raw) => Object.fromEntries(new URLSearchParams(raw));
+      const parsed = parseForm(rawBody);
+      const params = parsed; // ensure params is always defined for downstream logic
 
       // Rebuild signature using raw pairs (no decode/re-encode)
       const rawPairs = rawBody
