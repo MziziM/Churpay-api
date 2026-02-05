@@ -1,10 +1,9 @@
 import express from "express";
 import crypto from "node:crypto";
-import querystring from "querystring";
 import { db } from "./db.js";
 
 const router = express.Router();
-const BUILD = "v2026-02-05-0945";
+const BUILD = "v2026-02-05-1105";
 
 // PayFast sends application/x-www-form-urlencoded POST (ITN)
 // Debug helper: PayFast will POST ITN, but this helps confirm the route is mounted.
@@ -60,34 +59,32 @@ router.post(
       const receivedSig = String(params.signature || "").trim();
       if (!receivedSig) return res.status(400).send("missing signature");
 
-      // Rebuild signature excluding empty fields (PayFast omits empties in ITN signature)
-      const parsedSig = querystring.parse(rawBody);
-      const receivedSig = String(parsedSig.signature || "").trim();
-      delete parsedSig.signature;
+      // Build signature base exactly as PayFast sent it (raw form body):
+      // remove signature=, keep order/encoding, append passphrase only if present.
+      const parts = rawBody.split("&").filter(Boolean);
+      const unsignedParts = parts.filter((p) => !p.startsWith("signature="));
+      let sigBase = unsignedParts.join("&");
 
-      const enc = (v) => encodeURIComponent(String(v)).replace(/%20/g, "+");
-
-      const keys = Object.keys(parsedSig)
-        .filter((k) => parsedSig[k] !== undefined && parsedSig[k] !== null && String(parsedSig[k]) !== "")
-        .sort((a, b) => a.localeCompare(b));
-
-      let sigBase = keys.map((k) => `${k}=${enc(parsedSig[k])}`).join("&");
-
-      const trimmedPass = passphrase.trim();
+      const trimmedPass = String(process.env.PAYFAST_PASSPHRASE || "").trim();
       if (trimmedPass) {
-        sigBase += sigBase ? `&passphrase=${enc(trimmedPass)}` : `passphrase=${enc(trimmedPass)}`;
+        const passEnc = encodeURIComponent(trimmedPass).replace(/%20/g, "+");
+        sigBase += `&passphrase=${passEnc}`;
       }
 
       const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
-      const match = receivedSig && computedSig.toLowerCase() === receivedSig.toLowerCase();
+      const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
 
-      const maskedBase = trimmedPass ? sigBase.replace(enc(trimmedPass), "***") : sigBase;
+      const masked = trimmedPass
+        ? sigBase.replace(encodeURIComponent(trimmedPass).replace(/%20/g, "+"), "***")
+        : sigBase;
 
-      console.log("[itn] sig debug", {
-        submitted: receivedSig,
-        computed: computedSig,
-        base: maskedBase,
-      });
+      if (debug) {
+        console.log("[itn] sig debug", {
+          submitted: receivedSig,
+          computed: computedSig,
+          base: masked,
+        });
+      }
 
       if (!match) {
         console.warn("[itn] invalid signature", { m_payment_id: params.m_payment_id });
