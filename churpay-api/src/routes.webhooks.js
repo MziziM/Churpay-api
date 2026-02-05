@@ -1,5 +1,6 @@
 import express from "express";
 import crypto from "node:crypto";
+import querystring from "querystring";
 import { db } from "./db.js";
 
 const router = express.Router();
@@ -59,28 +60,28 @@ router.post(
       const receivedSig = String(params.signature || "").trim();
       if (!receivedSig) return res.status(400).send("missing signature");
 
-      // PayFast ITN signature must be generated from the exact raw body as received,
-      // excluding the signature field. Avoid re-encoding/sorting which can change the string.
-      const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
+      // Rebuild signature excluding empty fields (PayFast omits empties in ITN signature)
+      const parsedSig = querystring.parse(rawBody);
+      const receivedSig = String(parsedSig.signature || "").trim();
+      delete parsedSig.signature;
 
-      // Remove signature=... regardless of position; keep all other pairs as-is.
-      let sigBase = rawBody
-        .replace(/(^|&)signature=[^&]*/i, "")
-        .replace(/^&+/, "")
-        .replace(/&+$/, "")
-        .replace(/&&+/g, "&");
+      const enc = (v) => encodeURIComponent(String(v)).replace(/%20/g, "+");
 
-      // Append passphrase only if configured in PayFast dashboard
-      if (passphrase) {
-        sigBase = sigBase
-          ? `${sigBase}&passphrase=${encodePF(passphrase)}`
-          : `passphrase=${encodePF(passphrase)}`;
+      const keys = Object.keys(parsedSig)
+        .filter((k) => parsedSig[k] !== undefined && parsedSig[k] !== null && String(parsedSig[k]) !== "")
+        .sort((a, b) => a.localeCompare(b));
+
+      let sigBase = keys.map((k) => `${k}=${enc(parsedSig[k])}`).join("&");
+
+      const trimmedPass = passphrase.trim();
+      if (trimmedPass) {
+        sigBase += sigBase ? `&passphrase=${enc(trimmedPass)}` : `passphrase=${enc(trimmedPass)}`;
       }
 
       const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
-      const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
+      const match = receivedSig && computedSig.toLowerCase() === receivedSig.toLowerCase();
 
-      const maskedBase = passphrase ? sigBase.replace(encodePF(passphrase), "***") : sigBase;
+      const maskedBase = trimmedPass ? sigBase.replace(enc(trimmedPass), "***") : sigBase;
 
       console.log("[itn] sig debug", {
         submitted: receivedSig,
