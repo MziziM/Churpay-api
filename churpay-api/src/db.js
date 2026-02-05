@@ -7,20 +7,30 @@ const ca = process.env.DATABASE_CA_CERT;
 
 if (!connectionString) throw new Error("DATABASE_URL is missing");
 
-// Option A: allow self-signed when PGSSLINSECURE=1 (or similar)
-// Option B: verify with provided CA when DATABASE_CA_CERT is set
+let dbUrl;
+try {
+  dbUrl = new URL(connectionString);
+} catch (e) {
+  throw new Error(`Invalid DATABASE_URL: ${e?.message || e}`);
+}
+
+// Explicitly build config to avoid sslmode quirks; honor PGSSLINSECURE or provided CA.
 const ssl = ca
   ? { ca, rejectUnauthorized: true }
   : insecure
   ? { rejectUnauthorized: false }
   : undefined;
 
-console.log("DB SSL:", { insecure, hasCA: !!ca });
-
 const pool = new Pool({
-  connectionString,
+  host: dbUrl.hostname,
+  port: dbUrl.port ? Number(dbUrl.port) : 5432,
+  user: decodeURIComponent(dbUrl.username || ""),
+  password: decodeURIComponent(dbUrl.password || ""),
+  database: (dbUrl.pathname || "/").replace(/^\//, ""),
   ssl,
 });
+
+console.log("DB SSL:", { insecure, hasCA: !!ca, host: dbUrl.hostname, port: dbUrl.port || 5432 });
 
 pool.on("error", (err) => {
   console.error("[db] unexpected pool error", err?.message || err, err?.stack);
