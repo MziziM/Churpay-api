@@ -14,7 +14,9 @@ export function payfastProcessUrl(mode) {
 // - append passphrase only if non-empty
 // - MD5 hex lowercase
 function pfEncode(v) {
-  return encodeURIComponent(String(v)).replace(/%20/g, "+");
+  return encodeURIComponent(String(v))
+    .replace(/[!'()*~]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())
+    .replace(/%20/g, "+");
 }
 
 function encodeFormQuery(params) {
