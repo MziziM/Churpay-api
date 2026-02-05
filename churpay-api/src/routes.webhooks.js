@@ -32,25 +32,32 @@ router.post(
         : "";
 
       if (debug) {
-        console.log("[itn] raw body", rawBody.slice(0, 2000));
+        console.log("[itn] raw body", {
+          raw: rawBody.slice(0, 2000),
+          contentType: req.headers["content-type"],
+          length: rawBody.length,
+        });
       }
 
-      // Parse as form-urlencoded without pre-modifying the body
-      const params = Object.fromEntries(new URLSearchParams(rawBody));
+      // Parse as form-urlencoded without pre-modifying the body and keep duplicates if any
+      const entries = [];
+      for (const [k, v] of new URLSearchParams(rawBody).entries()) {
+        if (k === "signature") continue;
+        entries.push([k, v]);
+      }
 
       if (debug) {
-        console.log("[itn] parsed keys", Object.keys(params));
+        console.log("[itn] parsed keys", entries.map(([k]) => k));
       }
 
-      const receivedSig = params.signature;
+      const receivedSig = new URLSearchParams(rawBody).get("signature");
       if (!receivedSig) return res.status(400).send("missing signature");
-      delete params.signature;
 
       const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
 
-      const pairs = Object.keys(params)
-        .sort()
-        .map((key) => `${encodePF(key)}=${encodePF(params[key] ?? "")}`);
+      const pairs = entries
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([key, value]) => `${encodePF(key)}=${encodePF(value ?? "")}`);
 
       let sigBase = pairs.join("&");
       if (passphrase) {
