@@ -6,33 +6,26 @@ export function payfastProcessUrl(mode) {
     : "https://sandbox.payfast.co.za/eng/process";
 }
 
-// PayFast signature rules (important):
-// - keys sorted alphabetically
-// - spaces encoded as '+'
-// - RFC3986 tweaks on encodeURIComponent
-// - ignore empty values
-function formEncodeComponent(value) {
-  return encodeURIComponent(String(value))
-    .replace(/%20/g, "+")
-    .replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+// PayFast redirect signature rules (strict):
+// - drop undefined/null/empty-string params
+// - sort keys A-Z
+// - encodeURIComponent then %20 -> '+'
+// - join k=v with '&'
+// - append passphrase only if non-empty
+// - MD5 hex lowercase
+function pfEncode(v) {
+  return encodeURIComponent(String(v)).replace(/%20/g, "+");
 }
 
 function encodeFormQuery(params) {
-  const entries = Object.entries(params)
-    .filter(([, v]) => v !== undefined && v !== null && String(v) !== "")
-    .map(([k, v]) => [String(k), String(v).trim()]);
-
-  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-
-  return entries.map(([k, v]) => `${k}=${formEncodeComponent(v)}`).join("&");
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
+  entries.sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([k, v]) => `${k}=${pfEncode(v)}`).join("&");
 }
 
 export function generateSignature(params, passphrase) {
   const base = encodeFormQuery(params);
-  const withPass = passphrase
-    ? `${base}&passphrase=${formEncodeComponent(passphrase)}`
-    : base;
-
+  const withPass = passphrase ? `${base}&passphrase=${pfEncode(passphrase)}` : base;
   return crypto.createHash("md5").update(withPass).digest("hex");
 }
 
@@ -69,6 +62,11 @@ export function buildPayfastRedirect({
 
   const signature = generateSignature(base, passphrase);
   const qs = encodeFormQuery({ ...base, signature });
+
+  if (String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1") {
+    const maskedBase = passphrase ? qs.replace(pfEncode(passphrase), "***") : qs;
+    console.log("[payfast] redirect sig", { base: maskedBase, signature });
+  }
 
   return `${payfastProcessUrl(mode)}?${qs}`;
 }
