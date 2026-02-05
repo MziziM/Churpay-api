@@ -2,27 +2,25 @@ import { Pool } from "pg";
 
 const connectionString = process.env.DATABASE_URL;
 const insecureFlag = (process.env.PGSSLINSECURE || "").toLowerCase();
-const insecure = insecureFlag === "1" || insecureFlag === "true" || insecureFlag === "yes" || insecureFlag === "on";
+const insecure = ["1", "true", "yes", "on"].includes(insecureFlag);
+const ca = process.env.DATABASE_CA_CERT;
 
 if (!connectionString) throw new Error("DATABASE_URL is missing");
 
-let sslmode = null;
-try {
-  const u = new URL(connectionString);
-  sslmode = u.searchParams.get("sslmode");
-} catch {
-  // ignore parse issues
-}
+// Option A: allow self-signed when PGSSLINSECURE=1 (or similar)
+// Option B: verify with provided CA when DATABASE_CA_CERT is set
+const ssl = ca
+  ? { ca, rejectUnauthorized: true }
+  : insecure
+  ? { rejectUnauthorized: false }
+  : undefined;
 
-const hasCA = !!process.env.DATABASE_CA_CERT;
-const shouldAllowSelfSigned = insecure || (!!sslmode && !hasCA);
+console.log("DB SSL:", { insecure, hasCA: !!ca });
 
 const pool = new Pool({
   connectionString,
-  ssl: shouldAllowSelfSigned ? { rejectUnauthorized: false } : undefined,
+  ssl,
 });
-
-console.log("DB SSL:", { sslmode, insecure: shouldAllowSelfSigned, hasCA });
 
 pool.on("error", (err) => {
   console.error("[db] unexpected pool error", err?.message || err, err?.stack);
