@@ -10,7 +10,12 @@ import { db } from "./db.js";
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+
+// Do not pre-parse PayFast ITN as urlencoded; that route captures raw body for signature.
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhooks/payfast/itn") return next();
+  return express.urlencoded({ extended: false })(req, res, next);
+});
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 app.get("/api/health", (_, res) => res.json({ ok: true }));

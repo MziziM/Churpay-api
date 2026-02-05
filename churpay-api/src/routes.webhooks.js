@@ -1,6 +1,6 @@
 import express from "express";
+import crypto from "node:crypto";
 import { db } from "./db.js";
-import { generateSignature } from "./payfast.js";
 
 const router = express.Router();
 
@@ -9,36 +9,58 @@ const router = express.Router();
 router.get("/payfast/itn", (req, res) => {
   res.status(200).json({ ok: true, route: "webhooks/payfast/itn" });
 });
+
+// Route-specific raw body capture to rebuild the signature exactly as PayFast expects.
 router.post(
   "/payfast/itn",
-  express.urlencoded({ extended: false }),
+  express.raw({ type: "application/x-www-form-urlencoded" }),
   async (req, res) => {
     try {
-      // PayFast passphrase may legitimately be empty (especially in sandbox).
-      // Treat only `undefined` as misconfiguration.
-      if (process.env.PAYFAST_PASSPHRASE === undefined) {
-        console.error("[itn] PAYFAST_PASSPHRASE env var is not set (can be empty string)");
-        return res.status(500).send("server misconfigured");
-      }
-      
-console.log("[itn] hit", {
-  m_payment_id: req.body?.m_payment_id,
-  payment_status: req.body?.payment_status,
-  pf_payment_id: req.body?.pf_payment_id,
-});
-      const data = { ...req.body };
+      const debug = String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1";
+      const passphrase = process.env.PAYFAST_PASSPHRASE || "";
 
-      const receivedSig = data.signature;
+      const rawBody = Buffer.isBuffer(req.body)
+        ? req.body.toString("utf8")
+        : typeof req.body === "string"
+        ? req.body
+        : "";
+
+      // Parse as form-urlencoded without pre-modifying the body
+      const params = Object.fromEntries(new URLSearchParams(rawBody));
+
+      const receivedSig = params.signature;
       if (!receivedSig) return res.status(400).send("missing signature");
-      delete data.signature;
+      delete params.signature;
 
-      const expectedSig = generateSignature(data, process.env.PAYFAST_PASSPHRASE);
-      if (receivedSig !== expectedSig) {
-        console.warn("[itn] invalid signature", { m_payment_id: data.m_payment_id });
+      const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
+
+      const pairs = Object.keys(params)
+        .sort()
+        .map((key) => `${encodePF(key)}=${encodePF(params[key] ?? "")}`);
+
+      let sigBase = pairs.join("&");
+      if (passphrase) {
+        sigBase += `&passphrase=${encodePF(passphrase)}`;
+      }
+
+      const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
+      const match = computedSig.toLowerCase() === String(receivedSig).toLowerCase();
+
+      if (debug) {
+        const maskedBase = passphrase ? sigBase.replace(encodePF(passphrase), "***") : sigBase;
+        console.log("[itn] sig debug", {
+          submitted: receivedSig,
+          computed: computedSig,
+          base: maskedBase,
+        });
+      }
+
+      if (!match) {
+        console.warn("[itn] invalid signature", { m_payment_id: params.m_payment_id });
         return res.status(400).send("invalid signature");
       }
 
-      const mPaymentId = String(data.m_payment_id || "").trim();
+      const mPaymentId = String(params.m_payment_id || "").trim();
       if (!mPaymentId) return res.status(400).send("missing m_payment_id");
 
       const intent = await db.oneOrNone(
@@ -47,7 +69,7 @@ console.log("[itn] hit", {
       );
       if (!intent) return res.status(404).send("unknown m_payment_id");
 
-      const grossRaw = data.amount_gross ?? data.amount ?? "0";
+      const grossRaw = params.amount_gross ?? params.amount ?? "0";
       const gross = Number(grossRaw);
       const expected = Number(intent.amount);
 
@@ -61,8 +83,8 @@ console.log("[itn] hit", {
         return res.status(400).send("amount mismatch");
       }
 
-      const status = String(data.payment_status || "").toUpperCase();
-      const pfPaymentId = (data.pf_payment_id && String(data.pf_payment_id)) || null;
+      const status = String(params.payment_status || "").toUpperCase();
+      const pfPaymentId = (params.pf_payment_id && String(params.pf_payment_id)) || null;
 
       if (status === "COMPLETE") {
         await db.tx(async (t) => {
