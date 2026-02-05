@@ -25,11 +25,14 @@ router.post(
       const debug = String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1";
       const passphrase = process.env.PAYFAST_PASSPHRASE || "";
 
-      const rawBody = Buffer.isBuffer(req.body)
-        ? req.body.toString("utf8")
-        : typeof req.body === "string"
-        ? req.body
-        : "";
+      const rawBody =
+        typeof req.rawBody === "string"
+          ? req.rawBody
+          : Buffer.isBuffer(req.body)
+          ? req.body.toString("utf8")
+          : typeof req.body === "string"
+          ? req.body
+          : "";
 
       if (debug) {
         console.log("[itn] raw body", {
@@ -39,28 +42,37 @@ router.post(
         });
       }
 
-      // Parse as form-urlencoded without pre-modifying the body and keep duplicates if any
-      const entries = [];
-      for (const [k, v] of new URLSearchParams(rawBody).entries()) {
-        if (k === "signature") continue;
-        entries.push([k, v]);
+      // Decode values for business logic
+      const params = {};
+      for (const [k, v] of new URLSearchParams(rawBody)) {
+        params[k] = v;
       }
 
-      if (debug) {
-        console.log("[itn] parsed keys", entries.map(([k]) => k));
-      }
+      // Rebuild signature using raw pairs (no decode/re-encode)
+      const rawPairs = rawBody
+        .split("&")
+        .filter(Boolean)
+        .map((pair) => {
+          const idx = pair.indexOf("=");
+          return idx === -1
+            ? [pair, ""]
+            : [pair.slice(0, idx), pair.slice(idx + 1)];
+        });
 
-      const receivedSig = new URLSearchParams(rawBody).get("signature");
+      const receivedSig = params.signature;
       if (!receivedSig) return res.status(400).send("missing signature");
 
-      const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
+      const sigPairs = rawPairs.filter(([key]) => key !== "signature");
 
-      const pairs = entries
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([key, value]) => `${encodePF(key)}=${encodePF(value ?? "")}`);
+      if (debug) {
+        console.log("[itn] parsed keys", sigPairs.map(([k]) => k));
+      }
 
-      let sigBase = pairs.join("&");
+      sigPairs.sort((a, b) => a[0].localeCompare(b[0]));
+
+      let sigBase = sigPairs.map(([k, v]) => `${k}=${v}`).join("&");
       if (passphrase) {
+        const encodePF = (v) => encodeURIComponent(v).replace(/%20/g, "+");
         sigBase += `&passphrase=${encodePF(passphrase)}`;
       }
 
@@ -68,7 +80,12 @@ router.post(
       const match = computedSig.toLowerCase() === String(receivedSig).toLowerCase();
 
       if (debug) {
-        const maskedBase = passphrase ? sigBase.replace(encodePF(passphrase), "***") : sigBase;
+        const maskedBase = passphrase
+          ? sigBase.replace(
+              encodeURIComponent(passphrase).replace(/%20/g, "+"),
+              "***"
+            )
+          : sigBase;
         console.log("[itn] sig debug", {
           submitted: receivedSig,
           computed: computedSig,
