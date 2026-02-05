@@ -51,7 +51,7 @@ router.post(
       const params = parseForm(rawBody);
 
       // Always log build marker and passphrase presence to confirm deployed code + env
-      console.log("[itn] build marker", "v2026-02-05-0900", {
+      console.log("[itn] build marker", BUILD, {
         debug,
         passphrasePresent: Boolean(passphrase),
       });
