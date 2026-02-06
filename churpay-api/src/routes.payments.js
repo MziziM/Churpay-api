@@ -5,12 +5,20 @@ import { requireAuth, requireAdmin } from "./auth.js";
 import crypto from "node:crypto";
 
 const router = express.Router();
+const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
 
 function makeMpaymentId() {
   return "CP-" + crypto.randomBytes(8).toString("hex").toUpperCase();
 }
 
 const UUID_REGEX = /^[0-9a-fA-F-]{36}$/;
+
+function csvEscape(value) {
+  if (value === null || typeof value === "undefined") return "";
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
 
 function toBoolean(val) {
   if (typeof val === "undefined" || val === null) return undefined;
@@ -29,6 +37,96 @@ function normalizeFundCode(code, fallbackName) {
     .replace(/(^-|-$)/g, "")
     .slice(0, 50);
   return slug || null;
+}
+
+function resolveChurchId(req, res, requestedChurchId) {
+  const ownChurchId = requireChurch(req, res);
+  if (!ownChurchId) return null;
+
+  if (!requestedChurchId || requestedChurchId === "me" || !UUID_REGEX.test(requestedChurchId)) {
+    return ownChurchId;
+  }
+
+  if (requestedChurchId !== ownChurchId && req.user?.role !== "admin") {
+    res.status(403).json({ error: "Forbidden" });
+    return null;
+  }
+
+  return requestedChurchId;
+}
+
+async function ensureDefaultFund(churchId) {
+  const church = await db.oneOrNone("select id from churches where id=$1", [churchId]);
+  if (!church) return;
+
+  const existing = await db.oneOrNone(
+    "select id, active from funds where church_id=$1 and code='general' limit 1",
+    [churchId]
+  );
+
+  if (existing) {
+    if (!existing.active) {
+      await db.none("update funds set active=true where id=$1", [existing.id]);
+    }
+    return;
+  }
+
+  try {
+    await db.none(
+      "insert into funds (church_id, code, name, active) values ($1, 'general', 'General Offering', true)",
+      [churchId]
+    );
+  } catch (err) {
+    if (err?.code === "23505") {
+      await db.none("update funds set active=true where church_id=$1 and code='general'", [churchId]);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function listFundsForChurch(churchId, includeInactive = false) {
+  const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
+  let funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+
+  if (!includeInactive && funds.length === 0) {
+    await ensureDefaultFund(churchId);
+    funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+  }
+
+  return funds;
+}
+
+function buildTransactionFilter({ churchId, fundId, channel, from, to }) {
+  const where = ["t.church_id = $1"];
+  const params = [churchId];
+  let paramIndex = 2;
+
+  if (fundId) {
+    params.push(fundId);
+    where.push(`t.fund_id = $${paramIndex}`);
+    paramIndex++;
+  }
+
+  if (channel) {
+    params.push(channel);
+    where.push(`t.channel = $${paramIndex}`);
+    paramIndex++;
+  }
+
+  if (from && !Number.isNaN(from.getTime())) {
+    params.push(from);
+    where.push(`t.created_at >= $${paramIndex}`);
+    paramIndex++;
+  }
+
+  if (to && !Number.isNaN(to.getTime())) {
+    params.push(to);
+    where.push(`t.created_at <= $${paramIndex}`);
+    paramIndex++;
+  }
+
+  return { where, params, nextParamIndex: paramIndex };
 }
 
 async function loadMember(userId) {
@@ -91,12 +189,11 @@ function normalizeBaseUrl() {
 }
 router.get("/funds", requireAuth, async (req, res) => {
   try {
-    const churchId = requireChurch(req, res);
+    const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
 
     const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
-    const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
-    const funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+    const funds = await listFundsForChurch(churchId, includeInactive);
     res.json({ funds });
   } catch (err) {
     console.error("[funds] error", err?.message || err, err?.stack);
@@ -106,12 +203,11 @@ router.get("/funds", requireAuth, async (req, res) => {
 
 router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
   try {
-    const churchId = requireChurch(req, res);
+    const churchId = resolveChurchId(req, res, req.params.churchId);
     if (!churchId) return;
 
     const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
-    const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
-    const funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+    const funds = await listFundsForChurch(churchId, includeInactive);
     res.json({ funds });
   } catch (err) {
     console.error("[funds] error", err?.message || err, err?.stack);
@@ -120,9 +216,11 @@ router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
 });
 
 // Get transactions for a church with filters
-router.get("/churches/:churchId/transactions", requireAdmin, async (req, res) => {
+router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], requireAuth, async (req, res) => {
   try {
-    const churchId = requireChurch(req, res);
+    const requestedChurchId = req.params.churchId || "me";
+    const isMeRoute = requestedChurchId === "me";
+    const churchId = resolveChurchId(req, res, requestedChurchId);
     if (!churchId) return;
 
     const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
@@ -133,33 +231,8 @@ router.get("/churches/:churchId/transactions", requireAdmin, async (req, res) =>
     const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
     const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
 
-    const where = ["t.church_id = $1"];
-    const params = [churchId];
-    let paramIndex = 2;
-
-    if (fundId) {
-      params.push(fundId);
-      where.push(`t.fund_id = $${paramIndex}`);
-      paramIndex++;
-    }
-
-    if (channel) {
-      params.push(channel);
-      where.push(`t.channel = $${paramIndex}`);
-      paramIndex++;
-    }
-
-    if (from && !Number.isNaN(from.getTime())) {
-      params.push(from);
-      where.push(`t.created_at >= $${paramIndex}`);
-      paramIndex++;
-    }
-
-    if (to && !Number.isNaN(to.getTime())) {
-      params.push(to);
-      where.push(`t.created_at <= $${paramIndex}`);
-      paramIndex++;
-    }
+    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    let paramIndex = nextParamIndex;
 
     params.push(limit);
     const limitIdx = paramIndex;
@@ -629,102 +702,108 @@ router.get("/payment-intents/:id", async (req, res) => {
 // SIMULATED PAYMENT (MVP / DEMO MODE)
 // Creates a PAID payment_intent + inserts a transaction ledger row
 // ------------------------------------------------------------
-router.post("/simulate-payment", requireAuth, async (req, res) => {
-  try {
-    let { fundId, amount, channel = "app" } = req.body || {};
-
-    const amt = Number(amount);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      return res.status(400).json({ error: "Invalid amount" });
-    }
-
-    fundId = typeof fundId === "string" ? fundId.trim() : fundId;
-
-    const member = await loadMember(req.user.id);
-    if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
-    const churchId = member.church_id;
-
-    if (!fundId) {
-      return res.status(400).json({ error: "Missing fundId" });
-    }
-
-    // Validate church + fund exist
-    let fund, church;
+if (!isProduction) {
+  router.post("/simulate-payment", requireAuth, async (req, res) => {
     try {
-      fund = await db.one("select id, name, active from funds where id=$1 and church_id=$2", [fundId, churchId]);
-      if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
-      church = await db.one("select id, name from churches where id=$1", [churchId]);
-    } catch (err) {
-      if (err.message.includes("Expected 1 row, got 0")) {
-        return res.status(404).json({ error: "Church or fund not found" });
+      let { fundId, amount, channel = "app" } = req.body || {};
+
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: "Invalid amount" });
       }
-      console.error("[simulate] DB error fetching church/fund", err);
+
+      fundId = typeof fundId === "string" ? fundId.trim() : fundId;
+
+      const member = await loadMember(req.user.id);
+      if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
+      const churchId = member.church_id;
+
+      if (!fundId) {
+        return res.status(400).json({ error: "Missing fundId" });
+      }
+
+      // Validate church + fund exist
+      let fund, church;
+      try {
+        fund = await db.one("select id, name, active from funds where id=$1 and church_id=$2", [fundId, churchId]);
+        if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
+        church = await db.one("select id, name from churches where id=$1", [churchId]);
+      } catch (err) {
+        if (err.message.includes("Expected 1 row, got 0")) {
+          return res.status(404).json({ error: "Church or fund not found" });
+        }
+        console.error("[simulate] DB error fetching church/fund", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+
+      const mPaymentId = makeMpaymentId();
+
+      // Same PayFast-safe item name rules (ASCII + short)
+      const itemNameRaw = `${church.name} - ${fund.name}`;
+      const itemName = itemNameRaw
+        .normalize("NFKD")
+        .replace(/[^\x20-\x7E]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 100);
+
+      const providerPaymentId = `SIM-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
+
+      const result = await db.tx(async (t) => {
+        // Create intent already PAID
+        const intent = await t.one(
+          `
+          insert into payment_intents
+            (church_id, fund_id, amount, currency, member_name, member_phone, status, provider, provider_payment_id, m_payment_id, item_name, created_at, updated_at)
+          values
+            ($1,$2,$3,'ZAR',$4,$5,'PAID','simulated',$6,$7,$8,now(),now())
+          returning *
+          `,
+          [churchId, fundId, amt, member.full_name || "", member.phone || "", providerPaymentId, mPaymentId, itemName]
+        );
+
+        // Insert ledger transaction row
+        const txRow = await t.one(
+          `
+          insert into transactions
+            (church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at)
+          values
+            ($1,$2,$3,$4,$5,$6,'simulated',$7,now())
+          returning *
+          `,
+          [churchId, fundId, intent.id, intent.amount, intent.m_payment_id, channel || "app", providerPaymentId]
+        );
+
+        return { intent, txRow };
+      });
+
+      return res.json({
+        ok: true,
+        paymentIntentId: result.intent.id,
+        status: result.intent.status,
+        transactionId: result.txRow.id,
+        receipt: {
+          reference: result.txRow.reference,
+          amount: result.txRow.amount,
+          fund: fund.name,
+          church: church.name,
+          channel: result.txRow.channel,
+          createdAt: result.txRow.created_at,
+        },
+      });
+    } catch (err) {
+      console.error("[simulate] POST /simulate-payment error", err);
       return res.status(500).json({ error: "Internal server error" });
     }
-
-    const mPaymentId = makeMpaymentId();
-
-    // Same PayFast-safe item name rules (ASCII + short)
-    const itemNameRaw = `${church.name} - ${fund.name}`;
-    const itemName = itemNameRaw
-      .normalize("NFKD")
-      .replace(/[^\x20-\x7E]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 100);
-
-    const providerPaymentId = `SIM-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
-
-    const result = await db.tx(async (t) => {
-      // Create intent already PAID
-      const intent = await t.one(
-        `
-        insert into payment_intents
-          (church_id, fund_id, amount, currency, member_name, member_phone, status, provider, provider_payment_id, m_payment_id, item_name, created_at, updated_at)
-        values
-          ($1,$2,$3,'ZAR',$4,$5,'PAID','simulated',$6,$7,$8,now(),now())
-        returning *
-        `,
-        [churchId, fundId, amt, member.full_name || "", member.phone || "", providerPaymentId, mPaymentId, itemName]
-      );
-
-      // Insert ledger transaction row
-      const txRow = await t.one(
-        `
-        insert into transactions
-          (church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at)
-        values
-          ($1,$2,$3,$4,$5,$6,'simulated',$7,now())
-        returning *
-        `,
-        [churchId, fundId, intent.id, intent.amount, intent.m_payment_id, channel || "app", providerPaymentId]
-      );
-
-      return { intent, txRow };
-    });
-
-    return res.json({
-      ok: true,
-      paymentIntentId: result.intent.id,
-      status: result.intent.status,
-      transactionId: result.txRow.id,
-      receipt: {
-        reference: result.txRow.reference,
-        amount: result.txRow.amount,
-        fund: fund.name,
-        church: church.name,
-        channel: result.txRow.channel,
-        createdAt: result.txRow.created_at,
-      },
-    });
-  } catch (err) {
-    console.error("[simulate] POST /simulate-payment error", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
+  });
+} else {
+  router.post("/simulate-payment", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+}
 router.get("/churches/:churchId/totals", requireAdmin, async (req, res) => {
   try {
-    const churchId = requireChurch(req, res);
+    const churchId = resolveChurchId(req, res, req.params.churchId);
     if (!churchId) return;
 
     const rows = await db.manyOrNone(
@@ -744,6 +823,148 @@ router.get("/churches/:churchId/totals", requireAdmin, async (req, res) => {
     res.json({ totals: rows, grandTotal: grand.toFixed(2) });
   } catch (err) {
     console.error("[totals] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/dashboard/totals", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const rows = await db.manyOrNone(
+      `
+      select f.code, f.name, coalesce(sum(t.amount),0)::numeric(12,2) as total
+      from funds f
+      left join transactions t on t.fund_id=f.id and t.church_id=f.church_id
+      where f.church_id=$1
+      group by f.code, f.name
+      order by f.name asc
+      `,
+      [churchId]
+    );
+
+    const grand = rows.reduce((acc, r) => acc + Number(r.total), 0);
+    res.json({ totals: rows, grandTotal: grand.toFixed(2) });
+  } catch (err) {
+    console.error("[admin/dashboard/totals] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 200);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+    const fundId = req.query.fundId || null;
+    const channel = req.query.channel || null;
+    const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
+    const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
+
+    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    let paramIndex = nextParamIndex;
+
+    params.push(limit);
+    const limitIdx = paramIndex;
+    paramIndex++;
+    params.push(offset);
+    const offsetIdx = paramIndex;
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        t.id,
+        t.reference,
+        t.amount,
+        t.channel,
+        t.created_at as "createdAt",
+        pi.member_name as "memberName",
+        pi.member_phone as "memberPhone",
+        f.id as "fundId",
+        f.code as "fundCode",
+        f.name as "fundName"
+      from transactions t
+      join funds f on f.id = t.fund_id
+      left join payment_intents pi on pi.id = t.payment_intent_id
+      where ${where.join(" and ")}
+      order by t.created_at desc
+      limit $${limitIdx} offset $${offsetIdx}
+      `,
+      params
+    );
+
+    res.json({
+      transactions: rows,
+      meta: { limit, offset, count: rows.length },
+    });
+  } catch (err) {
+    console.error("[admin/dashboard/recent] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const maxRows = Math.min(Math.max(Number(req.query.limit || 5000), 1), 10000);
+    const fundId = req.query.fundId || null;
+    const channel = req.query.channel || null;
+    const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
+    const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
+
+    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    params.push(maxRows);
+    const limitIdx = nextParamIndex;
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        t.id,
+        t.reference,
+        t.amount,
+        t.channel,
+        t.created_at as "createdAt",
+        pi.member_name as "memberName",
+        pi.member_phone as "memberPhone",
+        f.code as "fundCode",
+        f.name as "fundName"
+      from transactions t
+      join funds f on f.id = t.fund_id
+      left join payment_intents pi on pi.id = t.payment_intent_id
+      where ${where.join(" and ")}
+      order by t.created_at desc
+      limit $${limitIdx}
+      `,
+      params
+    );
+
+    const header = ["id", "reference", "amount", "channel", "createdAt", "memberName", "memberPhone", "fundCode", "fundName"];
+    const lines = [header.join(",")];
+    for (const row of rows) {
+      lines.push([
+        csvEscape(row.id),
+        csvEscape(row.reference),
+        csvEscape(row.amount),
+        csvEscape(row.channel),
+        csvEscape(row.createdAt),
+        csvEscape(row.memberName),
+        csvEscape(row.memberPhone),
+        csvEscape(row.fundCode),
+        csvEscape(row.fundName),
+      ].join(","));
+    }
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=\"transactions-${stamp}.csv\"`);
+    res.status(200).send(lines.join("\n"));
+  } catch (err) {
+    console.error("[admin/dashboard/export] error", err?.message || err, err?.stack);
     res.status(500).json({ error: "Internal server error" });
   }
 });
