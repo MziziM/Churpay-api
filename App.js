@@ -1,6 +1,8 @@
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator, Linking, Image, Pressable, Alert } from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator, Linking, Image, Pressable, Alert, ScrollView, RefreshControl, Share } from "react-native";
 import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import QRCode from "react-native-qrcode-svg";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Screen } from "./src/components/ui/Screen";
 import { Card } from "./src/components/ui/Card";
@@ -9,6 +11,7 @@ import { TextField } from "./src/components/ui/TextField";
 import { BrandHeader } from "./src/components/ui/BrandHeader";
 import { LinkButton } from "./src/components/ui/LinkButton";
 import { useTheme } from "./src/components/ui/theme";
+import { withTimeout, safe } from "./src/utils/boot";
 import {
   loadSessionToken,
   setSessionToken,
@@ -19,8 +22,15 @@ import {
   updateProfile,
   listFunds,
   createPaymentIntent,
+  getPaymentIntent,
   createFund,
   updateFund as apiUpdateFund,
+  getMyChurchProfile,
+  createMyChurchProfile,
+  updateMyChurchProfile,
+  getAdminDashboardTotals,
+  getAdminRecentTransactions,
+  exportAdminTransactionsCsv,
   logout as apiLogout,
 } from "./src/api";
 
@@ -53,6 +63,17 @@ const FundCard = ({ fund, selected, onPress }) => {
   );
 };
 
+function BootScreen() {
+  const { palette } = useTheme();
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 16 }}>
+      <Image source={require("./assets/churpay-logo.png")} style={{ width: 160, height: 160 }} resizeMode="contain" />
+      <Text style={{ color: palette.muted, fontSize: 16, fontWeight: "600" }}>Giving made easy.</Text>
+      <ActivityIndicator color={palette.primary} />
+    </View>
+  );
+}
+
 function AuthProvider({ children }) {
   const [token, setTokenState] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -67,24 +88,35 @@ function AuthProvider({ children }) {
   }, [token]);
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      console.log("BOOT start");
-      console.log("BOOT loading token...");
-      const stored = await loadSessionToken();
-      console.log("BOOT token loaded", !!stored);
-      if (stored) {
-        setTokenState(stored);
-        try {
-          console.log("BOOT fetching profile...");
-          await refreshProfile();
-        } catch (_) {
-          await setSessionToken(null);
-          setTokenState(null);
+      try {
+        console.log("[boot] start");
+        await withTimeout(
+          (async () => {
+            const stored = await safe(loadSessionToken());
+            console.log("[boot] token loaded", !!stored);
+            if (stored) {
+              setTokenState(stored);
+              await withTimeout(safe(refreshProfile()), 4000);
+            }
+          })(),
+          4000
+        );
+      } catch (err) {
+        console.log("[boot] non-fatal", err?.message || err);
+      } finally {
+        if (!cancelled) {
+          console.log("[boot] done");
+          setBooting(false);
         }
       }
-      console.log("BOOT done");
-      setBooting(false);
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [refreshProfile]);
 
   const setSession = useCallback(
@@ -130,6 +162,7 @@ function WelcomeScreen({ navigation }) {
 
   return (
     <Screen
+      disableScroll
       footer={
         <View style={{ gap: spacing.sm }}>
           <PrimaryButton label="Continue" onPress={continueFlow} />
@@ -358,9 +391,10 @@ function ConfirmScreen({ navigation, route }) {
       setSubmitting(true);
       setError("");
       const res = await createPaymentIntent({ fundId: fund.id, amount: Number(amount) });
-      if (res?.checkoutUrl) {
+      const checkoutUrl = res?.checkoutUrl || res?.paymentUrl;
+      if (checkoutUrl) {
         navigation.navigate("Pending", { intent: res });
-        await Linking.openURL(res.checkoutUrl);
+        await Linking.openURL(checkoutUrl);
       } else {
         throw new Error("Checkout link missing");
       }
@@ -394,12 +428,64 @@ function ConfirmScreen({ navigation, route }) {
 
 function PendingScreen({ navigation, route }) {
   const { spacing, palette, radius, typography } = useTheme();
-  const intent = route.params?.intent;
+  const intent = route.params?.intent || {};
+  const paymentIntentId = intent?.paymentIntentId || intent?.id || null;
+  const fallbackRef = intent?.mPaymentId || intent?.m_payment_id || null;
+  const [status, setStatus] = useState("PENDING");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+
+  const checkStatus = useCallback(async () => {
+    if (!paymentIntentId) return;
+    try {
+      setChecking(true);
+      const latest = await getPaymentIntent(paymentIntentId);
+      const nextStatus = String(latest?.status || "PENDING").toUpperCase();
+      setStatus(nextStatus);
+
+      if (nextStatus === "PAID") {
+        navigation.replace("Success", {
+          intent: {
+            ...intent,
+            ...latest,
+            paymentIntentId,
+            mPaymentId: latest?.m_payment_id || fallbackRef,
+          },
+        });
+        return;
+      }
+
+      if (nextStatus === "FAILED" || nextStatus === "CANCELLED") {
+        setError(`Payment ${nextStatus.toLowerCase()}. You can try again.`);
+      } else {
+        setError("");
+      }
+    } catch (e) {
+      setError(e?.message || "Could not verify payment status");
+    } finally {
+      setChecking(false);
+    }
+  }, [fallbackRef, intent, navigation, paymentIntentId]);
+
+  useEffect(() => {
+    if (!paymentIntentId) return;
+    checkStatus();
+    const timer = setInterval(checkStatus, 7000);
+    return () => clearInterval(timer);
+  }, [checkStatus, paymentIntentId]);
+
   return (
-    <Screen footer={<PrimaryButton label="Back to start" onPress={() => navigation.popToTop()} />}>
+    <Screen
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <PrimaryButton label={checking ? "Checking..." : "Refresh status"} onPress={checkStatus} disabled={checking || !paymentIntentId} />
+          <PrimaryButton label="Back to start" variant="ghost" onPress={() => navigation.popToTop()} />
+        </View>
+      }
+    >
       <BrandHeader />
       <Text style={[styles.title, { color: palette.text, fontSize: typography.h1 }]}>Payment Pending</Text>
-      <Text style={[styles.subtitle, { color: palette.muted, fontSize: typography.body }]}>We are processing your donation.</Text>
+      <Text style={[styles.subtitle, { color: palette.muted, fontSize: typography.body }]}>Complete checkout in PayFast, then refresh status here.</Text>
       <Card style={{ alignItems: "center", gap: spacing.md }}>
         <View
           style={{
@@ -415,8 +501,8 @@ function PendingScreen({ navigation, route }) {
         >
           <Text style={{ color: palette.primary, fontSize: 48 }}>✓</Text>
         </View>
-        <Body muted>Payment Pending</Body>
-        {intent?.m_payment_id ? (
+        <Body muted>Status: {status}</Body>
+        {fallbackRef ? (
           <View
             style={{
               paddingHorizontal: spacing.lg,
@@ -425,7 +511,51 @@ function PendingScreen({ navigation, route }) {
               backgroundColor: palette.focus,
             }}
           >
-            <Text style={{ color: palette.text }}>Ref: {intent.m_payment_id}</Text>
+            <Text style={{ color: palette.text }}>Ref: {fallbackRef}</Text>
+          </View>
+        ) : null}
+      </Card>
+      {error ? <Body muted>{error}</Body> : null}
+    </Screen>
+  );
+}
+
+function SuccessScreen({ navigation, route }) {
+  const { spacing, palette, radius, typography } = useTheme();
+  const intent = route.params?.intent || {};
+  const isPaid = String(intent?.status || "").toUpperCase() === "PAID";
+  const paymentRef = intent?.mPaymentId || intent?.m_payment_id || null;
+  return (
+    <Screen footer={<PrimaryButton label="Back home" onPress={() => navigation.popToTop()} />}>
+      <BrandHeader />
+      <Text style={[styles.title, { color: palette.text, fontSize: typography.h1 }]}>Thank you for giving</Text>
+      <Text style={[styles.subtitle, { color: palette.muted, fontSize: typography.body }]}>Your generosity makes a difference.</Text>
+      <Card style={{ alignItems: "center", gap: spacing.md }}>
+        <View
+          style={{
+            width: 104,
+            height: 104,
+            borderRadius: 52,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: palette.focus,
+            borderWidth: 1,
+            borderColor: palette.border,
+          }}
+        >
+          <Text style={{ color: palette.primary, fontSize: 48 }}>❤</Text>
+        </View>
+        <Body muted>{isPaid ? "Payment confirmed" : "Payment created"}</Body>
+        {paymentRef ? (
+          <View
+            style={{
+              paddingHorizontal: spacing.lg,
+              paddingVertical: spacing.sm,
+              borderRadius: radius.pill,
+              backgroundColor: palette.focus,
+            }}
+          >
+            <Text style={{ color: palette.text }}>Ref: {paymentRef}</Text>
           </View>
         ) : null}
       </Card>
@@ -478,7 +608,11 @@ function ProfileScreen({ navigation }) {
         <View style={{ gap: spacing.sm }}>
           <PrimaryButton label={loading ? "Saving..." : "Save changes"} onPress={onSave} disabled={loading} />
           {profile?.role === "admin" || profile?.role === "super" ? (
-            <PrimaryButton label="Admin funds" variant="secondary" onPress={() => navigation.navigate("AdminFunds")} />
+            <View style={{ gap: spacing.xs }}>
+              <PrimaryButton label="Church settings" variant="secondary" onPress={() => navigation.navigate("AdminChurch")} />
+              <PrimaryButton label="Admin funds" variant="secondary" onPress={() => navigation.navigate("AdminFunds")} />
+              <PrimaryButton label="Transactions" variant="secondary" onPress={() => navigation.navigate("AdminTransactions")} />
+            </View>
           ) : null}
           <PrimaryButton label="Log out" variant="ghost" onPress={onLogout} />
         </View>
@@ -502,6 +636,104 @@ function ProfileScreen({ navigation }) {
   );
 }
 
+function AdminChurchScreen({ navigation }) {
+  const { spacing, palette, typography } = useTheme();
+  const { profile, setProfile, refreshProfile } = useContext(AuthContext);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [churchExists, setChurchExists] = useState(false);
+  const [name, setName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [error, setError] = useState("");
+
+  const isAdmin = profile?.role === "admin" || profile?.role === "super";
+
+  const loadChurch = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
+      const res = await getMyChurchProfile();
+      const church = res?.church || null;
+      if (!church) {
+        setChurchExists(false);
+        setName("");
+        setJoinCode("");
+        return;
+      }
+      setChurchExists(true);
+      setName(church.name || "");
+      setJoinCode(church.joinCode || "");
+    } catch (e) {
+      if (String(e?.message || "").includes("No church assigned") || String(e?.message || "").includes("HTTP 404")) {
+        setChurchExists(false);
+        setName("");
+        setJoinCode("");
+      } else {
+        setError(e?.message || "Could not load church profile");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!profile) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (!isAdmin) {
+      navigation.replace("Give");
+      return;
+    }
+    loadChurch();
+  }, [isAdmin, loadChurch, navigation, profile]);
+
+  const onSave = async () => {
+    try {
+      setSaving(true);
+      setError("");
+      const payload = { name: String(name || "").trim(), joinCode: String(joinCode || "").trim().toUpperCase() };
+      if (!payload.name) throw new Error("Church name is required");
+      if (!payload.joinCode) throw new Error("Join code is required");
+
+      const res = churchExists ? await updateMyChurchProfile(payload) : await createMyChurchProfile(payload);
+      if (res?.member) setProfile(res.member);
+      await refreshProfile();
+      await loadChurch();
+      Alert.alert(churchExists ? "Church updated" : "Church created");
+    } catch (e) {
+      setError(e?.message || "Could not save church profile");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Screen
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <PrimaryButton label={saving ? "Saving..." : churchExists ? "Save church profile" : "Create church"} onPress={onSave} disabled={saving} />
+          <PrimaryButton label="Back" variant="ghost" onPress={() => navigation.goBack()} />
+        </View>
+      }
+    >
+      <BrandHeader />
+      <Text style={[styles.title, { color: palette.text, fontSize: typography.h1 }]}>Church profile</Text>
+      <Text style={[styles.subtitle, { color: palette.muted, fontSize: typography.body }]}>Set your church name and join code for members.</Text>
+      {loading ? (
+        <ActivityIndicator color={palette.primary} />
+      ) : (
+        <Card style={{ gap: spacing.md }}>
+          <TextField label="Church name" value={name} onChangeText={setName} placeholder="Great Commission Church of Christ" />
+          <TextField label="Join code" value={joinCode} onChangeText={setJoinCode} placeholder="GCCOC-1234" autoCapitalize="characters" />
+          <Body muted>Members join with this code in the app.</Body>
+        </Card>
+      )}
+      {error ? <Body muted>{error}</Body> : null}
+    </Screen>
+  );
+}
+
 function AdminFundsScreen({ navigation }) {
   const { spacing, palette, typography } = useTheme();
   const { profile } = useContext(AuthContext);
@@ -510,6 +742,7 @@ function AdminFundsScreen({ navigation }) {
   const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   const isAdmin = profile?.role === "admin" || profile?.role === "super";
 
@@ -525,6 +758,12 @@ function AdminFundsScreen({ navigation }) {
       setLoading(false);
     }
   }, [isAdmin]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadFunds();
+    setRefreshing(false);
+  }, [loadFunds]);
 
   useEffect(() => {
     if (!profile) {
@@ -580,19 +819,179 @@ function AdminFundsScreen({ navigation }) {
       {loading ? (
         <ActivityIndicator color={palette.primary} />
       ) : (
-        <View style={{ gap: spacing.sm, marginTop: spacing.md }}>
+        <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />} contentContainerStyle={{ gap: spacing.sm, marginTop: spacing.md }}>
           {funds.map((f) => (
-            <Card key={f.id} padding={spacing.md} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <View>
-                <Text style={{ color: palette.text, fontSize: typography.h3 }}>{f.name}</Text>
-                <Text style={{ color: palette.muted }}>{f.code}</Text>
-                <Text style={{ color: palette.muted }}>{f.active ? "Active" : "Inactive"}</Text>
+            <Card key={f.id} padding={spacing.md} style={{ gap: spacing.sm }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <View>
+                  <Text style={{ color: palette.text, fontSize: typography.h3 }}>{f.name}</Text>
+                  <Text style={{ color: palette.muted }}>{f.code}</Text>
+                  <Text style={{ color: palette.muted }}>{f.active ? "Active" : "Inactive"}</Text>
+                </View>
+                <PrimaryButton label={f.active ? "Disable" : "Enable"} variant="ghost" onPress={() => toggleActive(f)} />
               </View>
-              <PrimaryButton label={f.active ? "Disable" : "Enable"} variant="ghost" onPress={() => toggleActive(f)} />
+              <View style={{ alignItems: "center" }}>
+                <Body muted>Scan to give to this fund</Body>
+                <QRCode value={JSON.stringify({ fundId: f.id, churchId: profile?.churchId, fundCode: f.code })} size={120} />
+              </View>
             </Card>
           ))}
           {funds.length === 0 && <Body muted>No funds yet.</Body>}
+        </ScrollView>
+      )}
+      {error ? <Body muted>{error}</Body> : null}
+    </Screen>
+  );
+}
+
+function AdminTransactionsScreen({ navigation }) {
+  const { spacing, palette, typography } = useTheme();
+  const { profile } = useContext(AuthContext);
+  const [txns, setTxns] = useState([]);
+  const [funds, setFunds] = useState([]);
+  const [fundId, setFundId] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [grandTotal, setGrandTotal] = useState("0.00");
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const isAdmin = profile?.role === "admin" || profile?.role === "super";
+
+  const loadData = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      setLoading(true);
+      setError("");
+      const [fundsRes, totalsRes, recentRes] = await Promise.all([
+        listFunds(true),
+        getAdminDashboardTotals(),
+        getAdminRecentTransactions({
+          limit: 50,
+          fundId: fundId || undefined,
+          from: fromDate || undefined,
+          to: toDate || undefined,
+        }),
+      ]);
+
+      setFunds(fundsRes?.funds || []);
+      setGrandTotal(totalsRes?.grandTotal || "0.00");
+      setTxns(recentRes?.transactions || []);
+    } catch (e) {
+      setError(e?.message || "Could not load transactions");
+    } finally {
+      setLoading(false);
+    }
+  }, [fundId, fromDate, isAdmin, toDate]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }, [loadData]);
+
+  useEffect(() => {
+    if (!profile) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (!isAdmin) {
+      navigation.replace("Give");
+      return;
+    }
+    loadData();
+  }, [isAdmin, loadData, navigation, profile]);
+
+  const applyFilters = async () => {
+    await loadData();
+  };
+
+  const onExportCsv = async () => {
+    try {
+      setExporting(true);
+      setError("");
+      const csv = await exportAdminTransactionsCsv({
+        limit: 1000,
+        fundId: fundId || undefined,
+        from: fromDate || undefined,
+        to: toDate || undefined,
+      });
+
+      await Share.share({
+        title: "Churpay transactions export",
+        message: csv,
+      });
+    } catch (e) {
+      setError(e?.message || "Could not export CSV");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <Screen
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <PrimaryButton label={exporting ? "Exporting..." : "Export CSV"} variant="secondary" onPress={onExportCsv} disabled={exporting} />
+          <PrimaryButton label="Back" variant="ghost" onPress={() => navigation.goBack()} />
         </View>
+      }
+    >
+      <BrandHeader />
+      <Text style={[styles.title, { color: palette.text, fontSize: typography.h1 }]}>Transactions</Text>
+      <Text style={[styles.subtitle, { color: palette.muted, fontSize: typography.body }]}>Filter by date/fund and review church totals.</Text>
+
+      <Card style={{ gap: spacing.sm }}>
+        <Body>Total received: {money(grandTotal)}</Body>
+        <TextField label="From date (YYYY-MM-DD)" value={fromDate} onChangeText={setFromDate} placeholder="2026-02-01" />
+        <TextField label="To date (YYYY-MM-DD)" value={toDate} onChangeText={setToDate} placeholder="2026-02-29" />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.xs }}>
+          <Pressable
+            onPress={() => setFundId("")}
+            style={{
+              paddingVertical: spacing.xs,
+              paddingHorizontal: spacing.md,
+              borderRadius: 999,
+              backgroundColor: fundId ? palette.focus : palette.primary,
+            }}
+          >
+            <Text style={{ color: fundId ? palette.text : "#fff", fontWeight: "600" }}>All funds</Text>
+          </Pressable>
+          {funds.map((f) => (
+            <Pressable
+              key={f.id}
+              onPress={() => setFundId(f.id)}
+              style={{
+                paddingVertical: spacing.xs,
+                paddingHorizontal: spacing.md,
+                borderRadius: 999,
+                backgroundColor: fundId === f.id ? palette.primary : palette.focus,
+              }}
+            >
+              <Text style={{ color: fundId === f.id ? "#fff" : palette.text, fontWeight: "600" }}>{f.name}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        <PrimaryButton label="Apply filters" variant="secondary" onPress={applyFilters} />
+      </Card>
+
+      {loading ? (
+        <ActivityIndicator color={palette.primary} />
+      ) : (
+        <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />} contentContainerStyle={{ gap: spacing.sm, marginTop: spacing.md }}>
+          {txns.map((t) => (
+            <Card key={t.id} padding={spacing.md} style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontSize: typography.h3 }}>{t.fundName || t.fundCode}</Text>
+              <Body>{money(t.amount)}</Body>
+              <Body muted>{t.reference}</Body>
+              <Body muted>{new Date(t.createdAt).toLocaleString()}</Body>
+              <Body muted>{t.memberName || t.memberPhone || "Anonymous"}</Body>
+            </Card>
+          ))}
+          {txns.length === 0 && <Body muted>No transactions yet.</Body>}
+        </ScrollView>
       )}
       {error ? <Body muted>{error}</Body> : null}
     </Screen>
@@ -647,16 +1046,10 @@ function RootNavigator() {
 
   const initialRoute = token ? (profile?.churchId ? "Give" : "JoinChurch") : "Welcome";
 
-  if (booting) {
-    return (
-      <Screen>
-        <ActivityIndicator color={palette.primary} />
-      </Screen>
-    );
-  }
+  const navKey = token ? (profile?.churchId ? "give" : "join") : "welcome";
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer key={navKey} theme={navTheme}>
       <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Welcome" component={WelcomeScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
@@ -665,17 +1058,37 @@ function RootNavigator() {
         <Stack.Screen name="Give" component={GiveScreen} />
         <Stack.Screen name="Confirm" component={ConfirmScreen} />
         <Stack.Screen name="Pending" component={PendingScreen} />
+        <Stack.Screen name="Success" component={SuccessScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
+        <Stack.Screen name="AdminChurch" component={AdminChurchScreen} />
         <Stack.Screen name="AdminFunds" component={AdminFundsScreen} />
+        <Stack.Screen name="AdminTransactions" component={AdminTransactionsScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
 
 export default function App() {
+  console.log("[boot] App render");
+
+  const [showBoot, setShowBoot] = useState(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setShowBoot(false), 800);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (showBoot) {
+    return <BootScreen />;
+  }
+
   return (
-    <AuthProvider>
-      <RootNavigator />
-    </AuthProvider>
+    <View style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </View>
   );
 }

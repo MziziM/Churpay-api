@@ -187,6 +187,16 @@ function normalizeBaseUrl() {
   if (!base) return null;
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
+
+function getPayfastCallbackUrls(paymentIntentId) {
+  const baseUrl = normalizeBaseUrl() || "";
+  return {
+    returnUrl: String(process.env.PAYFAST_RETURN_URL || `${baseUrl}/payfast/return?pi=${paymentIntentId}`).trim(),
+    cancelUrl: String(process.env.PAYFAST_CANCEL_URL || `${baseUrl}/payfast/cancel?pi=${paymentIntentId}`).trim(),
+    notifyUrl: String(process.env.PAYFAST_NOTIFY_URL || `${baseUrl}/webhooks/payfast/itn`).trim(),
+  };
+}
+
 router.get("/funds", requireAuth, async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
@@ -484,9 +494,7 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
       [churchId, fundId, amt, member.full_name || "", member.phone || "", itemName, mPaymentId]
     );
 
-    const returnUrl = `${process.env.PUBLIC_BASE_URL}/payfast/return?pi=${intent.id}`;
-    const cancelUrl = `${process.env.PUBLIC_BASE_URL}/payfast/cancel?pi=${intent.id}`;
-    const notifyUrl = `${process.env.PUBLIC_BASE_URL}/webhooks/payfast/itn`;
+    const { returnUrl, cancelUrl, notifyUrl } = getPayfastCallbackUrls(intent.id);
 
     const checkoutUrl = buildPayfastRedirect({
       mode: process.env.PAYFAST_MODE,
@@ -503,7 +511,11 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
       customStr2: fundId,
     });
 
-    res.json({ paymentIntentId: intent.id, checkoutUrl });
+    res.json({
+      paymentIntentId: intent.id,
+      mPaymentId: intent.m_payment_id || mPaymentId,
+      checkoutUrl,
+    });
   } catch (err) {
     console.error("[payments] POST /payment-intents error", err);
     res.status(500).json({ error: "Internal server error" });
@@ -563,9 +575,10 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       return res.status(500).json({ error: "Server misconfigured: PayFast merchant keys missing" });
     }
 
-    const returnUrl = `${baseUrl}/give?success=true`;
-    const cancelUrl = `${baseUrl}/give?cancelled=true`;
-    const notifyUrl = `${baseUrl}/api/payfast/itn`;
+    const callbackUrls = getPayfastCallbackUrls(intent.id);
+    const returnUrl = callbackUrls.returnUrl || `${baseUrl}/give?success=true`;
+    const cancelUrl = callbackUrls.cancelUrl || `${baseUrl}/give?cancelled=true`;
+    const notifyUrl = callbackUrls.notifyUrl || `${baseUrl}/api/payfast/itn`;
 
     const paymentUrl = buildPayfastRedirect({
       mode,
@@ -685,9 +698,14 @@ router.post("/payfast/itn", async (req, res) => {
   }
 });
 
-router.get("/payment-intents/:id", async (req, res) => {
+router.get("/payment-intents/:id", requireAuth, async (req, res) => {
   try {
     const pi = await db.one("select * from payment_intents where id=$1", [req.params.id]);
+    const ownChurchId = req.user?.church_id || null;
+    const isAdmin = req.user?.role === "admin";
+    if (!isAdmin && (!ownChurchId || ownChurchId !== pi.church_id)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     res.json(pi);
   } catch (err) {
     if (err.message.includes("Expected 1 row, got 0")) {
