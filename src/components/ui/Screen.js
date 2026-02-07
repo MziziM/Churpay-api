@@ -1,14 +1,19 @@
 import React from "react";
-import { SafeAreaView, View, ScrollView, StyleSheet } from "react-native";
+import { View, ScrollView, StyleSheet } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "./theme";
 
-export const Screen = ({ children, footer }) => {
+export const Screen = ({ children, footer, disableScroll = false, contentContainerStyle }) => {
   const { palette, spacing } = useTheme();
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: palette.background }]}> 
       <View style={styles.centerWrap}>
         <View style={[styles.contentWrap, { paddingHorizontal: spacing.xl }]}> 
-          <ScrollView contentContainerStyle={{ paddingVertical: spacing.xl, gap: spacing.xl }}>
+          <ScrollView
+            contentContainerStyle={[{ paddingVertical: spacing.xl, gap: spacing.xl }, contentContainerStyle]}
+            showsVerticalScrollIndicator={false}
+            scrollEnabled={!disableScroll}
+          >
             {children}
           </ScrollView>
           {footer ? <View style={{ paddingVertical: spacing.lg }}>{footer}</View> : null}

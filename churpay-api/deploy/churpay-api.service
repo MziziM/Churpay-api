@@ -1,0 +1,26 @@
+[Unit]
+Description=Churpay API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=churpay
+Group=churpay
+WorkingDirectory=/var/www/churpay/churpay-api
+EnvironmentFile=/etc/churpay/churpay-api.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/env node src/index.js
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=churpay-api
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

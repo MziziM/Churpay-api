@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Churpay Super Admin Login</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/brand/tokens.css" />
+  <link rel="stylesheet" href="/admin/styles.css" />
+</head>
+<body>
+  <section class="auth-view">
+    <div class="auth-card">
+      <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="auth-logo" data-logo />
+      <h1>Welcome back</h1>
+      <p class="auth-sub">Super Admin — Manage churches, funds, and transactions platform-wide.</p>
+      <form id="loginForm" class="form-grid">
+        <label class="field">
+          <span>Email</span>
+          <input id="identifierInput" type="text" autocomplete="username" placeholder="super@churpay.com" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+        </label>
+        <button id="loginBtn" type="submit" class="btn primary full">Sign in</button>
+      </form>
+      <div id="authError" class="inline-error hidden"></div>
+    </div>
+  </section>
+
+  <script>
+    (function () {
+      const TOKEN_KEY = "churpay.super.token";
+      const form = document.getElementById("loginForm");
+      const identifierInput = document.getElementById("identifierInput");
+      const passwordInput = document.getElementById("passwordInput");
+      const loginBtn = document.getElementById("loginBtn");
+      const authError = document.getElementById("authError");
+
+      const existingToken = window.localStorage.getItem(TOKEN_KEY);
+      if (existingToken) {
+        fetch("/api/super/me", { headers: { Authorization: `Bearer ${existingToken}` } })
+          .then((res) => {
+            if (res.ok) {
+              window.location.assign("/super/");
+              return;
+            }
+            window.localStorage.removeItem(TOKEN_KEY);
+          })
+          .catch(() => window.localStorage.removeItem(TOKEN_KEY));
+      }
+
+      function showError(message) {
+        if (!message) {
+          authError.classList.add("hidden");
+          authError.textContent = "";
+          return;
+        }
+        authError.classList.remove("hidden");
+        authError.textContent = message;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        showError("");
+        loginBtn.disabled = true;
+        loginBtn.textContent = "Signing in...";
+        try {
+          const response = await fetch("/api/super/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              identifier: identifierInput.value,
+              password: passwordInput.value,
+            }),
+          });
+
+          const raw = await response.text();
+          const json = raw ? JSON.parse(raw) : null;
+          if (!response.ok) throw new Error(json?.error || "Login failed");
+
+          window.localStorage.setItem(TOKEN_KEY, json.token);
+          window.location.assign("/super/");
+        } catch (err) {
+          showError(err?.message || "Login failed");
+        } finally {
+          loginBtn.disabled = false;
+          loginBtn.textContent = "Sign in";
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Churpay Super Admin Portal</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/brand/tokens.css" />
+  <link rel="stylesheet" href="/admin/styles.css" />
+</head>
+<body>
+  <div id="loadingScreen" class="loading-screen">
+    <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="loading-logo" data-logo />
+    <p>Loading super admin portal...</p>
+  </div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="churchDialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-card" id="churchDialogForm">
+      <h3 id="churchDialogTitle">Create church</h3>
+      <div class="form-grid">
+        <label class="field">
+          <span>Church name</span>
+          <input id="churchDialogName" type="text" required />
+        </label>
+        <label class="field">
+          <span>Join code (optional)</span>
+          <input id="churchDialogJoinCode" type="text" placeholder="Auto-generate if blank" />
+        </label>
+        <label class="field field-checkbox">
+          <input id="churchDialogActive" type="checkbox" checked />
+          <span>Active</span>
+        </label>
+      </div>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="churchDialogSaveBtn" type="submit" value="ok" class="btn primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="qrDialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-card">
+      <h3>Fund QR</h3>
+      <div class="meta-stack">
+        <label class="field">
+          <span>Church</span>
+          <input id="qrChurchName" type="text" readonly />
+        </label>
+        <label class="field">
+          <span>Fund</span>
+          <input id="qrFundName" type="text" readonly />
+        </label>
+        <label class="field">
+          <span>Payload</span>
+          <textarea id="qrPayload" rows="3" readonly></textarea>
+        </label>
+        <label class="field">
+          <span>Deep link</span>
+          <input id="qrDeepLink" type="text" readonly />
+        </label>
+        <label class="field">
+          <span>Web link</span>
+          <input id="qrWebLink" type="text" readonly />
+        </label>
+      </div>
+      <menu>
+        <button id="copyQrPayloadBtn" type="button" class="btn ghost">Copy payload</button>
+        <button id="copyQrWebBtn" type="button" class="btn ghost">Copy web link</button>
+        <button type="submit" value="cancel" class="btn primary">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <section id="appView" class="app-shell hidden">
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+    <aside id="sidebar" class="sidebar">
+      <a href="/super/" class="sidebar-logo" aria-label="Churpay super admin home">
+        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="logo-full" data-logo />
+      </a>
+      <div class="sidebar-divider"></div>
+      <nav id="navTabs" class="sidebar-nav" aria-label="Super admin navigation">
+        <button class="nav-link active" data-tab="dashboard" type="button">Dashboard</button>
+        <button class="nav-link" data-tab="churches" type="button">Churches</button>
+        <button class="nav-link" data-tab="transactions" type="button">Transactions</button>
+        <button class="nav-link" data-tab="funds" type="button">Funds</button>
+        <button class="nav-link" data-tab="members" type="button">Members</button>
+        <button class="nav-link" data-tab="settings" type="button">Settings</button>
+        <button class="nav-link" data-tab="audit" type="button">Audit Logs</button>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="themeToggleBtn" type="button" class="btn ghost full">Switch to light mode</button>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="sidebarToggleBtn" class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navTabs">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="topbar-logo" data-logo />
+          <div>
+            <p id="pageKicker" class="page-kicker">Super Admin Portal</p>
+            <h1 id="pageTitle">Dashboard</h1>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="identity">
+            <div id="superName" class="identity-main">Super Admin</div>
+            <div id="superMeta" class="identity-sub">Platform-wide control</div>
+          </div>
+          <button id="refreshBtn" class="btn ghost" type="button">Refresh</button>
+          <button id="logoutBtn" class="btn danger" type="button">Log out</button>
+        </div>
+      </header>
+
+      <div id="statusInline" class="status-inline hidden"></div>
+
+      <main class="content">
+        <section id="panel-dashboard" class="panel">
+          <div class="card">
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Church</span>
+                <select id="dashChurchSelect"><option value="">All churches</option></select>
+              </label>
+              <label class="field">
+                <span>From</span>
+                <input id="dashFromInput" type="date" />
+              </label>
+              <label class="field">
+                <span>To</span>
+                <input id="dashToInput" type="date" />
+              </label>
+              <button id="applyDashFiltersBtn" class="btn primary" type="button">Apply</button>
+            </div>
+          </div>
+
+          <div class="card card-grid">
+            <article class="stat-card"><p>Total donations (30 days)</p><h3 id="statMonthTotal">R 0.00</h3></article>
+            <article class="stat-card"><p>Total fees collected</p><h3 id="statTotalFeesCollected">R 0.00</h3></article>
+            <article class="stat-card"><p>Super Admin cut</p><h3 id="statTotalSuperadminCut">R 0.00</h3></article>
+            <article class="stat-card"><p>Net platform revenue</p><h3 id="statNetPlatformRevenue">R 0.00</h3></article>
+            <article class="stat-card"><p>Today donations</p><h3 id="statTodayTotal">R 0.00</h3></article>
+            <article class="stat-card"><p>7-day donations</p><h3 id="statWeekTotal">R 0.00</h3></article>
+            <article class="stat-card"><p>Total churches</p><h3 id="statChurches">0</h3></article>
+            <article class="stat-card"><p>Active funds</p><h3 id="statFunds">0</h3></article>
+            <article class="stat-card"><p>Failed payments</p><h3 id="statFailed">0</h3></article>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Recent transactions</h2></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Reference</th><th>Donation</th><th>Fee</th><th>Total charged</th><th>Super cut</th><th>Church</th><th>Fund</th><th>Status</th><th>Date</th></tr></thead>
+                <tbody id="dashboardRecentBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-churches" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Churches</h2>
+              <button id="openCreateChurchBtn" class="btn primary" type="button">Create church</button>
+            </div>
+            <div class="filter-grid compact-grid">
+              <label class="field"><span>Search</span><input id="churchSearchInput" type="text" placeholder="Church name or join code" /></label>
+              <label class="field"><span>Limit</span><input id="churchLimitInput" type="number" min="1" max="200" value="50" /></label>
+              <button id="applyChurchFiltersBtn" class="btn ghost" type="button">Apply</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Church</th><th>Join code</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody id="churchesBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Church details</h2></div>
+            <div id="churchDetailsMeta" class="meta-line">Select a church to view details.</div>
+            <div class="two-col-grid">
+              <section>
+                <h3>Funds</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Name</th><th>Code</th><th>Status</th><th>Created</th></tr></thead>
+                    <tbody id="churchDetailFundsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <h3>Admins</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Role</th></tr></thead>
+                    <tbody id="churchDetailAdminsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+            <section>
+              <h3>Recent transactions</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Reference</th><th>Amount</th><th>Fund</th><th>Status</th><th>Date</th></tr></thead>
+                  <tbody id="churchDetailTransactionsBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-transactions" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Transactions</h2>
+              <button id="exportTxBtn" class="btn ghost" type="button">Export CSV</button>
+            </div>
+            <div class="filter-grid">
+              <label class="field"><span>Church</span><select id="txChurchSelect"><option value="">All churches</option></select></label>
+              <label class="field"><span>Fund</span><select id="txFundSelect"><option value="">All funds</option></select></label>
+              <label class="field"><span>Provider</span><select id="txProviderSelect"><option value="">All providers</option><option value="payfast">PayFast</option><option value="app">App</option><option value="simulated">Simulated</option><option value="manual">Manual</option></select></label>
+              <label class="field"><span>Status</span><select id="txStatusSelect"><option value="">All statuses</option><option value="PAID">PAID</option><option value="PENDING">PENDING</option><option value="FAILED">FAILED</option></select></label>
+              <label class="field"><span>Search</span><input id="txSearchInput" type="text" placeholder="Reference, member, church" /></label>
+              <label class="field"><span>From</span><input id="txFromInput" type="date" /></label>
+              <label class="field"><span>To</span><input id="txToInput" type="date" /></label>
+              <label class="field"><span>Limit</span><input id="txLimitInput" type="number" min="1" max="200" value="25" /></label>
+              <button id="applyTxFiltersBtn" class="btn primary" type="button">Apply filters</button>
+            </div>
+            <div id="txMeta" class="meta-line">Loading...</div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Reference</th><th>Donation</th><th>Fee</th><th>Total charged</th><th>Super cut</th><th>Church</th><th>Fund</th><th>Member</th><th>Provider</th><th>Status</th><th>Date</th></tr></thead>
+                <tbody id="transactionsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-funds" class="panel hidden">
+          <div class="card">
+            <div class="card-head"><h2>Funds</h2></div>
+            <div class="filter-grid compact-grid">
+              <label class="field"><span>Church</span><select id="fundChurchSelect"><option value="">All churches</option></select></label>
+              <label class="field"><span>Search</span><input id="fundSearchInput" type="text" placeholder="Fund or code" /></label>
+              <button id="applyFundFiltersBtn" class="btn ghost" type="button">Apply</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Code</th><th>Church</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody id="fundsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-members" class="panel hidden">
+          <div class="card">
+            <div class="card-head"><h2>Members</h2></div>
+            <div class="filter-grid compact-grid">
+              <label class="field"><span>Search</span><input id="memberSearchInput" type="text" placeholder="Name, email, phone" /></label>
+              <label class="field"><span>Role</span><select id="memberRoleSelect"><option value="">All roles</option><option value="super">Super</option><option value="admin">Admin</option><option value="member">Member</option></select></label>
+              <label class="field"><span>Church</span><select id="memberChurchSelect"><option value="">All churches</option></select></label>
+              <button id="applyMemberFiltersBtn" class="btn ghost" type="button">Apply</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Church</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead>
+                <tbody id="membersBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-settings" class="panel hidden">
+          <div class="card">
+            <div class="card-head"><h2>System settings</h2></div>
+            <div class="two-col-grid">
+              <section>
+                <h3>Environment</h3>
+                <p id="settingsEnvironment" class="meta-line">-</p>
+                <h3>Webhook status</h3>
+                <p id="settingsWebhook" class="meta-line">-</p>
+              </section>
+              <section>
+                <h3>Rate limits</h3>
+                <p id="settingsRateLimits" class="meta-line">-</p>
+                <h3>Maintenance mode</h3>
+                <label class="field field-checkbox">
+                  <input id="settingsMaintenance" type="checkbox" disabled />
+                  <span>Maintenance mode (read-only)</span>
+                </label>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-audit" class="panel hidden">
+          <div class="card">
+            <div class="card-head"><h2>Audit logs</h2></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Time</th><th>Actor</th><th>Action</th></tr></thead>
+                <tbody id="auditBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="powered-by">
+        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="powered-logo" data-logo />
+        <span>Powered by Churpay</span>
+      </footer>
+    </div>
+  </section>
+
+  <script src="/super/app.js"></script>
+</body>
+</html>

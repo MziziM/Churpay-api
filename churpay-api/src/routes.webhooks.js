@@ -4,6 +4,25 @@ import { db } from "./db.js";
 
 const router = express.Router();
 const BUILD = "v2026-02-05-1105";
+const DEFAULT_PLATFORM_FEE_FIXED = 2.5;
+const DEFAULT_PLATFORM_FEE_PCT = 0.0075;
+const DEFAULT_SUPERADMIN_CUT_PCT = 1.0;
+
+function toCurrencyNumber(value) {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return Number.isFinite(rounded) ? Number(rounded.toFixed(2)) : 0;
+}
+
+function readFeeConfig() {
+  const fixed = Number(process.env.PLATFORM_FEE_FIXED ?? DEFAULT_PLATFORM_FEE_FIXED);
+  const pct = Number(process.env.PLATFORM_FEE_PCT ?? DEFAULT_PLATFORM_FEE_PCT);
+  const superPct = Number(process.env.SUPERADMIN_CUT_PCT ?? DEFAULT_SUPERADMIN_CUT_PCT);
+  return {
+    fixed: Number.isFinite(fixed) ? fixed : DEFAULT_PLATFORM_FEE_FIXED,
+    pct: Number.isFinite(pct) ? pct : DEFAULT_PLATFORM_FEE_PCT,
+    superPct: Number.isFinite(superPct) ? superPct : DEFAULT_SUPERADMIN_CUT_PCT,
+  };
+}
 
 // PayFast sends application/x-www-form-urlencoded POST (ITN)
 // Debug helper: PayFast will POST ITN, but this helps confirm the route is mounted.
@@ -102,7 +121,7 @@ router.post(
 
       const grossRaw = params.amount_gross ?? params.amount ?? "0";
       const gross = Number(grossRaw);
-      const expected = Number(intent.amount);
+      const expected = Number(intent.amount_gross ?? intent.amount);
 
       if (!Number.isFinite(gross) || !Number.isFinite(expected)) {
         console.warn("[itn] invalid amounts", { grossRaw, expected });
@@ -120,7 +139,7 @@ router.post(
       if (status === "COMPLETE") {
         await db.tx(async (t) => {
           await t.none(
-            "update payment_intents set status='PAID', provider_payment_id=$2, updated_at=now() where id=$1 and status <> 'PAID'",
+            "update payment_intents set status='PAID', provider='payfast', provider_payment_id=$2, updated_at=now() where id=$1 and coalesce(status,'') <> 'PAID'",
             [intent.id, pfPaymentId]
           );
 
@@ -130,22 +149,45 @@ router.post(
           );
 
           if (!existing) {
+            const feeCfg = readFeeConfig();
+            const platformFeeAmount = toCurrencyNumber(
+              intent.platform_fee_amount ?? feeCfg.fixed + Number(intent.amount || 0) * feeCfg.pct
+            );
+            const amountGross = toCurrencyNumber(intent.amount_gross ?? Number(intent.amount || 0) + platformFeeAmount);
+            const superadminCutPct = Number.isFinite(Number(intent.superadmin_cut_pct))
+              ? Number(intent.superadmin_cut_pct)
+              : feeCfg.superPct;
+            const superadminCutAmount = toCurrencyNumber(
+              intent.superadmin_cut_amount ?? platformFeeAmount * superadminCutPct
+            );
             await t.none(
               `insert into transactions (
                  church_id,
                  fund_id,
                  payment_intent_id,
                  amount,
+                 platform_fee_amount,
+                 platform_fee_pct,
+                 platform_fee_fixed,
+                 amount_gross,
+                 superadmin_cut_amount,
+                 superadmin_cut_pct,
                  reference,
                  channel,
                  provider,
                  provider_payment_id
-               ) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+               ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
               [
                 intent.church_id,
                 intent.fund_id,
                 intent.id,
                 intent.amount,
+                platformFeeAmount,
+                Number(intent.platform_fee_pct ?? feeCfg.pct),
+                Number(intent.platform_fee_fixed ?? feeCfg.fixed),
+                amountGross,
+                superadminCutAmount,
+                superadminCutPct,
                 intent.m_payment_id,
                 "app",
                 "payfast",
@@ -160,7 +202,7 @@ router.post(
 
       if (status === "FAILED") {
         await db.none(
-          "update payment_intents set status='FAILED', provider_payment_id=$2, updated_at=now() where id=$1 and status <> 'PAID'",
+          "update payment_intents set status='FAILED', provider='payfast', provider_payment_id=$2, updated_at=now() where id=$1 and coalesce(status,'') <> 'PAID'",
           [intent.id, pfPaymentId]
         );
         return res.status(200).send("OK");
@@ -168,7 +210,7 @@ router.post(
 
       if (status === "CANCELLED") {
         await db.none(
-          "update payment_intents set status='CANCELLED', provider_payment_id=$2, updated_at=now() where id=$1 and status <> 'PAID'",
+          "update payment_intents set status='CANCELLED', provider='payfast', provider_payment_id=$2, updated_at=now() where id=$1 and coalesce(status,'') <> 'PAID'",
           [intent.id, pfPaymentId]
         );
         return res.status(200).send("OK");

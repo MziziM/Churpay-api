@@ -1,13 +1,14 @@
 import React from "react";
-import { View, Text, Image, StyleSheet } from "react-native";
-import { useTheme } from "./theme";
+import { View, Image, StyleSheet } from "react-native";
 
-export const BrandHeader = () => {
-  const { palette, spacing, typography } = useTheme();
+export const BrandHeader = ({ compact = false }) => {
   return (
-    <View style={[styles.wrap, { gap: spacing.xs }]}> 
-      <Image source={require("../../../assets/churpay-logo.png")} style={styles.logo} resizeMode="contain" />
-      <Text style={[styles.tagline, { color: palette.muted, fontSize: typography.body }]}>Giving made easy.</Text>
+    <View style={styles.wrap}>
+      <Image
+        source={require("../../../assets/churpay-logo.png")}
+        style={compact ? styles.logoCompact : styles.logo}
+        resizeMode="contain"
+      />
     </View>
   );
 };
@@ -18,10 +19,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   logo: {
-    width: 240,
-    height: 90,
+    width: 220,
+    height: 110,
   },
-  tagline: {
-    fontWeight: "600",
+  logoCompact: {
+    width: 160,
+    height: 80,
   },
 });

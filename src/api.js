@@ -115,7 +115,13 @@ export async function registerMember(payload) {
 }
 
 export async function loginMember(payload) {
-  const data = await request("/auth/login", { method: "POST", body: payload, auth: false });
+  const data = await request("/auth/login/member", { method: "POST", body: payload, auth: false });
+  if (data?.token) await setSessionToken(data.token);
+  return data;
+}
+
+export async function loginAdmin(payload) {
+  const data = await request("/auth/login/admin", { method: "POST", body: payload, auth: false });
   if (data?.token) await setSessionToken(data.token);
   return data;
 }
@@ -141,11 +147,16 @@ export function getMyChurchProfile() {
 }
 
 export function createMyChurchProfile({ name, joinCode }) {
-  return request("/auth/church/me", { method: "POST", body: { name, joinCode } });
+  const body = { name };
+  if (joinCode) body.joinCode = joinCode;
+  return request("/auth/church/me", { method: "POST", body });
 }
 
 export function updateMyChurchProfile({ name, joinCode }) {
-  return request("/auth/church/me", { method: "PATCH", body: { name, joinCode } });
+  const body = {};
+  if (typeof name !== "undefined") body.name = name;
+  if (joinCode) body.joinCode = joinCode;
+  return request("/auth/church/me", { method: "PATCH", body });
 }
 
 export function lookupJoinCode(joinCode) {
@@ -155,6 +166,16 @@ export function lookupJoinCode(joinCode) {
 export function listFunds(includeInactive = false) {
   const query = includeInactive ? "?includeInactive=1" : "";
   return request(`/funds${query}`);
+}
+
+export function getChurchQr({ fundId, amount } = {}) {
+  const params = new URLSearchParams();
+  if (fundId) params.append("fundId", fundId);
+  if (typeof amount !== "undefined" && amount !== null && amount !== "") {
+    params.append("amount", amount);
+  }
+  const qs = params.toString();
+  return request(`/churches/me/qr${qs ? `?${qs}` : ""}`);
 }
 
 export function createFund({ name, code, active = true }) {

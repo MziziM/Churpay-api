@@ -105,5 +105,9 @@ async function tx(fn) {
   }
 }
 
-export const db = { query, any, manyOrNone, one, oneOrNone, none, tx };
+async function close() {
+  await pool.end();
+}
+
+export const db = { query, any, manyOrNone, one, oneOrNone, none, tx, close };
 export default db;

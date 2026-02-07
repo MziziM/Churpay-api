@@ -2,7 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { db } from "./db.js";
-import { requireAuth, signUserToken } from "./auth.js";
+import { requireAuth, requireAdmin, signSuperToken, signUserToken } from "./auth.js";
 
 const router = express.Router();
 let ensureMembersStoragePromise = null;
@@ -25,8 +25,30 @@ function normalizeJoinCode(value) {
   return normalized || null;
 }
 
-function generateJoinCode() {
-  return `CH${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+function isAdminRole(role) {
+  return role === "admin" || role === "super";
+}
+
+function joinCodePrefixFromChurchName(name) {
+  const raw = String(name || "")
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[^A-Za-z0-9\s]/g, " ")
+    .trim();
+  const words = raw.split(/\s+/).filter(Boolean);
+
+  if (!words.length) return "CH";
+
+  let prefix = words.map((w) => w[0]).join("").toUpperCase();
+  if (!prefix) prefix = "CH";
+  if (prefix.length < 2) prefix = (words[0] || "CH").slice(0, 2).toUpperCase();
+  return prefix.slice(0, 8);
+}
+
+function generateJoinCode(churchName) {
+  const prefix = joinCodePrefixFromChurchName(churchName);
+  const suffix = String(crypto.randomInt(0, 10000)).padStart(4, "0");
+  return `${prefix}-${suffix}`;
 }
 
 function toChurchProfile(row) {
@@ -290,14 +312,53 @@ async function fetchChurch(churchId) {
   );
 }
 
-async function ensureUniqueJoinCode(desired) {
-  let joinCode = normalizeJoinCode(desired) || generateJoinCode();
-  for (let i = 0; i < 5; i += 1) {
+async function ensureUniqueJoinCode({ desired, churchName }) {
+  const candidates = [];
+  const desiredCode = normalizeJoinCode(desired);
+  if (desiredCode) candidates.push(desiredCode);
+
+  for (let i = 0; i < 50; i += 1) {
+    candidates.push(generateJoinCode(churchName));
+  }
+
+  const seen = new Set();
+  for (const joinCode of candidates) {
+    if (!joinCode || seen.has(joinCode)) continue;
+    seen.add(joinCode);
     const exists = await db.oneOrNone("select id from churches where upper(join_code)=upper($1)", [joinCode]);
     if (!exists) return joinCode;
-    joinCode = generateJoinCode();
   }
+
   throw new Error("Unable to generate unique join code");
+}
+
+async function handleLogin(req, res, expectedRole = null) {
+  const { phone, email, password, identifier } = req.body || {};
+  const normalizedPhone = normalizePhone(phone || (identifier && !String(identifier).includes("@") ? identifier : null));
+  const normalizedEmail = normalizeEmail(email || (identifier && String(identifier).includes("@") ? identifier : null));
+  const pwd = typeof password === "string" ? password : "";
+
+  if (!normalizedPhone && !normalizedEmail) {
+    return res.status(400).json({ error: "Phone or email is required" });
+  }
+  if (!pwd) return res.status(400).json({ error: "Password is required" });
+
+  const row = await findAuthMember({ normalizedPhone, normalizedEmail });
+  if (!row) return res.status(401).json({ error: "Invalid credentials" });
+
+  const match = await checkPassword(row, pwd);
+  if (!match) return res.status(401).json({ error: "Invalid credentials" });
+
+  if (expectedRole === "admin" && !isAdminRole(row.role)) {
+    return res.status(403).json({ error: "Admin login required" });
+  }
+  if (expectedRole === "member" && isAdminRole(row.role)) {
+    return res.status(403).json({ error: "Use admin login" });
+  }
+
+  const profile = toProfile(row);
+  const token = signUserToken(row);
+  return res.json({ token, profile, member: profile });
 }
 
 router.post("/register", async (req, res) => {
@@ -344,29 +405,59 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
   try {
-    const { phone, email, password, identifier } = req.body || {};
-    const normalizedPhone = normalizePhone(phone || (identifier && !String(identifier).includes("@") ? identifier : null));
-    const normalizedEmail = normalizeEmail(email || (identifier && String(identifier).includes("@") ? identifier : null));
-    const pwd = typeof password === "string" ? password : "";
-
-    if (!normalizedPhone && !normalizedEmail) {
-      return res.status(400).json({ error: "Phone or email is required" });
-    }
-    if (!pwd) return res.status(400).json({ error: "Password is required" });
-
-    const row = await findAuthMember({ normalizedPhone, normalizedEmail });
-    if (!row) return res.status(401).json({ error: "Invalid credentials" });
-
-    const match = await checkPassword(row, pwd);
-    if (!match) return res.status(401).json({ error: "Invalid credentials" });
-
-    const profile = toProfile(row);
-    const token = signUserToken(row);
-
-    res.json({ token, profile, member: profile });
+    return await handleLogin(req, res, null);
   } catch (err) {
     console.error("[auth/login]", err?.message || err, err?.stack);
-    res.status(500).json(internalErrorPayload(err));
+    return res.status(500).json(internalErrorPayload(err));
+  }
+});
+
+router.post("/login/member", async (req, res) => {
+  try {
+    return await handleLogin(req, res, "member");
+  } catch (err) {
+    console.error("[auth/login/member]", err?.message || err, err?.stack);
+    return res.status(500).json(internalErrorPayload(err));
+  }
+});
+
+router.post("/login/admin", async (req, res) => {
+  try {
+    return await handleLogin(req, res, "admin");
+  } catch (err) {
+    console.error("[auth/login/admin]", err?.message || err, err?.stack);
+    return res.status(500).json(internalErrorPayload(err));
+  }
+});
+
+router.post("/login/super", async (req, res) => {
+  try {
+    const identifier = String(req.body?.identifier || req.body?.email || "").toLowerCase().trim();
+    const password = String(req.body?.password || "");
+
+    if (!identifier || !password) {
+      return res.status(400).json({ error: "Missing credentials" });
+    }
+
+    const superEmail = String(process.env.SUPER_ADMIN_EMAIL || "").toLowerCase().trim();
+    const superPass = String(process.env.SUPER_ADMIN_PASSWORD || "");
+    if (!superEmail || !superPass) {
+      return res.status(500).json({ error: "Super admin not configured" });
+    }
+
+    if (identifier !== superEmail || password !== superPass) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const token = signSuperToken(superEmail);
+    return res.json({
+      ok: true,
+      token,
+      profile: { role: "super", email: superEmail, fullName: "Super Admin" },
+    });
+  } catch (err) {
+    console.error("[auth/login/super]", err?.message || err, err?.stack);
+    return res.status(500).json(internalErrorPayload(err));
   }
 });
 
@@ -496,12 +587,8 @@ router.get("/church/me", requireAuth, async (req, res) => {
   }
 });
 
-router.post("/church/me", requireAuth, async (req, res) => {
+router.post("/church/me", requireAdmin, async (req, res) => {
   try {
-    if (req.user?.role !== "admin") {
-      return res.status(403).json({ error: "Admin only" });
-    }
-
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const requestedJoinCode = normalizeJoinCode(req.body?.joinCode);
     if (!name) return res.status(400).json({ error: "Church name is required" });
@@ -518,7 +605,10 @@ router.post("/church/me", requireAuth, async (req, res) => {
       }
     }
 
-    const joinCode = await ensureUniqueJoinCode(requestedJoinCode);
+    const joinCode = await ensureUniqueJoinCode({
+      desired: requestedJoinCode,
+      churchName: name,
+    });
     const church = await db.one(
       `insert into churches (name, join_code)
        values ($1, $2)
@@ -544,12 +634,8 @@ router.post("/church/me", requireAuth, async (req, res) => {
   }
 });
 
-router.patch("/church/me", requireAuth, async (req, res) => {
+router.patch("/church/me", requireAdmin, async (req, res) => {
   try {
-    if (req.user?.role !== "admin") {
-      return res.status(403).json({ error: "Admin only" });
-    }
-
     const member = await fetchMember(req.user.id);
     if (!member?.church_id) {
       return res.status(404).json({ error: "No church assigned" });

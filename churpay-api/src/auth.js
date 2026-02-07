@@ -1,8 +1,13 @@
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const isProduction = process.env.NODE_ENV === "production";
+const JWT_SECRET = process.env.JWT_SECRET || (isProduction ? null : "churpay-dev-insecure-secret-change-me");
 if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET is required");
+  throw new Error("JWT_SECRET is required in production");
+}
+
+if (!process.env.JWT_SECRET) {
+  console.warn("[auth] JWT_SECRET missing; using insecure development fallback secret");
 }
 
 export function signSuperToken(email) {
@@ -37,7 +42,7 @@ export function requireAuth(req, res, next) {
 
 export function requireAdmin(req, res, next) {
   return requireAuth(req, res, () => {
-    if (req.user?.role !== "admin") {
+    if (req.user?.role !== "admin" && req.user?.role !== "super") {
       return res.status(403).json({ error: "Admin only" });
     }
     return next();
@@ -50,7 +55,9 @@ export function requireSuperAdmin(req, res, next) {
     const [, token] = auth.split(" ");
     if (!token) return res.status(401).json({ error: "Missing token" });
     const payload = jwt.verify(token, JWT_SECRET);
-    if (!payload || payload.role !== "super") return res.status(403).json({ error: "Forbidden" });
+    if (!payload || (payload.role !== "super" && payload.role !== "super_admin")) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     req.superAdmin = payload;
     return next();
   } catch (e) {

@@ -6,9 +6,46 @@ import crypto from "node:crypto";
 
 const router = express.Router();
 const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
+const isAdminRole = (role) => role === "admin" || role === "super";
+const DEFAULT_PLATFORM_FEE_FIXED = 2.5;
+const DEFAULT_PLATFORM_FEE_PCT = 0.0075;
+const DEFAULT_SUPERADMIN_CUT_PCT = 1.0;
 
 function makeMpaymentId() {
   return "CP-" + crypto.randomBytes(8).toString("hex").toUpperCase();
+}
+
+function toCurrencyNumber(value) {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return Number.isFinite(rounded) ? Number(rounded.toFixed(2)) : 0;
+}
+
+function readFeeConfig() {
+  const fixed = Number(process.env.PLATFORM_FEE_FIXED ?? DEFAULT_PLATFORM_FEE_FIXED);
+  const pct = Number(process.env.PLATFORM_FEE_PCT ?? DEFAULT_PLATFORM_FEE_PCT);
+  const superPct = Number(process.env.SUPERADMIN_CUT_PCT ?? DEFAULT_SUPERADMIN_CUT_PCT);
+  return {
+    fixed: Number.isFinite(fixed) ? fixed : DEFAULT_PLATFORM_FEE_FIXED,
+    pct: Number.isFinite(pct) ? pct : DEFAULT_PLATFORM_FEE_PCT,
+    superPct: Number.isFinite(superPct) ? superPct : DEFAULT_SUPERADMIN_CUT_PCT,
+  };
+}
+
+function buildFeeBreakdown(amountRaw) {
+  const amount = toCurrencyNumber(amountRaw);
+  const cfg = readFeeConfig();
+  const platformFeeAmount = toCurrencyNumber(cfg.fixed + amount * cfg.pct);
+  const amountGross = toCurrencyNumber(amount + platformFeeAmount);
+  const superadminCutAmount = toCurrencyNumber(platformFeeAmount * cfg.superPct);
+  return {
+    amount,
+    platformFeeAmount,
+    platformFeePct: cfg.pct,
+    platformFeeFixed: cfg.fixed,
+    amountGross,
+    superadminCutAmount,
+    superadminCutPct: cfg.superPct,
+  };
 }
 
 const UUID_REGEX = /^[0-9a-fA-F-]{36}$/;
@@ -47,7 +84,7 @@ function resolveChurchId(req, res, requestedChurchId) {
     return ownChurchId;
   }
 
-  if (requestedChurchId !== ownChurchId && req.user?.role !== "admin") {
+  if (requestedChurchId !== ownChurchId && !isAdminRole(req.user?.role)) {
     res.status(403).json({ error: "Forbidden" });
     return null;
   }
@@ -87,17 +124,23 @@ async function ensureDefaultFund(churchId) {
 
 async function listFundsForChurch(churchId, includeInactive = false) {
   const where = includeInactive ? "church_id=$1" : "church_id=$1 and active=true";
-  let funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+  let funds = await db.manyOrNone(
+    `select id, code, name, active, created_at as "createdAt" from funds where ${where} order by name asc`,
+    [churchId]
+  );
 
   if (!includeInactive && funds.length === 0) {
     await ensureDefaultFund(churchId);
-    funds = await db.manyOrNone(`select id, code, name, active from funds where ${where} order by name asc`, [churchId]);
+    funds = await db.manyOrNone(
+      `select id, code, name, active, created_at as "createdAt" from funds where ${where} order by name asc`,
+      [churchId]
+    );
   }
 
   return funds;
 }
 
-function buildTransactionFilter({ churchId, fundId, channel, from, to }) {
+function buildTransactionFilter({ churchId, fundId, channel, status, search, from, to }) {
   const where = ["t.church_id = $1"];
   const params = [churchId];
   let paramIndex = 2;
@@ -111,6 +154,23 @@ function buildTransactionFilter({ churchId, fundId, channel, from, to }) {
   if (channel) {
     params.push(channel);
     where.push(`t.channel = $${paramIndex}`);
+    paramIndex++;
+  }
+
+  if (status) {
+    params.push(String(status).toUpperCase());
+    where.push(
+      `upper(coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else t.provider end)) = $${paramIndex}`
+    );
+    paramIndex++;
+  }
+
+  if (typeof search === "string" && search.trim()) {
+    const term = `%${search.trim()}%`;
+    params.push(term);
+    where.push(
+      `(t.reference ilike $${paramIndex} or coalesce(pi.member_name, '') ilike $${paramIndex} or coalesce(pi.member_phone, '') ilike $${paramIndex})`
+    );
     paramIndex++;
   }
 
@@ -165,7 +225,13 @@ async function ensurePaymentIntentsTable() {
       provider text,
       provider_payment_id text,
       m_payment_id text,
-      item_name text
+      item_name text,
+      platform_fee_amount numeric(12,2),
+      platform_fee_pct numeric(6,4),
+      platform_fee_fixed numeric(12,2),
+      amount_gross numeric(12,2),
+      superadmin_cut_amount numeric(12,2),
+      superadmin_cut_pct numeric(6,4)
     );
     alter table payment_intents
       add column if not exists currency text default 'ZAR',
@@ -176,9 +242,22 @@ async function ensurePaymentIntentsTable() {
       add column if not exists provider text,
       add column if not exists channel text,
       add column if not exists member_name text,
-      add column if not exists member_phone text;
+      add column if not exists member_phone text,
+      add column if not exists platform_fee_amount numeric(12,2),
+      add column if not exists platform_fee_pct numeric(6,4),
+      add column if not exists platform_fee_fixed numeric(12,2),
+      add column if not exists amount_gross numeric(12,2),
+      add column if not exists superadmin_cut_amount numeric(12,2),
+      add column if not exists superadmin_cut_pct numeric(6,4);
     create index if not exists idx_payment_intents_church on payment_intents (church_id);
     create index if not exists idx_payment_intents_fund on payment_intents (fund_id);
+    alter table if exists transactions
+      add column if not exists platform_fee_amount numeric(12,2),
+      add column if not exists platform_fee_pct numeric(6,4),
+      add column if not exists platform_fee_fixed numeric(12,2),
+      add column if not exists amount_gross numeric(12,2),
+      add column if not exists superadmin_cut_amount numeric(12,2),
+      add column if not exists superadmin_cut_pct numeric(6,4);
   `);
 }
 
@@ -188,21 +267,84 @@ function normalizeBaseUrl() {
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
-function getPayfastCallbackUrls(paymentIntentId) {
+function appendQueryParam(url, key, value) {
+  if (!url || typeof value === "undefined" || value === null || value === "") return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set(key, String(value));
+    return parsed.toString();
+  } catch (_err) {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}${encodeURIComponent(String(key))}=${encodeURIComponent(String(value))}`;
+  }
+}
+
+function getPayfastCallbackUrls(paymentIntentId, mPaymentId = null) {
   const baseUrl = normalizeBaseUrl() || "";
+  const defaultReturn = `${baseUrl}/api/payfast/return`;
+  const defaultCancel = `${baseUrl}/api/payfast/cancel`;
+
+  let returnUrl = String(process.env.PAYFAST_RETURN_URL || defaultReturn).trim();
+  let cancelUrl = String(process.env.PAYFAST_CANCEL_URL || defaultCancel).trim();
+  const notifyUrl = String(process.env.PAYFAST_NOTIFY_URL || `${baseUrl}/webhooks/payfast/itn`).trim();
+
+  returnUrl = appendQueryParam(returnUrl, "pi", paymentIntentId);
+  cancelUrl = appendQueryParam(cancelUrl, "pi", paymentIntentId);
+  returnUrl = appendQueryParam(returnUrl, "mp", mPaymentId);
+  cancelUrl = appendQueryParam(cancelUrl, "mp", mPaymentId);
+
   return {
-    returnUrl: String(process.env.PAYFAST_RETURN_URL || `${baseUrl}/payfast/return?pi=${paymentIntentId}`).trim(),
-    cancelUrl: String(process.env.PAYFAST_CANCEL_URL || `${baseUrl}/payfast/cancel?pi=${paymentIntentId}`).trim(),
-    notifyUrl: String(process.env.PAYFAST_NOTIFY_URL || `${baseUrl}/webhooks/payfast/itn`).trim(),
+    returnUrl,
+    cancelUrl,
+    notifyUrl,
   };
+}
+
+function renderPayfastBridgePage({ title, message, deepLink, fallbackUrl }) {
+  const safeTitle = String(title || "Redirecting");
+  const safeMessage = String(message || "Opening the app...");
+  const link = String(deepLink || "");
+  const fallback = String(fallbackUrl || "https://www.churpay.com");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${safeTitle}</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;padding:24px;color:#222}
+    .card{max-width:560px;margin:32px auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px}
+    a{color:#0b57d0}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>${safeTitle}</h2>
+    <p>${safeMessage}</p>
+    <p><a href="${link}">Tap here if the app does not open</a></p>
+    <p><a href="${fallback}">Continue in browser</a></p>
+  </div>
+  <script>
+    (function () {
+      var appUrl = ${JSON.stringify(link)};
+      var fallbackUrl = ${JSON.stringify(fallback)};
+      if (appUrl) window.location.replace(appUrl);
+      setTimeout(function () { if (fallbackUrl) window.location.href = fallbackUrl; }, 1800);
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 router.get("/funds", requireAuth, async (req, res) => {
   try {
-    const churchId = resolveChurchId(req, res, "me");
+    const requestedChurchId =
+      typeof req.query?.churchId === "string" && req.query.churchId.trim() ? req.query.churchId.trim() : "me";
+    const churchId = resolveChurchId(req, res, requestedChurchId);
     if (!churchId) return;
 
-    const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
+    const includeInactive = isAdminRole(req.user?.role) && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
     const funds = await listFundsForChurch(churchId, includeInactive);
     res.json({ funds });
   } catch (err) {
@@ -216,7 +358,7 @@ router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
     const churchId = resolveChurchId(req, res, req.params.churchId);
     if (!churchId) return;
 
-    const includeInactive = req.user?.role === "admin" && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
+    const includeInactive = isAdminRole(req.user?.role) && ["1", "true", "yes", "all"].includes(String(req.query.includeInactive || req.query.all || "").toLowerCase());
     const funds = await listFundsForChurch(churchId, includeInactive);
     res.json({ funds });
   } catch (err) {
@@ -225,11 +367,87 @@ router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
   }
 });
 
+// Admin-only QR payload generator for in-app donation QR codes.
+router.get("/churches/me/qr", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const fundId = typeof req.query?.fundId === "string" ? req.query.fundId.trim() : "";
+    if (!fundId || !UUID_REGEX.test(fundId)) {
+      return res.status(400).json({ error: "Valid fundId is required" });
+    }
+
+    const fund = await db.oneOrNone(
+      "select id, code, name, active from funds where id=$1 and church_id=$2",
+      [fundId, churchId]
+    );
+    if (!fund) {
+      return res.status(404).json({ error: "Fund not found" });
+    }
+
+    const amountRaw = req.query?.amount;
+    const amount = typeof amountRaw === "undefined" || amountRaw === null || amountRaw === ""
+      ? null
+      : Number(amountRaw);
+    if (amount !== null && (!Number.isFinite(amount) || amount <= 0)) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    const qrPayload = {
+      type: "churpay_donation",
+      churchId,
+      fundId: fund.id,
+      fundCode: fund.code,
+    };
+    if (amount !== null) qrPayload.amount = Number(amount.toFixed(2));
+
+    const qrValue = JSON.stringify(qrPayload);
+    const deepLinkBase = String(process.env.APP_DEEP_LINK_BASE || "churpaydemo://donate")
+      .trim()
+      .replace(/\/+$/, "");
+    let deepLink = deepLinkBase;
+    deepLink = appendQueryParam(deepLink, "churchId", churchId);
+    deepLink = appendQueryParam(deepLink, "fundId", fund.id);
+    deepLink = appendQueryParam(deepLink, "fundCode", fund.code);
+    if (amount !== null) {
+      deepLink = appendQueryParam(deepLink, "amount", Number(amount.toFixed(2)));
+    }
+
+    const base = normalizeBaseUrl();
+    let webLink = base ? `${base}/give` : "";
+    webLink = appendQueryParam(webLink, "churchId", churchId);
+    webLink = appendQueryParam(webLink, "fundId", fund.id);
+    webLink = appendQueryParam(webLink, "fundCode", fund.code);
+    if (amount !== null) {
+      webLink = appendQueryParam(webLink, "amount", Number(amount.toFixed(2)));
+    }
+
+    return res.json({
+      qr: {
+        value: qrValue,
+        payload: qrPayload,
+      },
+      qrPayload,
+      deepLink,
+      webLink,
+      fund: {
+        id: fund.id,
+        code: fund.code,
+        name: fund.name,
+        active: fund.active,
+      },
+    });
+  } catch (err) {
+    console.error("[qr] GET /churches/me/qr error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Get transactions for a church with filters
 router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], requireAuth, async (req, res) => {
   try {
     const requestedChurchId = req.params.churchId || "me";
-    const isMeRoute = requestedChurchId === "me";
     const churchId = resolveChurchId(req, res, requestedChurchId);
     if (!churchId) return;
 
@@ -238,10 +456,21 @@ router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], re
 
     const fundId = req.query.fundId || null;
     const channel = req.query.channel || null;
+    const status = req.query.status || null;
+    const search = req.query.search || null;
     const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
     const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
 
-    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    const { where, params: filterParams, nextParamIndex } = buildTransactionFilter({
+      churchId,
+      fundId,
+      channel,
+      status,
+      search,
+      from,
+      to,
+    });
+    const params = [...filterParams];
     let paramIndex = nextParamIndex;
 
     params.push(limit);
@@ -256,7 +485,13 @@ router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], re
         t.id,
         t.reference,
         t.amount,
+        coalesce(t.platform_fee_amount,0)::numeric(12,2) as "platformFeeAmount",
+        coalesce(t.amount_gross, t.amount)::numeric(12,2) as "amountGross",
+        coalesce(t.superadmin_cut_amount,0)::numeric(12,2) as "superadminCutAmount",
         t.channel,
+        t.provider,
+        t.provider_payment_id as "providerPaymentId",
+        coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else upper(t.provider) end) as status,
         t.created_at as "createdAt",
         pi.member_name as "memberName",
         pi.member_phone as "memberPhone",
@@ -272,10 +507,20 @@ router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], re
     `;
 
     const rows = await db.manyOrNone(sql, params);
+    const countRow = await db.one(
+      `
+      select count(*)::int as count
+      from transactions t
+      join funds f on f.id = t.fund_id
+      left join payment_intents pi on pi.id = t.payment_intent_id
+      where ${where.join(" and ")}
+      `,
+      filterParams
+    );
 
     res.json({
       transactions: rows,
-      meta: { limit, offset, count: rows.length },
+      meta: { limit, offset, count: Number(countRow.count || 0), returned: rows.length },
     });
   } catch (err) {
     console.error("[transactions] GET error", err?.message || err, err?.stack);
@@ -410,6 +655,7 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
     if (!Number.isFinite(amt) || amt <= 0) {
       return res.status(400).json({ error: "Invalid amount" });
     }
+    const pricing = buildFeeBreakdown(amt);
 
     fundId = typeof fundId === "string" ? fundId.trim() : fundId;
     channel = typeof channel === "string" ? channel.trim() : channel;
@@ -455,20 +701,49 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
 
         const intent = await db.one(
           `insert into payment_intents (
-             id, church_id, fund_id, amount, currency, status, member_name, member_phone, channel, provider, provider_payment_id, m_payment_id, item_name, created_at, updated_at
+             id, church_id, fund_id, amount, currency, status, member_name, member_phone, channel, provider, provider_payment_id, m_payment_id, item_name, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, created_at, updated_at
            ) values (
-             $1,$2,$3,$4,'ZAR','PENDING',$5,$6,$7,'manual',null,$8,$9,now(),now()
+             $1,$2,$3,$4,'ZAR','PENDING',$5,$6,$7,'manual',null,$8,$9,$10,$11,$12,$13,$14,$15,now(),now()
            ) returning id`,
-          [intentId, churchId, fundId, amt, member.full_name || "", member.phone || "", channel || "manual", reference, itemName]
+          [
+            intentId,
+            churchId,
+            fundId,
+            pricing.amount,
+            member.full_name || "",
+            member.phone || "",
+            channel || "manual",
+            reference,
+            itemName,
+            pricing.platformFeeAmount,
+            pricing.platformFeePct,
+            pricing.platformFeeFixed,
+            pricing.amountGross,
+            pricing.superadminCutAmount,
+            pricing.superadminCutPct,
+          ]
         );
 
         const txRow = await db.one(
           `insert into transactions (
-            church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at
+            church_id, fund_id, payment_intent_id, amount, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, reference, channel, provider, provider_payment_id, created_at
           ) values (
-            $1,$2,$3,$4,$5,$6,'manual',null,now()
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'manual',null,now()
           ) returning id, reference, created_at`,
-          [churchId, fundId, intent.id, amt, reference, channel || "manual"]
+          [
+            churchId,
+            fundId,
+            intent.id,
+            pricing.amount,
+            pricing.platformFeeAmount,
+            pricing.platformFeePct,
+            pricing.platformFeeFixed,
+            pricing.amountGross,
+            pricing.superadminCutAmount,
+            pricing.superadminCutPct,
+            reference,
+            channel || "manual",
+          ]
         );
 
         return res.json({
@@ -487,14 +762,28 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
     const intent = await db.one(
       `
       insert into payment_intents
-        (church_id, fund_id, amount, member_name, member_phone, item_name, m_payment_id)
-      values ($1,$2,$3,$4,$5,$6,$7)
+        (church_id, fund_id, amount, status, provider, member_name, member_phone, item_name, m_payment_id, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct)
+      values ($1,$2,$3,'PENDING','payfast',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       returning *
     `,
-      [churchId, fundId, amt, member.full_name || "", member.phone || "", itemName, mPaymentId]
+      [
+        churchId,
+        fundId,
+        pricing.amount,
+        member.full_name || "",
+        member.phone || "",
+        itemName,
+        mPaymentId,
+        pricing.platformFeeAmount,
+        pricing.platformFeePct,
+        pricing.platformFeeFixed,
+        pricing.amountGross,
+        pricing.superadminCutAmount,
+        pricing.superadminCutPct,
+      ]
     );
 
-    const { returnUrl, cancelUrl, notifyUrl } = getPayfastCallbackUrls(intent.id);
+    const { returnUrl, cancelUrl, notifyUrl } = getPayfastCallbackUrls(intent.id, mPaymentId);
 
     const checkoutUrl = buildPayfastRedirect({
       mode: process.env.PAYFAST_MODE,
@@ -502,7 +791,7 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
       merchantKey: process.env.PAYFAST_MERCHANT_KEY,
       passphrase: process.env.PAYFAST_PASSPHRASE,
       mPaymentId,
-      amount: intent.amount,
+      amount: intent.amount_gross || pricing.amountGross,
       itemName,
       returnUrl,
       cancelUrl,
@@ -515,6 +804,12 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
       paymentIntentId: intent.id,
       mPaymentId: intent.m_payment_id || mPaymentId,
       checkoutUrl,
+      pricing: {
+        donationAmount: pricing.amount,
+        churpayFee: pricing.platformFeeAmount,
+        totalCharged: pricing.amountGross,
+        superadminCutAmount: pricing.superadminCutAmount,
+      },
     });
   } catch (err) {
     console.error("[payments] POST /payment-intents error", err);
@@ -534,6 +829,7 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
 
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "Invalid amount" });
+    const pricing = buildFeeBreakdown(amt);
 
     fundId = typeof fundId === "string" ? fundId.trim() : fundId;
     channel = typeof channel === "string" ? channel.trim() : channel;
@@ -559,11 +855,25 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
 
     const intent = await db.one(
       `insert into payment_intents (
-         church_id, fund_id, amount, status, member_name, member_phone, channel, provider, m_payment_id, item_name
+         church_id, fund_id, amount, status, member_name, member_phone, channel, provider, m_payment_id, item_name, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct
        ) values (
-         $1, $2, $3, 'PENDING', $4, $5, $6, 'payfast', gen_random_uuid(), $7
-       ) returning id, amount, church_id, fund_id, m_payment_id, item_name`,
-      [churchId, fundId, amt, member.full_name || null, member.phone || null, channel || null, itemName]
+         $1, $2, $3, 'PENDING', $4, $5, $6, 'payfast', gen_random_uuid(), $7, $8, $9, $10, $11, $12, $13
+       ) returning id, amount, church_id, fund_id, m_payment_id, item_name, amount_gross, platform_fee_amount, superadmin_cut_amount`,
+      [
+        churchId,
+        fundId,
+        pricing.amount,
+        member.full_name || null,
+        member.phone || null,
+        channel || null,
+        itemName,
+        pricing.platformFeeAmount,
+        pricing.platformFeePct,
+        pricing.platformFeeFixed,
+        pricing.amountGross,
+        pricing.superadminCutAmount,
+        pricing.superadminCutPct,
+      ]
     );
 
     const mode = (process.env.PAYFAST_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
@@ -575,7 +885,7 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       return res.status(500).json({ error: "Server misconfigured: PayFast merchant keys missing" });
     }
 
-    const callbackUrls = getPayfastCallbackUrls(intent.id);
+    const callbackUrls = getPayfastCallbackUrls(intent.id, intent.m_payment_id || intent.id);
     const returnUrl = callbackUrls.returnUrl || `${baseUrl}/give?success=true`;
     const cancelUrl = callbackUrls.cancelUrl || `${baseUrl}/give?cancelled=true`;
     const notifyUrl = callbackUrls.notifyUrl || `${baseUrl}/api/payfast/itn`;
@@ -586,7 +896,7 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       merchantKey,
       passphrase,
       mPaymentId: intent.m_payment_id || intent.id,
-      amount: amt,
+      amount: intent.amount_gross || pricing.amountGross,
       itemName: intent.item_name || fund.name,
       returnUrl,
       cancelUrl,
@@ -597,11 +907,66 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       emailAddress: undefined,
     });
 
-    return res.json({ paymentUrl, id: intent.id });
+    return res.json({
+      paymentUrl,
+      id: intent.id,
+      pricing: {
+        donationAmount: pricing.amount,
+        churpayFee: pricing.platformFeeAmount,
+        totalCharged: pricing.amountGross,
+        superadminCutAmount: pricing.superadminCutAmount,
+      },
+    });
   } catch (err) {
     console.error("[payfast/initiate] error", err?.message || err, err?.stack);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+router.get("/payfast/return", (req, res) => {
+  const pi = typeof req.query?.pi === "string" ? req.query.pi.trim() : "";
+  const mp = typeof req.query?.mp === "string" ? req.query.mp.trim() : "";
+  const deepBase = String(process.env.APP_DEEP_LINK_BASE || "churpaydemo://payfast").trim().replace(/\/+$/, "");
+  const fallbackUrl = String(process.env.PAYFAST_APP_FALLBACK_URL || process.env.PUBLIC_BASE_URL || "https://www.churpay.com")
+    .trim()
+    .replace(/\/+$/, "");
+
+  let deepLink = `${deepBase}/return`;
+  deepLink = appendQueryParam(deepLink, "pi", pi);
+  deepLink = appendQueryParam(deepLink, "mp", mp);
+
+  const html = renderPayfastBridgePage({
+    title: "Payment complete",
+    message: "Returning to Churpay app...",
+    deepLink,
+    fallbackUrl,
+  });
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.status(200).send(html);
+});
+
+router.get("/payfast/cancel", (req, res) => {
+  const pi = typeof req.query?.pi === "string" ? req.query.pi.trim() : "";
+  const mp = typeof req.query?.mp === "string" ? req.query.mp.trim() : "";
+  const deepBase = String(process.env.APP_DEEP_LINK_BASE || "churpaydemo://payfast").trim().replace(/\/+$/, "");
+  const fallbackUrl = String(process.env.PAYFAST_APP_FALLBACK_URL || process.env.PUBLIC_BASE_URL || "https://www.churpay.com")
+    .trim()
+    .replace(/\/+$/, "");
+
+  let deepLink = `${deepBase}/cancel`;
+  deepLink = appendQueryParam(deepLink, "pi", pi);
+  deepLink = appendQueryParam(deepLink, "mp", mp);
+
+  const html = renderPayfastBridgePage({
+    title: "Payment cancelled",
+    message: "Returning to Churpay app...",
+    deepLink,
+    fallbackUrl,
+  });
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.status(200).send(html);
 });
 
 // ==========================
@@ -643,12 +1008,12 @@ router.post("/payfast/itn", async (req, res) => {
     let intent = null;
     if (UUID_REGEX.test(paymentId)) {
       intent = await db.oneOrNone(
-        "select id, church_id, fund_id, amount, status, channel from payment_intents where id=$1 or m_payment_id=$1",
+        "select id, church_id, fund_id, amount, amount_gross, platform_fee_amount, platform_fee_pct, platform_fee_fixed, superadmin_cut_amount, superadmin_cut_pct, status, channel from payment_intents where id=$1 or m_payment_id=$1",
         [paymentId]
       );
     } else {
       intent = await db.oneOrNone(
-        "select id, church_id, fund_id, amount, status, channel from payment_intents where m_payment_id=$1",
+        "select id, church_id, fund_id, amount, amount_gross, platform_fee_amount, platform_fee_pct, platform_fee_fixed, superadmin_cut_amount, superadmin_cut_pct, status, channel from payment_intents where m_payment_id=$1",
         [paymentId]
       );
     }
@@ -657,8 +1022,9 @@ router.post("/payfast/itn", async (req, res) => {
       return res.status(404).send("not found");
     }
 
-    if (Number(intent.amount).toFixed(2) !== amount.toFixed(2)) {
-      console.warn("[payfast/itn] amount mismatch", intent.amount, amount);
+    const expectedAmount = Number(intent.amount_gross ?? intent.amount);
+    if (expectedAmount.toFixed(2) !== amount.toFixed(2)) {
+      console.warn("[payfast/itn] amount mismatch", expectedAmount, amount);
       return res.status(400).send("amount mismatch");
     }
 
@@ -669,21 +1035,27 @@ router.post("/payfast/itn", async (req, res) => {
 
     await db.tx(async (t) => {
       await t.none(
-        "update payment_intents set status='PAID', provider_payment_id=$2, updated_at=now() where id=$1",
+        "update payment_intents set status='PAID', provider='payfast', provider_payment_id=$2, updated_at=now() where id=$1",
         [intent.id, pfPaymentId]
       );
 
       await t.none(
         `insert into transactions (
-          church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at
+          church_id, fund_id, payment_intent_id, amount, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, reference, channel, provider, provider_payment_id, created_at
         ) values (
-          $1, $2, $3, $4, $5, $6, 'payfast', $7, now()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'payfast', $13, now()
         )`,
         [
           intent.church_id,
           intent.fund_id,
           intent.id,
           intent.amount,
+          intent.platform_fee_amount || 0,
+          intent.platform_fee_pct || readFeeConfig().pct,
+          intent.platform_fee_fixed || readFeeConfig().fixed,
+          intent.amount_gross || intent.amount,
+          intent.superadmin_cut_amount || 0,
+          intent.superadmin_cut_pct || readFeeConfig().superPct,
           rest.item_name || paymentId,
           intent.channel || "payfast",
           pfPaymentId,
@@ -702,7 +1074,7 @@ router.get("/payment-intents/:id", requireAuth, async (req, res) => {
   try {
     const pi = await db.one("select * from payment_intents where id=$1", [req.params.id]);
     const ownChurchId = req.user?.church_id || null;
-    const isAdmin = req.user?.role === "admin";
+    const isAdmin = isAdminRole(req.user?.role);
     if (!isAdmin && (!ownChurchId || ownChurchId !== pi.church_id)) {
       return res.status(403).json({ error: "Forbidden" });
     }
@@ -729,6 +1101,8 @@ if (!isProduction) {
       if (!Number.isFinite(amt) || amt <= 0) {
         return res.status(400).json({ error: "Invalid amount" });
       }
+      await ensurePaymentIntentsTable();
+      const pricing = buildFeeBreakdown(amt);
 
       fundId = typeof fundId === "string" ? fundId.trim() : fundId;
 
@@ -772,24 +1146,53 @@ if (!isProduction) {
         const intent = await t.one(
           `
           insert into payment_intents
-            (church_id, fund_id, amount, currency, member_name, member_phone, status, provider, provider_payment_id, m_payment_id, item_name, created_at, updated_at)
+            (church_id, fund_id, amount, currency, member_name, member_phone, status, provider, provider_payment_id, m_payment_id, item_name, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, created_at, updated_at)
           values
-            ($1,$2,$3,'ZAR',$4,$5,'PAID','simulated',$6,$7,$8,now(),now())
+            ($1,$2,$3,'ZAR',$4,$5,'PAID','simulated',$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())
           returning *
           `,
-          [churchId, fundId, amt, member.full_name || "", member.phone || "", providerPaymentId, mPaymentId, itemName]
+          [
+            churchId,
+            fundId,
+            pricing.amount,
+            member.full_name || "",
+            member.phone || "",
+            providerPaymentId,
+            mPaymentId,
+            itemName,
+            pricing.platformFeeAmount,
+            pricing.platformFeePct,
+            pricing.platformFeeFixed,
+            pricing.amountGross,
+            pricing.superadminCutAmount,
+            pricing.superadminCutPct,
+          ]
         );
 
         // Insert ledger transaction row
         const txRow = await t.one(
           `
           insert into transactions
-            (church_id, fund_id, payment_intent_id, amount, reference, channel, provider, provider_payment_id, created_at)
+            (church_id, fund_id, payment_intent_id, amount, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, reference, channel, provider, provider_payment_id, created_at)
           values
-            ($1,$2,$3,$4,$5,$6,'simulated',$7,now())
+            ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'simulated',$13,now())
           returning *
           `,
-          [churchId, fundId, intent.id, intent.amount, intent.m_payment_id, channel || "app", providerPaymentId]
+          [
+            churchId,
+            fundId,
+            intent.id,
+            intent.amount,
+            intent.platform_fee_amount || 0,
+            intent.platform_fee_pct || readFeeConfig().pct,
+            intent.platform_fee_fixed || readFeeConfig().fixed,
+            intent.amount_gross || intent.amount,
+            intent.superadmin_cut_amount || 0,
+            intent.superadmin_cut_pct || readFeeConfig().superPct,
+            intent.m_payment_id,
+            channel || "app",
+            providerPaymentId,
+          ]
         );
 
         return { intent, txRow };
@@ -803,6 +1206,8 @@ if (!isProduction) {
         receipt: {
           reference: result.txRow.reference,
           amount: result.txRow.amount,
+          fee: result.txRow.platform_fee_amount,
+          totalCharged: result.txRow.amount_gross,
           fund: fund.name,
           church: church.name,
           channel: result.txRow.channel,
@@ -879,10 +1284,21 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
     const offset = Math.max(Number(req.query.offset || 0), 0);
     const fundId = req.query.fundId || null;
     const channel = req.query.channel || null;
+    const status = req.query.status || null;
+    const search = req.query.search || null;
     const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
     const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
 
-    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    const { where, params: filterParams, nextParamIndex } = buildTransactionFilter({
+      churchId,
+      fundId,
+      channel,
+      status,
+      search,
+      from,
+      to,
+    });
+    const params = [...filterParams];
     let paramIndex = nextParamIndex;
 
     params.push(limit);
@@ -897,7 +1313,13 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
         t.id,
         t.reference,
         t.amount,
+        coalesce(t.platform_fee_amount,0)::numeric(12,2) as "platformFeeAmount",
+        coalesce(t.amount_gross, t.amount)::numeric(12,2) as "amountGross",
+        coalesce(t.superadmin_cut_amount,0)::numeric(12,2) as "superadminCutAmount",
         t.channel,
+        t.provider,
+        t.provider_payment_id as "providerPaymentId",
+        coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else upper(t.provider) end) as status,
         t.created_at as "createdAt",
         pi.member_name as "memberName",
         pi.member_phone as "memberPhone",
@@ -914,9 +1336,20 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
       params
     );
 
+    const countRow = await db.one(
+      `
+      select count(*)::int as count
+      from transactions t
+      join funds f on f.id = t.fund_id
+      left join payment_intents pi on pi.id = t.payment_intent_id
+      where ${where.join(" and ")}
+      `,
+      filterParams
+    );
+
     res.json({
       transactions: rows,
-      meta: { limit, offset, count: rows.length },
+      meta: { limit, offset, count: Number(countRow.count || 0), returned: rows.length },
     });
   } catch (err) {
     console.error("[admin/dashboard/recent] error", err?.message || err, err?.stack);
@@ -932,10 +1365,20 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
     const maxRows = Math.min(Math.max(Number(req.query.limit || 5000), 1), 10000);
     const fundId = req.query.fundId || null;
     const channel = req.query.channel || null;
+    const status = req.query.status || null;
+    const search = req.query.search || null;
     const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
     const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
 
-    const { where, params, nextParamIndex } = buildTransactionFilter({ churchId, fundId, channel, from, to });
+    const { where, params, nextParamIndex } = buildTransactionFilter({
+      churchId,
+      fundId,
+      channel,
+      status,
+      search,
+      from,
+      to,
+    });
     params.push(maxRows);
     const limitIdx = nextParamIndex;
 
@@ -945,7 +1388,12 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
         t.id,
         t.reference,
         t.amount,
+        coalesce(t.platform_fee_amount,0)::numeric(12,2) as "platformFeeAmount",
+        coalesce(t.amount_gross, t.amount)::numeric(12,2) as "amountGross",
+        coalesce(t.superadmin_cut_amount,0)::numeric(12,2) as "superadminCutAmount",
         t.channel,
+        t.provider,
+        coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else upper(t.provider) end) as status,
         t.created_at as "createdAt",
         pi.member_name as "memberName",
         pi.member_phone as "memberPhone",
@@ -961,14 +1409,34 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
       params
     );
 
-    const header = ["id", "reference", "amount", "channel", "createdAt", "memberName", "memberPhone", "fundCode", "fundName"];
+    const header = [
+      "id",
+      "reference",
+      "donationAmount",
+      "feeAmount",
+      "totalCharged",
+      "superadminCutAmount",
+      "channel",
+      "provider",
+      "status",
+      "createdAt",
+      "memberName",
+      "memberPhone",
+      "fundCode",
+      "fundName",
+    ];
     const lines = [header.join(",")];
     for (const row of rows) {
       lines.push([
         csvEscape(row.id),
         csvEscape(row.reference),
         csvEscape(row.amount),
+        csvEscape(row.platformFeeAmount),
+        csvEscape(row.amountGross),
+        csvEscape(row.superadminCutAmount),
         csvEscape(row.channel),
+        csvEscape(row.provider),
+        csvEscape(row.status),
         csvEscape(row.createdAt),
         csvEscape(row.memberName),
         csvEscape(row.memberPhone),
@@ -983,6 +1451,75 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
     res.status(200).send(lines.join("\n"));
   } catch (err) {
     console.error("[admin/dashboard/export] error", err?.message || err, err?.stack);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/members", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+    const role = typeof req.query.role === "string" ? req.query.role.trim().toLowerCase() : "";
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+
+    const where = ["m.church_id = $1"];
+    const params = [churchId];
+    let idx = 2;
+
+    if (role) {
+      params.push(role);
+      where.push(`lower(m.role) = $${idx}`);
+      idx++;
+    }
+
+    if (search) {
+      const term = `%${search}%`;
+      params.push(term);
+      where.push(
+        `(coalesce(m.full_name, '') ilike $${idx} or coalesce(m.email, '') ilike $${idx} or coalesce(m.phone, '') ilike $${idx})`
+      );
+      idx++;
+    }
+
+    const countRow = await db.one(
+      `
+      select count(*)::int as count
+      from members m
+      where ${where.join(" and ")}
+      `,
+      params
+    );
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        m.id,
+        m.full_name as "fullName",
+        m.phone,
+        m.email,
+        m.role,
+        m.created_at as "createdAt",
+        m.updated_at as "updatedAt"
+      from members m
+      where ${where.join(" and ")}
+      order by case when m.role in ('admin','super') then 0 else 1 end, m.created_at desc
+      limit $${idx} offset $${idx + 1}
+      `,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      members: rows,
+      meta: { limit, offset, count: Number(countRow.count || 0), returned: rows.length },
+    });
+  } catch (err) {
+    if (err?.code === "42P01") {
+      return res.status(404).json({ error: "Members endpoint unavailable" });
+    }
+    console.error("[admin/members] error", err?.message || err, err?.stack);
     res.status(500).json({ error: "Internal server error" });
   }
 });

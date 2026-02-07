@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Churpay Admin Portal</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/brand/tokens.css" />
+  <link rel="stylesheet" href="/admin/styles.css" />
+</head>
+<body>
+  <div id="loadingScreen" class="loading-screen">
+    <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="loading-logo" data-logo />
+    <p>Loading admin portal...</p>
+  </div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-card">
+      <h3 id="confirmTitle">Confirm action</h3>
+      <p id="confirmBody">Are you sure?</p>
+      <menu>
+        <button id="confirmCancelBtn" value="cancel" type="submit" class="btn ghost">Cancel</button>
+        <button id="confirmOkBtn" value="ok" type="submit" class="btn danger">Confirm</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <section id="authView" class="auth-view">
+    <div class="auth-card">
+      <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="auth-logo" data-logo />
+      <p class="auth-slogan">Giving made easy</p>
+      <h1>Welcome back</h1>
+      <p class="auth-sub">Sign in with your admin phone or email.</p>
+      <form id="loginForm" class="form-grid">
+        <label class="field">
+          <span>Phone or email</span>
+          <input id="identifierInput" type="text" autocomplete="username" placeholder="0712345678 or admin@church.org" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+        </label>
+        <button id="loginBtn" type="submit" class="btn primary full">Sign in</button>
+      </form>
+      <div id="authError" class="inline-error hidden"></div>
+    </div>
+  </section>
+
+  <section id="appView" class="app-shell hidden">
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+    <aside id="sidebar" class="sidebar">
+      <a href="/admin/" class="sidebar-logo" aria-label="Churpay admin home">
+        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="logo-full" data-logo />
+      </a>
+      <div class="sidebar-divider"></div>
+      <nav id="navTabs" class="sidebar-nav" aria-label="Admin navigation">
+        <button class="nav-link active" data-tab="dashboard" type="button">Dashboard</button>
+        <button class="nav-link" data-tab="transactions" type="button">Transactions</button>
+        <button class="nav-link" data-tab="funds" type="button">Funds</button>
+        <button class="nav-link" data-tab="qr" type="button">QR Codes</button>
+        <button class="nav-link" data-tab="members" type="button">Members</button>
+        <button class="nav-link" data-tab="settings" type="button">Settings</button>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="themeToggleBtn" type="button" class="btn ghost full">Switch to light mode</button>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="sidebarToggleBtn" class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navTabs">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="topbar-logo" data-logo />
+          <div>
+            <p id="pageKicker" class="page-kicker">Admin Portal</p>
+            <h1 id="pageTitle">Dashboard</h1>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="identity">
+            <div id="churchName" class="identity-main">-</div>
+            <div id="adminIdentity" class="identity-sub">-</div>
+          </div>
+          <button id="refreshBtn" class="btn ghost" type="button">Refresh</button>
+          <button id="logoutBtn" class="btn danger" type="button">Log out</button>
+        </div>
+      </header>
+
+      <div id="statusInline" class="status-inline hidden"></div>
+
+      <main class="content">
+        <section id="panel-dashboard" class="panel">
+          <div class="card card-grid">
+            <article class="stat-card">
+              <p>Today total</p>
+              <h3 id="statTodayTotal">R 0.00</h3>
+            </article>
+            <article class="stat-card">
+              <p>7-day total</p>
+              <h3 id="statWeekTotal">R 0.00</h3>
+            </article>
+            <article class="stat-card">
+              <p>Month total</p>
+              <h3 id="statMonthTotal">R 0.00</h3>
+            </article>
+            <article class="stat-card">
+              <p>Total donors</p>
+              <h3 id="statDonors">0</h3>
+            </article>
+            <article class="stat-card">
+              <p>Total transactions</p>
+              <h3 id="statTransactions">0</h3>
+            </article>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>Donations over time</h2>
+              <select id="chartRangeSelect" class="compact-select">
+                <option value="14">Last 14 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+            </div>
+            <div id="chartSkeleton" class="skeleton-chart"></div>
+            <div id="donationChart" class="chart-bars hidden"></div>
+          </div>
+
+          <div class="card two-col-grid">
+            <section>
+              <div class="card-head">
+                <h2>Recent transactions</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Reference</th>
+                      <th>Amount</th>
+                      <th>Fund</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboardRecentBody"></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <div class="card-head">
+                <h2>Fund totals</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fund</th>
+                      <th>Code</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboardTotalsBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-transactions" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Transactions</h2>
+              <button id="exportTxBtn" class="btn ghost" type="button">Export CSV</button>
+            </div>
+
+            <div class="filter-grid">
+              <label class="field">
+                <span>Search</span>
+                <input id="txSearchInput" type="text" placeholder="Reference, member name or phone" />
+              </label>
+              <label class="field">
+                <span>Fund</span>
+                <select id="txFundSelect"><option value="">All funds</option></select>
+              </label>
+              <label class="field">
+                <span>Channel</span>
+                <select id="txChannelSelect">
+                  <option value="">All channels</option>
+                  <option value="app">App</option>
+                  <option value="payfast">PayFast</option>
+                  <option value="manual">Manual</option>
+                  <option value="simulated">Simulated</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Status</span>
+                <select id="txStatusSelect">
+                  <option value="">All statuses</option>
+                  <option value="PAID">Paid</option>
+                  <option value="PENDING">Pending</option>
+                  <option value="FAILED">Failed</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>From</span>
+                <input id="txFromInput" type="date" />
+              </label>
+              <label class="field">
+                <span>To</span>
+                <input id="txToInput" type="date" />
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input id="txLimitInput" type="number" min="1" max="200" value="25" />
+              </label>
+              <div class="filter-actions">
+                <button id="applyTxFiltersBtn" class="btn primary" type="button">Apply filters</button>
+                <button id="resetTxFiltersBtn" class="btn ghost" type="button">Reset</button>
+              </div>
+            </div>
+
+            <div id="txMeta" class="meta-line">Loading...</div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Reference</th>
+                    <th>Amount</th>
+                    <th>Fund</th>
+                    <th>Member</th>
+                    <th>Channel</th>
+                    <th>Status</th>
+                    <th>Date</th>
+                  </tr>
+                </thead>
+                <tbody id="transactionsBody"></tbody>
+              </table>
+            </div>
+
+            <div class="pager-row">
+              <button id="txPrevBtn" class="btn ghost" type="button">Previous</button>
+              <span id="txPageLabel">Page 1</span>
+              <button id="txNextBtn" class="btn ghost" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-funds" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Funds</h2>
+              <button id="refreshFundsBtn" class="btn ghost" type="button">Refresh</button>
+            </div>
+
+            <form id="createFundForm" class="inline-form">
+              <label class="field">
+                <span>Fund name</span>
+                <input id="fundNameInput" type="text" placeholder="Building Project" required />
+              </label>
+              <label class="field">
+                <span>Code (optional)</span>
+                <input id="fundCodeInput" type="text" placeholder="BLDG" />
+              </label>
+              <label class="field field-checkbox">
+                <input id="fundActiveInput" type="checkbox" checked />
+                <span>Active</span>
+              </label>
+              <button id="createFundBtn" class="btn primary" type="submit">Create fund</button>
+            </form>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Code</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="fundsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-qr" class="panel hidden">
+          <div class="card two-col-grid">
+            <section>
+              <div class="card-head">
+                <h2>Generate donation QR</h2>
+              </div>
+              <form id="qrForm" class="form-grid">
+                <label class="field">
+                  <span>Fund</span>
+                  <select id="qrFundSelect" required>
+                    <option value="">Select a fund</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Amount (optional)</span>
+                  <input id="qrAmountInput" type="number" min="1" step="0.01" placeholder="10.00" />
+                </label>
+                <button id="generateQrBtn" class="btn primary" type="submit">Generate QR</button>
+              </form>
+              <div class="qr-actions">
+                <button id="copyPayloadBtn" class="btn ghost" type="button">Copy payload</button>
+                <button id="copyWebLinkBtn" class="btn ghost" type="button">Copy web link</button>
+                <button id="shareQrBtn" class="btn ghost" type="button">Share link</button>
+                <a id="downloadQrBtn" class="btn ghost" download="churpay-qr.png">Download PNG</a>
+              </div>
+            </section>
+
+            <section>
+              <div id="qrCard" class="qr-card empty-state">
+                <p>Generate a QR code to start accepting donations quickly.</p>
+              </div>
+              <div class="meta-stack">
+                <label class="field">
+                  <span>QR payload</span>
+                  <textarea id="qrPayloadValue" rows="3" readonly></textarea>
+                </label>
+                <label class="field">
+                  <span>App deep link</span>
+                  <input id="qrDeepLink" type="text" readonly />
+                </label>
+                <label class="field">
+                  <span>Web link</span>
+                  <input id="qrWebLink" type="text" readonly />
+                </label>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-members" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Members</h2>
+              <button id="refreshMembersBtn" class="btn ghost" type="button">Refresh</button>
+            </div>
+
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Search</span>
+                <input id="memberSearchInput" type="text" placeholder="Name, email or phone" />
+              </label>
+              <label class="field">
+                <span>Role</span>
+                <select id="memberRoleSelect">
+                  <option value="">All roles</option>
+                  <option value="admin">Admin</option>
+                  <option value="member">Member</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input id="memberLimitInput" type="number" min="1" max="200" value="50" />
+              </label>
+              <button id="applyMemberFiltersBtn" class="btn primary" type="button">Apply</button>
+            </div>
+
+            <div id="memberMeta" class="meta-line">Loading...</div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Joined</th>
+                  </tr>
+                </thead>
+                <tbody id="membersBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-settings" class="panel hidden">
+          <div class="card two-col-grid">
+            <section>
+              <div class="card-head">
+                <h2>Church profile</h2>
+              </div>
+              <p id="churchSummary" class="meta-line">No church linked yet.</p>
+              <form id="churchForm" class="form-grid">
+                <label class="field">
+                  <span>Church name</span>
+                  <input id="churchNameInput" type="text" placeholder="Great Commission Church of Christ" required />
+                </label>
+                <label class="field">
+                  <span>Join code (optional)</span>
+                  <input id="joinCodeInput" type="text" placeholder="Auto-generated if blank" />
+                </label>
+                <button id="saveChurchBtn" class="btn primary" type="submit">Save church</button>
+              </form>
+            </section>
+
+            <section>
+              <div class="card-head">
+                <h2>Admin profile</h2>
+              </div>
+              <form id="adminProfileForm" class="form-grid">
+                <label class="field">
+                  <span>Full name</span>
+                  <input id="adminFullNameInput" type="text" placeholder="Admin name" />
+                </label>
+                <label class="field">
+                  <span>Phone</span>
+                  <input id="adminPhoneInput" type="text" placeholder="0710000000" />
+                </label>
+                <label class="field">
+                  <span>Email</span>
+                  <input id="adminEmailInput" type="email" placeholder="admin@church.org" />
+                </label>
+                <label class="field">
+                  <span>New password (optional)</span>
+                  <input id="adminPasswordInput" type="password" placeholder="Leave blank to keep current" />
+                </label>
+                <button id="saveAdminProfileBtn" class="btn primary" type="submit">Update profile</button>
+              </form>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <footer class="powered-by">
+        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="powered-logo" data-logo />
+        <span>Powered by Churpay</span>
+      </footer>
+    </div>
+  </section>
+
+  <script src="/admin/app.js"></script>
+</body>
+</html>

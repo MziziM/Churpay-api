@@ -5,6 +5,7 @@ import cors from "cors";
 import payments from "./routes.payments.js";
 import webhooks from "./routes.webhooks.js";
 import superRoutes from "./routes.super.js";
+import publicRoutes from "./routes.public.js";
 import authRoutes from "./routes.auth.js";
 import { db } from "./db.js";
 
@@ -142,6 +143,18 @@ app.use("/api/super/login", authRateLimiter);
 app.get("/health", (_, res) => res.json({ ok: true }));
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
+// Backward-compatible aliases for legacy PayFast callback URLs.
+// Old links might still target /payfast/* without the /api prefix.
+app.get("/payfast/return", (req, res) => {
+  const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  res.redirect(302, `/api/payfast/return${query}`);
+});
+
+app.get("/payfast/cancel", (req, res) => {
+  const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  res.redirect(302, `/api/payfast/cancel${query}`);
+});
+
 // Build marker + route sanity check
 const BUILD_MARKER = process.env.BUILD_MARKER || "dev";
 
@@ -164,6 +177,32 @@ app.get(["/routes", "/api/routes"], (_, res) => {
 // Serve static files from public directory
 app.use(express.static("public"));
 
+// Convenience redirect for admin portal root.
+app.get("/admin", (_req, res) => {
+  res.redirect(302, "/admin/");
+});
+
+// Super admin portal routes
+app.get("/super", (_req, res) => {
+  res.redirect(302, "/super/");
+});
+
+app.get("/super/login", (_req, res) => {
+  res.redirect(302, "/super/login/");
+});
+
+app.get("/super/login/", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "super", "login", "index.html"));
+});
+
+app.get(["/super/", "/super/dashboard", "/super/churches", "/super/transactions", "/super/funds", "/super/members", "/super/settings", "/super/audit-logs"], (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
+});
+
+app.get("/super/churches/:churchId", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
+});
+
 // Serve the give landing page
 app.get("/give", (req, res) => {
   res.sendFile(path.join(process.cwd(), "public", "give.html"));
@@ -173,6 +212,7 @@ app.get("/give", (req, res) => {
 // Auth routes (keep mounts narrow so they don't intercept MVP open routes)
 app.use("/api/auth", authRoutes);
 app.use("/auth", authRoutes);
+app.use("/api/public", publicRoutes);
 const demoModeEnabled = parseBool(process.env.DEMO_MODE, false);
 if (demoModeEnabled) {
   // Demo-only open transactions routes intentionally mounted before protected payments router.
