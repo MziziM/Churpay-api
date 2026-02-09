@@ -104,6 +104,47 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            // Play Store builds must NOT use debug.keystore.
+            //
+            // Supported inputs:
+            // 1) EAS-managed credentials (preferred): android.injected.signing.*
+            // 2) Project props/env vars: CHURPAY_UPLOAD_*
+            // EAS Build (cloud) commonly exposes Android keystore via env vars.
+            // See: https://docs.expo.dev/build-reference/variables/
+            def easStoreFilePath = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_PATH")
+            def easStorePassword = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_PASSWORD")
+            def easKeyAlias = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_ALIAS")
+            def easKeyPassword = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_ALIAS_PASSWORD")
+
+            def storeFilePath =
+                    (project.findProperty("android.injected.signing.store.file") ?:
+                            project.findProperty("CHURPAY_UPLOAD_STORE_FILE") ?:
+                            System.getenv("CHURPAY_UPLOAD_STORE_FILE") ?:
+                            easStoreFilePath)
+            def storePasswordValue =
+                    (project.findProperty("android.injected.signing.store.password") ?:
+                            project.findProperty("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
+                            System.getenv("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
+                            easStorePassword)
+            def keyAliasValue =
+                    (project.findProperty("android.injected.signing.key.alias") ?:
+                            project.findProperty("CHURPAY_UPLOAD_KEY_ALIAS") ?:
+                            System.getenv("CHURPAY_UPLOAD_KEY_ALIAS") ?:
+                            easKeyAlias)
+            def keyPasswordValue =
+                    (project.findProperty("android.injected.signing.key.password") ?:
+                            project.findProperty("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
+                            System.getenv("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
+                            easKeyPassword)
+
+            if (storeFilePath && storePasswordValue && keyAliasValue && keyPasswordValue) {
+                storeFile file(storeFilePath)
+                storePassword storePasswordValue
+                keyAlias keyAliasValue
+                keyPassword keyPasswordValue
+            }
+        }
     }
     buildTypes {
         debug {
@@ -112,7 +153,7 @@ android {
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
@@ -129,6 +170,27 @@ android {
     }
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
+
+// EAS Build injects the Android keystore signing config via android/app/eas-build.gradle.
+if (file("$projectDir/eas-build.gradle").exists()) {
+    apply from: "./eas-build.gradle"
+}
+
+// Guardrail: only enforce release signing config for local release builds.
+gradle.taskGraph.whenReady { graph ->
+    def wantsRelease = graph.allTasks.any { t -> t.name.toLowerCase().contains("release") }
+    if (!wantsRelease) return
+
+    def isEasBuild = file("$projectDir/eas-build.gradle").exists()
+    if (isEasBuild) return
+
+    if (android.signingConfigs.release.storeFile == null) {
+        throw new GradleException(
+                "Missing Android release signing config. Configure EAS Android keystore (eas credentials -p android) " +
+                        "or set android.injected.signing.* / CHURPAY_UPLOAD_* values."
+        )
     }
 }
 
