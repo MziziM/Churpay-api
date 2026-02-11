@@ -44,8 +44,20 @@ export function buildPayfastRedirect({
   notifyUrl,
   customStr1,
   customStr2,
+  customStr3,
+  customStr4,
+  customStr5,
   nameFirst,
   emailAddress,
+  subscriptionType,
+  billingDate,
+  recurringAmount,
+  frequency,
+  cycles,
+  subscriptionNotifyEmail,
+  subscriptionNotifyWebhook,
+  subscriptionNotifyBuyer,
+  token,
 }) {
   const base = {
     merchant_id: merchantId,
@@ -58,8 +70,23 @@ export function buildPayfastRedirect({
     item_name: itemName,
     custom_str1: customStr1,
     custom_str2: customStr2,
+    custom_str3: customStr3,
+    custom_str4: customStr4,
+    custom_str5: customStr5,
     name_first: nameFirst,
     email_address: emailAddress,
+    subscription_type: subscriptionType,
+    billing_date: billingDate,
+    recurring_amount:
+      typeof recurringAmount === "number" && Number.isFinite(recurringAmount)
+        ? Number(recurringAmount).toFixed(2)
+        : recurringAmount,
+    frequency,
+    cycles,
+    subscription_notify_email: subscriptionNotifyEmail,
+    subscription_notify_webhook: subscriptionNotifyWebhook,
+    subscription_notify_buyer: subscriptionNotifyBuyer,
+    token,
   };
 
   const signature = generateSignature(base, passphrase);
