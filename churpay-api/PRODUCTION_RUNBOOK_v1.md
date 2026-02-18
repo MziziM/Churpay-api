@@ -1,79 +1,178 @@
-# Churpay Production Runbook v1
+# Churpay Production Runbook v1.2 (Stabilization + Static Deploy)
 
 ## 1) Overview
 
 ### Production architecture
-- **Host OS:** Ubuntu 24.04 LTS (DigitalOcean Droplet)
-- **Runtime:** Node.js 20
-- **Process manager:** PM2 (`churpay-api`)
-- **Reverse proxy:** Nginx
-- **TLS:** Let's Encrypt certificates (Certbot-managed)
-- **Database:** DigitalOcean Managed PostgreSQL
-- **Payments:** PayFast (live mode)
-- **API base:** `https://api.churpay.com`
-- **Admin web portal:** `https://api.churpay.com/admin/`
-- **Super admin web portal:** `https://api.churpay.com/super/`
+- Host: DigitalOcean Droplet (Ubuntu 24.04 LTS)
+- Runtime: Node.js 20
+- Process manager: PM2 (`churpay-api`)
+- Reverse proxy: Nginx
+- TLS: Let's Encrypt (Certbot)
+- Database: DigitalOcean Managed PostgreSQL
+- Payments: PayFast live ITN
 
-### Network and ports
-- `80/tcp` -> Nginx (HTTP, redirects to HTTPS)
-- `443/tcp` -> Nginx (HTTPS)
-- `8080/tcp` -> Node/Express app (internal upstream for Nginx)
+### Public URLs
+- API: `https://api.churpay.com`
+- Public website: `https://churpay.com`
+- Admin portal: `https://api.churpay.com/admin/`
+- Super admin portal: `https://api.churpay.com/super/`
 
-### Main route groups
+### Internal ports
+- `80` and `443`: Nginx
+- `8080`: Node/Express upstream behind Nginx
+
+### Canonical payment/webhook routes
 - Health: `GET /health`
-- Auth: `/api/auth/*`
-- Super auth/API: `/api/super/*`
-- PayFast ITN callback: `/webhooks/payfast/itn`
-- PayFast return bridge: `/api/payfast/return`
-- PayFast cancel bridge: `/api/payfast/cancel`
+- PayFast ITN canonical endpoint: `POST /webhooks/payfast/itn`
+- PayFast return bridge: `GET /api/payfast/return`
+- PayFast cancel bridge: `GET /api/payfast/cancel`
+- QR/public visitor give page: `GET /g/:joinCode`
 
-## 2) Environment variables
+### Auth routes
+- Member login: `POST /api/auth/login/member`
+- Admin login: `POST /api/auth/login/admin`
+- Admin login 2FA verify: `POST /api/auth/login/admin/verify-2fa`
+- Super login canonical: `POST /api/super/login`
+- Super login canonical 2FA verify: `POST /api/super/login/verify-2fa`
+- Super login compatibility alias: `POST /api/auth/login/super` (deprecated, do not remove yet)
+- Super login compatibility 2FA verify: `POST /api/auth/login/super/verify-2fa`
+
+## 2) Environment Variables
 
 ### Env file path
-- **System env file:** `/etc/churpay/churpay-api.env`
-- PM2 ecosystem reads this file directly.
+- `/etc/churpay/churpay-api.env`
 
-### Required variables
+### Required (production)
 - `NODE_ENV=production`
 - `PORT=8080`
-- `DATABASE_URL=postgresql://...`
+- `DATABASE_URL=...`
+- `DATABASE_CA_CERT=-----BEGIN CERTIFICATE-----...` (recommended for explicit CA pinning)
 - `JWT_SECRET=...`
 - `PUBLIC_BASE_URL=https://api.churpay.com`
-- `CORS_ORIGINS=https://www.churpay.com,https://churpay.com`
+- `PUBLIC_WEB_BASE_URL=https://churpay.com`
+- `CORS_ORIGINS=https://churpay.com,https://www.churpay.com`
 - `TRUST_PROXY=true`
 - `TRUST_PROXY_HOPS=1`
 - `PAYFAST_MODE=live`
-- `PAYFAST_MERCHANT_ID=...`
-- `PAYFAST_MERCHANT_KEY=...`
+- `PAYFAST_CREDENTIAL_ENCRYPTION_KEY=...` (32-byte+ secret for encrypting church PayFast keys at rest)
 - `PAYFAST_RETURN_URL=https://api.churpay.com/api/payfast/return`
 - `PAYFAST_CANCEL_URL=https://api.churpay.com/api/payfast/cancel`
 - `PAYFAST_NOTIFY_URL=https://api.churpay.com/webhooks/payfast/itn`
-- `PGSSLINSECURE=0` (or `1` when DO SSL chain validation/network requires it)
-
-### Super admin variables
-- `SUPER_ADMIN_EMAIL=super@churpay.com`
+- `APP_DEEP_LINK_BASE=churpaydemo://give`
+- `SUPER_ROUTES_ENABLED=true`
+- `SUPER_ADMIN_EMAIL=...`
 - `SUPER_ADMIN_PASSWORD=...`
 
-### Optional variables
+### Required fee config
+- `PLATFORM_FEE_FIXED=2.50`
+- `PLATFORM_FEE_PCT=0.0075`
+- `SUPERADMIN_CUT_PCT=1.0`
+
+### Optional
 - `PAYFAST_PASSPHRASE=`
 - `PAYFAST_DEBUG=0`
-- `APP_DEEP_LINK_BASE=churpaydemo://payfast`
+- `PAYFAST_MERCHANT_ID=...` (legacy global fallback only)
+- `PAYFAST_MERCHANT_KEY=...` (legacy global fallback only)
+- `PAYFAST_GLOBAL_FALLBACK_ENABLED=false`
 - `PAYFAST_APP_FALLBACK_URL=https://www.churpay.com`
+- `ADMIN_LOGIN_2FA_ENABLED=true`
+- `SUPER_LOGIN_2FA_ENABLED=true`
+- `LOGIN_2FA_TTL_MINUTES=15`
+- `LOGIN_2FA_MAX_ATTEMPTS=5`
+- `PUSH_PROVIDER=log` (set to `expo` to send real push notifications)
+- `EXPO_ACCESS_TOKEN=` (optional, recommended when using Expo push)
+- `NOTIFICATION_JOBS_ENABLED=false` (set to `true` to run birthday + cash reminder jobs)
+- `NOTIFICATION_JOBS_INTERVAL_MS=900000`
+- `NOTIFICATION_TIMEZONE=Africa/Johannesburg`
+- `BIRTHDAY_NOTIFICATIONS_ENABLED=true`
+- `CASH_SATURDAY_REMINDER_ENABLED=false`
+- `CASH_SATURDAY_REMINDER_HOUR_LOCAL=19`
 - `RATE_LIMIT_WINDOW_MS=900000`
 - `RATE_LIMIT_MAX=300`
 - `AUTH_RATE_LIMIT_WINDOW_MS=900000`
 - `AUTH_RATE_LIMIT_MAX=30`
 - `DEMO_MODE=false`
 
-### File ownership and permissions
+### Security notes
+- In production, app boot fails if `JWT_SECRET` is missing.
+- In production, app boot fails if CORS allowlist is empty.
+- In production, app boot fails if super routes are enabled but super credentials are missing.
+- In production, DB boot fails if `PGSSLINSECURE=true`.
+- In production, DB uses strict TLS verification; if `DATABASE_CA_CERT` is missing it uses the system CA trust store.
+
+### Credential handling (mandatory)
+- Store final production secrets in a password manager/vault (do not keep only in shell history).
+- Minimum secrets to store immediately after rotation:
+  - `SUPER_ADMIN_EMAIL`
+  - `SUPER_ADMIN_PASSWORD`
+  - `JWT_SECRET`
+  - `DATABASE_URL`
+  - `PAYFAST_CREDENTIAL_ENCRYPTION_KEY`
+  - `PAYFAST_MERCHANT_ID`
+  - `PAYFAST_MERCHANT_KEY`
+- After rotating `SUPER_ADMIN_PASSWORD`, validate both endpoints:
+  - `POST /api/super/login`
+  - `POST /api/auth/login/super`
+- Redact secrets from screenshots, tickets, and chat logs.
+
+### Super admin password rotation (safe procedure)
+Run on droplet:
 ```bash
-sudo chown root:root /etc/churpay/churpay-api.env
-sudo chmod 600 /etc/churpay/churpay-api.env
+set -euo pipefail
+ENV=/etc/churpay/churpay-api.env
+
+# 1) Backup env before change
+cp -a "$ENV" "/root/churpay-api.env.$(date -u +%Y%m%d_%H%M%S).bak"
+
+# 2) Rotate password
+NEW_SUPER_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9@#%_+=.-' </dev/urandom | head -c 40)"
+if grep -q '^SUPER_ADMIN_PASSWORD=' "$ENV"; then
+  sed -i "s|^SUPER_ADMIN_PASSWORD=.*|SUPER_ADMIN_PASSWORD=${NEW_SUPER_PASSWORD}|" "$ENV"
+else
+  echo "SUPER_ADMIN_PASSWORD=${NEW_SUPER_PASSWORD}" >> "$ENV"
+fi
+
+# 3) Restart with updated env
+pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
+pm2 save
+
+# 4) Lock backup permissions
+chmod 600 /root/churpay-api.env.*.bak
+
+echo "Store NEW_SUPER_PASSWORD in vault/password manager immediately."
 ```
 
-## 3) First-time production setup steps
+Validate canonical + compatibility auth routes:
+```bash
+set -a; source /etc/churpay/churpay-api.env; set +a
 
-### 3.1 System packages
+curl -sS -X POST https://api.churpay.com/api/super/login \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --arg identifier "$SUPER_ADMIN_EMAIL" --arg password "$SUPER_ADMIN_PASSWORD" '{identifier:$identifier,password:$password}')" | jq
+
+curl -sS -X POST https://api.churpay.com/api/auth/login/super \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --arg identifier "$SUPER_ADMIN_EMAIL" --arg password "$SUPER_ADMIN_PASSWORD" '{identifier:$identifier,password:$password}')" | jq
+```
+
+### Env backup policy
+- Keep timestamped backups of `/etc/churpay/churpay-api.env` before and after high-risk changes.
+- Use:
+```bash
+cp -a /etc/churpay/churpay-api.env "/root/churpay-api.env.$(date -u +%Y%m%d_%H%M%S).bak"
+chmod 600 /root/churpay-api.env.*.bak
+```
+- Restore (if needed):
+```bash
+cp -a /root/churpay-api.env.YYYYMMDD_HHMMSS.bak /etc/churpay/churpay-api.env
+pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
+pm2 save
+```
+
+## 3) First-Time Production Setup
+
+Run on droplet:
+
 ```bash
 sudo apt update
 sudo apt install -y nginx certbot python3-certbot-nginx curl git jq
@@ -82,7 +181,6 @@ sudo apt install -y nodejs
 sudo npm i -g pm2
 ```
 
-### 3.2 App checkout
 ```bash
 sudo mkdir -p /var/www/churpay
 sudo chown -R "$USER":"$USER" /var/www/churpay
@@ -92,57 +190,55 @@ cd /var/www/churpay/repo/churpay-api
 npm ci --omit=dev
 ```
 
-### 3.3 Environment file
 ```bash
 sudo mkdir -p /etc/churpay
-sudo cp /var/www/churpay/repo/churpay-api/.env.example /etc/churpay/churpay-api.env
+sudo cp .env.example /etc/churpay/churpay-api.env
 sudo chown root:root /etc/churpay/churpay-api.env
 sudo chmod 600 /etc/churpay/churpay-api.env
 sudo nano /etc/churpay/churpay-api.env
 ```
 
-### 3.4 PM2 start
+Run migrations before first start:
+
+```bash
+cd /var/www/churpay/repo/churpay-api
+npm run migrate
+```
+
+Start PM2:
+
 ```bash
 pm2 start /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
 pm2 save
-pm2 startup systemd -u "$USER" --hp "$HOME"
 ```
 
-### 3.5 Nginx config
+Install Nginx site and TLS:
+
 ```bash
 sudo cp /var/www/churpay/repo/churpay-api/deploy/nginx.churpay-api.conf /etc/nginx/sites-available/churpay-api
 sudo ln -sf /etc/nginx/sites-available/churpay-api /etc/nginx/sites-enabled/churpay-api
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
-sudo systemctl daemon-reload
 sudo systemctl restart nginx
-```
-
-### 3.6 SSL certificate
-```bash
 sudo certbot --nginx -d api.churpay.com -m YOUR_EMAIL_ADDRESS --agree-tos --no-eff-email
 sudo systemctl reload nginx
 ```
 
-### 3.7 Firewall
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw --force enable
-sudo ufw status
-```
-
-## 4) Standard deploy/update steps
+## 4) Standard Deploy / Update Steps
 
 ```bash
 cd /var/www/churpay/repo
-
 git fetch --all --tags
 git checkout main
 git pull --ff-only
 
 cd /var/www/churpay/repo/churpay-api
-npm ci --omit=dev
+if ! npm ci --omit=dev; then
+  # Fallback when package-lock drift exists on server copy.
+  npm install --omit=dev
+fi
+# Migration script auto-loads /etc/churpay/churpay-api.env (or CHURPAY_ENV_FILE if set).
+npm run migrate
 
 pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
 pm2 save
@@ -151,21 +247,83 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### Deploy verification quick check
+### Static UI deploy (portal/web only)
+Use this when only frontend static files changed (`churpay-api/public/*` and/or `churpay-web/dist/*`).
+
+From Mac (project workspace):
+```bash
+cd /Users/mzizimzwakhe/Documents/Churpay-demo
+
+# Admin/Super portal static files
+rsync -avz churpay-api/public/admin/index.html root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/admin/index.html
+rsync -avz churpay-api/public/admin/styles.css root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/admin/styles.css
+rsync -avz churpay-api/public/admin/app.js root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/admin/app.js
+rsync -avz churpay-api/public/super/index.html root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/super/index.html
+rsync -avz churpay-api/public/super/login/index.html root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/super/login/index.html
+rsync -avz churpay-api/public/super/app.js root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/super/app.js
+
+# Shared brand assets (logo/favicon source)
+rsync -avz churpay-api/public/assets/brand/churpay-logo.svg root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/assets/brand/churpay-logo.svg
+rsync -avz churpay-api/public/assets/brand/churpay-logo-bold.svg root@178.62.81.206:/var/www/churpay/repo/churpay-api/public/assets/brand/churpay-logo-bold.svg
+
+# Public website build output
+rsync -avz --delete churpay-web/dist/ root@178.62.81.206:/var/www/churpay/repo/churpay-web/dist/
+```
+
+On droplet:
+```bash
+pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
+pm2 save
+nginx -t && systemctl reload nginx
+```
+
+Quick verify:
+```bash
+# Confirm website root path
+sudo nginx -T 2>/dev/null | sed -n '/server_name churpay.com/,+80p' | grep -E 'server_name|root '
+
+# Confirm new cache-busted assets are referenced
+curl -sS https://api.churpay.com/admin/ | grep -Eo 'styles.css\\?v=[^"]+|app.js\\?v=[^"]+|churpay-logo[^"]+\\.svg\\?v=[^"]+' | head
+curl -sS https://api.churpay.com/super/login/ | grep -Eo 'styles.css\\?v=[^"]+|churpay-logo[^"]+\\.svg\\?v=[^"]+' | head
+curl -sS https://churpay.com/ | grep -Eo '/assets/index-[^"]+\\.js|/assets/index-[^"]+\\.css'
+```
+
+### Static cache-busting rule (mandatory)
+- When changing portal/web static files, bump query versions in HTML (`?v=...`) for:
+  - `/admin/styles.css`
+  - `/admin/app.js`
+  - `/super/app.js`
+  - brand logo/favicons (`churpay-logo.svg`, `churpay-logo-bold.svg`)
+- Use a monotonic token like `v=20260216e`.
+- After deploy, do a hard refresh in browser (`Cmd+Shift+R` / `Ctrl+F5`).
+
+### Near-zero downtime preflight
 ```bash
 pm2 status
+systemctl status nginx --no-pager
 ss -ltnp | egrep ':80|:443|:8080'
 curl -i https://api.churpay.com/health
+bash /var/www/churpay/repo/churpay-api/scripts/ops-dns-check.sh churpay.com 178.62.81.206
 ```
 
-## 5) Smoke tests
+## 5) Smoke Tests
 
-### 5.1 Health
+### Automated smoke
+```bash
+cd /var/www/churpay/repo/churpay-api
+BASE_URL=https://api.churpay.com \
+ADMIN_IDENTIFIER=0710000000 \
+ADMIN_PASSWORD=test123 \
+SUPER_IDENTIFIER=super@churpay.com \
+SUPER_PASSWORD=YOUR_SUPER_PASSWORD \
+bash scripts/smoke-prod.sh
+```
+
+### Manual critical checks
 ```bash
 curl -i https://api.churpay.com/health
 ```
 
-### 5.2 Member/Admin/Super login
 ```bash
 curl -i -X POST https://api.churpay.com/api/auth/login/member \
   -H "Content-Type: application/json" \
@@ -175,255 +333,211 @@ curl -i -X POST https://api.churpay.com/api/auth/login/admin \
   -H "Content-Type: application/json" \
   -d '{"identifier":"0710000000","password":"test123"}'
 
-# Current production super endpoint:
 curl -i -X POST https://api.churpay.com/api/super/login \
   -H "Content-Type: application/json" \
-  -d '{"identifier":"super@churpay.com","password":"ChangeThisToAStrongLongPassword123"}'
-
-# If your client contract expects this path, verify whether alias is configured:
-curl -i -X POST https://api.churpay.com/api/auth/login/super \
-  -H "Content-Type: application/json" \
-  -d '{"identifier":"super@churpay.com","password":"ChangeThisToAStrongLongPassword123"}'
+  -d '{"identifier":"super@churpay.com","password":"YOUR_SUPER_PASSWORD"}'
 ```
 
-### 5.3 Token + /me + transactions
 ```bash
 TOKEN=$(curl -sS -X POST https://api.churpay.com/api/auth/login/admin \
   -H "Content-Type: application/json" \
   -d '{"identifier":"0710000000","password":"test123"}' | jq -r '.token // empty')
 
-echo "TOKEN_LEN=${#TOKEN}"
-
-curl -i https://api.churpay.com/api/auth/me \
-  -H "Authorization: Bearer $TOKEN"
-
-curl -i "https://api.churpay.com/api/churches/me/transactions?limit=10&offset=0" \
-  -H "Authorization: Bearer $TOKEN"
+curl -i https://api.churpay.com/api/auth/me -H "Authorization: Bearer $TOKEN"
+curl -i "https://api.churpay.com/api/churches/me/transactions?limit=5" -H "Authorization: Bearer $TOKEN"
 ```
 
-### 5.4 Payment intent + status check
 ```bash
-# 1) create payment intent
-PAYLOAD=$(curl -sS -X POST https://api.churpay.com/api/payment-intents \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"fundId":"883e0ec0-b687-4d31-9ac6-de6a76c2dcd7","amount":10}')
-
-echo "$PAYLOAD"
-
-# 2) inspect checkout URL callback parameters (pi/mp)
-echo "$PAYLOAD" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);const u=new URL(j.checkoutUrl);console.log("return_url=",decodeURIComponent(u.searchParams.get("return_url")));console.log("cancel_url=",decodeURIComponent(u.searchParams.get("cancel_url")));console.log("notify_url=",decodeURIComponent(u.searchParams.get("notify_url")));})'
-```
-
-### 5.5 PayFast callback and deep-link bridge checks
-```bash
-# ITN endpoint reachability (method should be POST from PayFast; GET is still useful as route smoke)
+# PayFast callback reachability + bridge pages
 curl -i https://api.churpay.com/webhooks/payfast/itn
-
-# Browser return/cancel bridge endpoints
 curl -i "https://api.churpay.com/api/payfast/return?pi=test123&mp=CP-TEST123"
 curl -i "https://api.churpay.com/api/payfast/cancel?pi=test123&mp=CP-TEST123"
-
-# Optional legacy short paths (should redirect to /api/payfast/...)
-curl -i "https://api.churpay.com/payfast/return?pi=test123&mp=CP-TEST123"
-curl -i "https://api.churpay.com/payfast/cancel?pi=test123&mp=CP-TEST123"
 ```
 
-## 6) Rollback steps
-
-### 6.1 Roll back to a known git tag
 ```bash
-cd /var/www/churpay/repo
+# Public give flow
+curl -i "https://api.churpay.com/api/public/give/context?joinCode=GCCOC-1234&fund=general"
+curl -i "https://churpay.com/g/GCCOC-1234?fund=general"
+```
 
-git fetch --all --tags
-git checkout tags/PROD-v1 -b rollback-PROD-v1
+### Live PayFast acceptance test
+1. Create a payment intent (member or visitor flow).
+2. Complete checkout on PayFast.
+3. Verify DB:
+```bash
+set -a; source /etc/churpay/churpay-api.env; set +a
+psql "$DATABASE_URL" -c "
+select m_payment_id,status,provider_payment_id,updated_at
+from payment_intents
+where m_payment_id='YOUR_M_PAYMENT_ID';
+"
 
+psql "$DATABASE_URL" -c "
+select reference,provider,provider_payment_id,amount,platform_fee_amount,amount_gross,superadmin_cut_amount,created_at
+from transactions
+where reference='YOUR_M_PAYMENT_ID';
+"
+```
+4. Confirm admin and super dashboards include the transaction and fee fields.
+
+## 6) Rollback Steps
+
+Rollback to previous release tag:
+
+```bash
 cd /var/www/churpay/repo/churpay-api
-npm ci --omit=dev
+bash scripts/rollback-prod.sh PROD-v1.1-stabilization
+```
 
+If you need manual rollback:
+
+```bash
+cd /var/www/churpay/repo/churpay-api
+git fetch --all --tags
+git checkout tags/PROD-v1.1-stabilization -b rollback-$(date +%Y%m%d%H%M%S)
+npm ci --omit=dev
 pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
 pm2 save
-
 sudo nginx -t
 sudo systemctl reload nginx
-```
-
-### 6.2 Validate after rollback
-```bash
 curl -i https://api.churpay.com/health
-pm2 status
-pm2 logs churpay-api --lines 80 --nostream
 ```
 
-## 7) Daily ops checklist
+## 7) Daily Ops Checklist
 
-- Confirm health endpoint is `200 OK`.
-- Check PM2 process is online and stable (`restarts` not climbing).
-- Review API error log for auth/payment/DB errors.
-- Review Nginx error log for `502`, `504`, upstream timeouts, TLS errors.
-- Verify at least one admin login and `/api/auth/me` works.
-- Verify transactions endpoint returns live data.
-- Verify PayFast ITN events are being processed (new PAID records appear).
-- Check disk, memory, and DB connectivity.
-- Confirm SSL cert is valid and not near expiry.
+- `curl -i https://api.churpay.com/health` returns 200.
+- `pm2 status` shows `churpay-api` online.
+- `systemctl status nginx` is active/running.
+- Check error logs (no spikes):
+  - PM2: `/root/.pm2/logs/churpay-api-error-0.log`
+  - PM2 out: `/root/.pm2/logs/churpay-api-out-0.log`
+  - Nginx access: `/var/log/nginx/access.log`
+  - Nginx error: `/var/log/nginx/error.log`
+- Verify PayFast ITN traffic in logs.
+- Verify at least one admin and one super portal login.
+- Run DNS consistency check during incidents:
+  - `bash scripts/ops-dns-check.sh churpay.com 178.62.81.206`
 
-Useful commands:
+## 8) Incident Troubleshooting Playbooks
+
+### A) SSL handshake issues (`curl: (60)` / cert mismatch)
+1. Validate active cert hosts:
 ```bash
-pm2 status
-pm2 logs churpay-api --lines 120 --nostream
-sudo tail -n 120 /var/log/nginx/error.log
-sudo tail -n 120 /var/log/nginx/access.log
-df -h
-free -m
+echo | openssl s_client -servername churpay.com -connect churpay.com:443 2>/dev/null | openssl x509 -noout -subject -issuer -dates
 ```
-
-## 8) Incident troubleshooting playbooks
-
-### A) SSL handshake issues
-Symptoms:
-- `curl: (35) ... sslv3 alert handshake failure`
-
-Checks:
+2. Check Nginx server blocks:
 ```bash
-dig +short A api.churpay.com @1.1.1.1
-dig +short A api.churpay.com @8.8.8.8
-sudo nginx -t
-sudo systemctl status nginx --no-pager
-ss -ltnp | egrep ':443|:80'
-openssl s_client -connect api.churpay.com:443 -servername api.churpay.com </dev/null | head -n 40
+sudo nginx -T | sed -n '/server_name churpay.com/,+80p'
 ```
-
-Fixes:
-- Ensure DNS points to droplet IP.
-- Ensure nginx listens on 443 and cert paths are valid.
-- Reload/restart nginx.
-- Reissue cert if missing/invalid:
+3. Re-issue cert if needed:
 ```bash
-sudo certbot --nginx -d api.churpay.com -m YOUR_EMAIL_ADDRESS --agree-tos --no-eff-email
-sudo systemctl reload nginx
+sudo certbot --nginx -d churpay.com -d www.churpay.com -m YOUR_EMAIL_ADDRESS --agree-tos --no-eff-email
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ### B) 502/504 gateway
-Symptoms:
-- Nginx returns `502 Bad Gateway` or `504 Gateway Timeout`
-
-Checks:
+1. Check listeners:
+```bash
+ss -ltnp | egrep ':80|:443|:8080'
+```
+2. Check PM2 + app logs:
 ```bash
 pm2 status
-ss -ltnp | egrep ':8080'
-pm2 logs churpay-api --lines 200 --nostream
-sudo tail -n 200 /var/log/nginx/error.log
-curl -i http://127.0.0.1:8080/health
+pm2 logs churpay-api --lines 120 --nostream
 ```
-
-Fixes:
-- Restart app with env:
+3. Restart safely:
 ```bash
 pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
 pm2 save
+sudo nginx -t && sudo systemctl reload nginx
 ```
-- If app is down due to env/database failure, fix env and restart.
-- Validate nginx upstream routes still point to `127.0.0.1:8080`.
 
 ### C) PayFast ITN not updating payment intent
-Symptoms:
-- User paid, but status remains pending
-
-Checks:
+1. Confirm canonical ITN endpoint is reachable:
 ```bash
-pm2 logs churpay-api --lines 300 --nostream | grep -i "itn"
 curl -i https://api.churpay.com/webhooks/payfast/itn
 ```
-
-Verify env URLs:
+2. Check logs for signature/amount mismatch:
 ```bash
-grep -E '^(PAYFAST_RETURN_URL|PAYFAST_CANCEL_URL|PAYFAST_NOTIFY_URL|PUBLIC_BASE_URL|APP_DEEP_LINK_BASE)=' /etc/churpay/churpay-api.env
+pm2 logs churpay-api --lines 200 --nostream | grep -Ei 'itn|amount mismatch|invalid signature|m_payment_id'
 ```
-
-Fixes:
-- Ensure PayFast notify URL is exactly `https://api.churpay.com/webhooks/payfast/itn`.
-- Ensure merchant credentials and passphrase match PayFast live config.
-- Ensure signature verification passes (check app logs).
-- Ensure `m_payment_id` maps to intent in DB.
+3. Verify callback URLs in generated checkout URL are on `api.churpay.com`.
+4. Verify amount check expects `payment_intents.amount_gross`.
+5. Confirm `payment_intents.m_payment_id` exists and is unique.
 
 ### D) DB connectivity / SSL mode
-Symptoms:
-- `ETIMEDOUT`, `connect()` failure, `Invalid DATABASE_URL`, SSL errors
-
-Checks:
+1. Validate required env in process:
 ```bash
-grep '^DATABASE_URL=' /etc/churpay/churpay-api.env
-node -e 'new URL(process.env.DATABASE_URL);console.log("DATABASE_URL OK")' < /dev/null
-pm2 logs churpay-api --lines 150 --nostream
+pm2 env 0 | egrep 'DATABASE_URL|DATABASE_CA_CERT|PGSSLINSECURE|NODE_ENV'
 ```
-
-Load env for shell and test DB quickly:
+2. Production requires CA and disallows insecure SSL.
+3. Validate DB connectivity:
 ```bash
 set -a; source /etc/churpay/churpay-api.env; set +a
 psql "$DATABASE_URL" -c 'select now();'
 ```
 
-Fixes:
-- Correct malformed `DATABASE_URL`.
-- Toggle `PGSSLINSECURE` as needed for DO-managed Postgres pathing:
-```bash
-sudo sed -i 's/^PGSSLINSECURE=.*/PGSSLINSECURE=1/' /etc/churpay/churpay-api.env
-pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
-```
-
 ### E) Rate limit false positives
-Symptoms:
-- Valid users receive frequent `429 Too Many Requests`
-
-Checks:
+1. Inspect current limits:
 ```bash
-grep -E '^(RATE_LIMIT_WINDOW_MS|RATE_LIMIT_MAX|AUTH_RATE_LIMIT_WINDOW_MS|AUTH_RATE_LIMIT_MAX)=' /etc/churpay/churpay-api.env
+pm2 env 0 | egrep 'RATE_LIMIT|AUTH_RATE_LIMIT'
 ```
-
-Fixes:
-- Increase limits conservatively:
-```bash
-sudo sed -i 's/^AUTH_RATE_LIMIT_MAX=.*/AUTH_RATE_LIMIT_MAX=60/' /etc/churpay/churpay-api.env
-sudo sed -i 's/^RATE_LIMIT_MAX=.*/RATE_LIMIT_MAX=500/' /etc/churpay/churpay-api.env
-pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
-```
-- Ensure load balancer/proxy chain is correctly trusted via `TRUST_PROXY` and `TRUST_PROXY_HOPS`.
+2. Check response headers (`X-RateLimit-*`, `Retry-After`).
+3. Adjust env values and restart PM2 with `--update-env`.
 
 ### F) CORS issues
-Symptoms:
-- Browser requests blocked by CORS policy
-
-Checks:
+1. Confirm production allowlist:
 ```bash
-grep -E '^(CORS_ORIGINS|PUBLIC_BASE_URL)=' /etc/churpay/churpay-api.env
-curl -i https://api.churpay.com/health -H 'Origin: https://www.churpay.com'
+pm2 env 0 | egrep '^CORS_ORIGINS=|^PUBLIC_BASE_URL='
 ```
+2. Ensure browser origin exactly matches one of configured origins.
+3. Restart PM2 after env updates.
 
-Fixes:
-- Add all real frontend origins to `CORS_ORIGINS` (comma-separated).
-- Restart with updated env:
+### G) Web give page shows `Unrecognized token '<'`
+This means frontend expected JSON but received HTML. In practice, this indicates API base mismatch or an HTML fallback/error page returned for a JSON endpoint.
+
+1. Confirm API endpoint returns JSON directly:
 ```bash
-pm2 restart /var/www/churpay/repo/churpay-api/deploy/ecosystem.config.cjs --only churpay-api --update-env
+curl -i "https://api.churpay.com/api/public/give/context?joinCode=GCCOC-1234&fund=general"
 ```
+2. Confirm give page points API calls to `https://api.churpay.com` (not relative `/api/...` on `churpay.com`).
+3. Confirm `/g/:joinCode` is routed to Node and not rewritten to website `index.html`.
+4. Hard refresh mobile browser (or reopen tab) to clear cached JS.
+5. If still failing, inspect HTML response body for `<!doctype html>` to identify which layer is returning HTML:
+   - Nginx website fallback
+   - Express 404/500 HTML error page
 
-## Logs and diagnostics locations
+### H) Website/portal changes not visible after deploy
+1. Confirm files were uploaded from the correct local path (watch for `rsync` "No such file or directory").
+2. Confirm Nginx web root is correct:
+```bash
+sudo nginx -T 2>/dev/null | sed -n '/server_name churpay.com/,+80p' | grep -E 'server_name|root '
+```
+3. Confirm live HTML references new asset versions:
+```bash
+curl -sS https://api.churpay.com/admin/ | grep -Eo 'styles.css\\?v=[^"]+|app.js\\?v=[^"]+|churpay-logo[^"]+\\.svg\\?v=[^"]+' | head
+curl -sS https://api.churpay.com/super/login/ | grep -Eo 'styles.css\\?v=[^"]+|churpay-logo[^"]+\\.svg\\?v=[^"]+' | head
+curl -sS https://churpay.com/ | grep -Eo '/assets/index-[^"]+\\.js|/assets/index-[^"]+\\.css'
+```
+4. If versions in live HTML did not change, redeploy the exact file again.
+5. If versions changed but UI is stale, hard refresh and clear browser/site data.
+6. Do not run `npm ci` inside `/var/www/churpay/repo/churpay-web` unless `package.json` exists there; for static-only web deploy, upload `dist/` directly.
 
-### PM2
-- `/root/.pm2/logs/churpay-api-out-0.log`
-- `/root/.pm2/logs/churpay-api-error-0.log`
-- `pm2 logs churpay-api --lines 200 --nostream`
-- `pm2 env 0`
+## 9) Migration Hygiene and Startup Rules
 
-### Nginx
-- `/var/log/nginx/access.log`
-- `/var/log/nginx/error.log`
-- `sudo journalctl -u nginx -n 200 --no-pager`
+- Never run schema DDL in request handlers.
+- All schema changes must be SQL migrations in `/var/www/churpay/repo/churpay-api/migrations`.
+- Use:
+  - `npm run migrate` to apply
+  - `npm run migrate:check` for pending checks (requires DB)
+  - `npm run migrate:lint` for static CI validation
 
-### System
-- `sudo journalctl -xe --no-pager`
-- `sudo systemctl status nginx --no-pager`
-- `sudo systemctl status pm2-root --no-pager`
+## 10) Release Tagging
 
----
+After successful smoke + one live PayFast transaction verification:
 
-This runbook describes the current Churpay production stack on Ubuntu 24.04 with Node 20 + PM2 + Nginx + Let's Encrypt + DO Postgres + PayFast + Admin/Super portals.
+```bash
+cd /var/www/churpay/repo/churpay-api
+git tag -a PROD-v1.1-stabilization -m "Production stabilization release"
+git push origin PROD-v1.1-stabilization
+```

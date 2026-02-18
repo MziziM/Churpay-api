@@ -7,7 +7,13 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "seed:admin": "node scripts/seed-admin.mjs"
+    "seed:admin": "node scripts/seed-admin.mjs",
+    "migrate": "node scripts/run-migrations.mjs",
+    "migrate:check": "node scripts/run-migrations.mjs --check",
+    "migrate:lint": "node scripts/check-migrations.mjs",
+    "smoke:prod": "bash scripts/smoke-prod.sh",
+    "rollback:prod": "bash scripts/rollback-prod.sh",
+    "test": "node --test tests/*.integration.test.mjs"
   },
   "engines": {
     "node": "20.x",

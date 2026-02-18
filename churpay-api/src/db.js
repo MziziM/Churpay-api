@@ -3,7 +3,9 @@ import { Pool } from "pg";
 const connectionString = process.env.DATABASE_URL;
 const insecureFlag = (process.env.PGSSLINSECURE || "").toLowerCase();
 const insecure = ["1", "true", "yes", "on"].includes(insecureFlag);
-const ca = process.env.DATABASE_CA_CERT;
+const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
+const rawCa = process.env.DATABASE_CA_CERT || process.env.DATABASE_SSL_CA || "";
+const ca = rawCa ? String(rawCa).replace(/\\n/g, "\n") : "";
 
 if (!connectionString) throw new Error("DATABASE_URL is missing");
 
@@ -14,9 +16,17 @@ try {
   throw new Error(`Invalid DATABASE_URL: ${e?.message || e}`);
 }
 
-// Explicitly build config to avoid sslmode quirks; honor PGSSLINSECURE or provided CA.
-const ssl = ca
-  ? { ca, rejectUnauthorized: true }
+if (isProduction && insecure) {
+  throw new Error("PGSSLINSECURE is not allowed in production; configure DATABASE_CA_CERT for strict TLS");
+}
+
+// Explicitly build config to avoid sslmode quirks.
+const ssl = isProduction
+  ? ca
+    ? { ca, rejectUnauthorized: true, minVersion: "TLSv1.2" }
+    : { rejectUnauthorized: true, minVersion: "TLSv1.2" }
+  : ca
+  ? { ca, rejectUnauthorized: true, minVersion: "TLSv1.2" }
   : insecure
   ? { rejectUnauthorized: false }
   : undefined;
@@ -30,7 +40,14 @@ const pool = new Pool({
   ssl,
 });
 
-console.log("DB SSL:", { insecure, hasCA: !!ca, host: dbUrl.hostname, port: dbUrl.port || 5432 });
+console.log("DB SSL:", {
+  insecure,
+  hasCA: !!ca,
+  strictTLS: !!ssl?.rejectUnauthorized,
+  usingSystemCAStore: isProduction && !ca && !!ssl?.rejectUnauthorized,
+  host: dbUrl.hostname,
+  port: dbUrl.port || 5432,
+});
 
 pool.on("error", (err) => {
   console.error("[db] unexpected pool error", err?.message || err, err?.stack);

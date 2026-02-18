@@ -1,25 +1,70 @@
 {
   "expo": {
-    "name": "churpay-demo",
+    "name": "Churpay",
     "slug": "churpay-demo",
-    "version": "1.0.0",
+    "owner": "mzizim",
+    "version": "1.0.5",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/generated/icon-1024.png",
+    "splash": {
+      "image": "./assets/generated/splash-2000.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "scheme": "churpaydemo",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.churgroup.churpaydemo"
+      "buildNumber": "5",
+      "bundleIdentifier": "com.churgroup.churpaydemo",
+      "associatedDomains": [
+        "applinks:churpay.com",
+        "applinks:www.churpay.com"
+      ]
     },
     "android": {
-      "package": "com.churgroup.churpaydemo"
+      "package": "com.churgroup.churpaydemo",
+      "versionCode": 10015,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "churpay.com",
+              "pathPrefix": "/g"
+            },
+            {
+              "scheme": "https",
+              "host": "www.churpay.com",
+              "pathPrefix": "/g"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/generated/adaptive-icon-foreground-1024.png",
+        "backgroundColor": "#ffffff"
+      },
+      "permissions": []
     },
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {
         "projectId": "e25fac1d-73b0-46c9-af0c-4c2b654f55fe"
       }
-    }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e25fac1d-73b0-46c9-af0c-4c2b654f55fe"
+    },
+    "runtimeVersion": "1.0.0"
   }
 }

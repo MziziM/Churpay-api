@@ -1,14 +1,19 @@
 import React from "react";
-import { View, Image, StyleSheet } from "react-native";
+import { View, StyleSheet, useWindowDimensions } from "react-native";
 
-export const BrandHeader = ({ compact = false }) => {
+import { BrandLogo } from "./BrandLogo";
+
+export const BrandHeader = ({ compact }) => {
+  const { width: viewportWidth } = useWindowDimensions();
+  const isCompact = typeof compact === "boolean" ? compact : viewportWidth < 420;
+  const logoWidth = isCompact
+    ? Math.min(300, Math.max(230, viewportWidth * 0.78))
+    : Math.min(420, Math.max(280, viewportWidth * 0.58));
+  const logoHeight = Math.round(logoWidth / 2);
+
   return (
     <View style={styles.wrap}>
-      <Image
-        source={require("../../../assets/churpay-logo.png")}
-        style={compact ? styles.logoCompact : styles.logo}
-        resizeMode="contain"
-      />
+      <BrandLogo width={logoWidth} height={logoHeight} />
     </View>
   );
 };
@@ -17,13 +22,7 @@ const styles = StyleSheet.create({
   wrap: {
     alignItems: "center",
     justifyContent: "center",
-  },
-  logo: {
-    width: 220,
-    height: 110,
-  },
-  logoCompact: {
-    width: 160,
-    height: 80,
+    // Prevent the logo from looking tiny on phones, but keep it compact enough for forms.
+    paddingVertical: 4,
   },
 });

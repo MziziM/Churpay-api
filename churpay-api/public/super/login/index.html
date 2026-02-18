@@ -1,30 +1,60 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Churpay Super Admin Login</title>
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <script>
+    (function () {
+      const THEME_KEY = "churpay.admin.theme";
+      const systemThemeQuery = "(prefers-color-scheme: dark)";
+      const media = window.matchMedia ? window.matchMedia(systemThemeQuery) : null;
+      try {
+        const rawPreference = String(window.localStorage.getItem(THEME_KEY) || "system").toLowerCase();
+        const preference = rawPreference === "light" || rawPreference === "dark" || rawPreference === "system"
+          ? rawPreference
+          : "system";
+        const resolvedTheme = preference === "system"
+          ? (media && media.matches ? "dark" : "light")
+          : preference;
+        document.documentElement.setAttribute("data-theme", resolvedTheme);
+      } catch (_err) {
+        const fallbackTheme = media && media.matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", fallbackTheme);
+      }
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="/assets/brand/churpay-logo.svg?v=20260216e" />
+  <link rel="shortcut icon" href="/assets/brand/churpay-logo.svg?v=20260216e" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/brand/tokens.css" />
-  <link rel="stylesheet" href="/admin/styles.css" />
+  <link rel="stylesheet" href="/brand/tokens.css?v=20260212c" />
+  <link rel="stylesheet" href="/admin/styles.css?v=20260216e" />
 </head>
 <body>
   <section class="auth-view">
     <div class="auth-card">
-      <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="auth-logo" data-logo />
+      <img src="/assets/brand/churpay-logo-bold.svg?v=20260216e" alt="Churpay" class="auth-logo" data-logo />
       <h1>Welcome back</h1>
       <p class="auth-sub">Super Admin — Manage churches, funds, and transactions platform-wide.</p>
       <form id="loginForm" class="form-grid">
-        <label class="field">
-          <span>Email</span>
-          <input id="identifierInput" type="text" autocomplete="username" placeholder="super@churpay.com" required />
-        </label>
-        <label class="field">
-          <span>Password</span>
-          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
-        </label>
+        <div id="credentialFields" class="form-grid">
+          <label class="field">
+            <span>Email</span>
+            <input id="identifierInput" type="text" autocomplete="username" placeholder="super@churpay.com" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+          </label>
+        </div>
+        <div id="twoFactorFields" class="form-grid hidden">
+          <p id="twoFactorHint" class="auth-sub">Enter the 6-digit sign-in code.</p>
+          <label class="field">
+            <span>Verification code</span>
+            <input id="twoFactorCodeInput" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" />
+          </label>
+          <button id="twoFactorBackBtn" type="button" class="btn ghost full">Use another account</button>
+        </div>
         <button id="loginBtn" type="submit" class="btn primary full">Sign in</button>
       </form>
       <div id="authError" class="inline-error hidden"></div>
@@ -35,10 +65,19 @@
     (function () {
       const TOKEN_KEY = "churpay.super.token";
       const form = document.getElementById("loginForm");
+      const credentialFields = document.getElementById("credentialFields");
       const identifierInput = document.getElementById("identifierInput");
       const passwordInput = document.getElementById("passwordInput");
+      const twoFactorFields = document.getElementById("twoFactorFields");
+      const twoFactorHint = document.getElementById("twoFactorHint");
+      const twoFactorCodeInput = document.getElementById("twoFactorCodeInput");
+      const twoFactorBackBtn = document.getElementById("twoFactorBackBtn");
       const loginBtn = document.getElementById("loginBtn");
       const authError = document.getElementById("authError");
+
+      const state = {
+        twoFactor: null,
+      };
 
       const existingToken = window.localStorage.getItem(TOKEN_KEY);
       if (existingToken) {
@@ -63,32 +102,99 @@
         authError.textContent = message;
       }
 
+      function setAuthStep(twoFactorPayload = null) {
+        const challengeId = String(twoFactorPayload?.challengeId || "").trim();
+        const active = !!challengeId;
+        state.twoFactor = active
+          ? {
+              challengeId,
+              emailMasked: String(twoFactorPayload?.emailMasked || "").trim(),
+            }
+          : null;
+
+        if (credentialFields) credentialFields.classList.toggle("hidden", active);
+        if (twoFactorFields) twoFactorFields.classList.toggle("hidden", !active);
+        if (identifierInput) identifierInput.required = !active;
+        if (passwordInput) passwordInput.required = !active;
+        if (twoFactorCodeInput) {
+          twoFactorCodeInput.required = active;
+          if (!active) twoFactorCodeInput.value = "";
+        }
+        if (twoFactorHint) {
+          const masked = state.twoFactor?.emailMasked || "your email";
+          twoFactorHint.textContent = active
+            ? `Enter the 6-digit sign-in code sent to ${masked}.`
+            : "Enter the 6-digit sign-in code.";
+        }
+        if (loginBtn) loginBtn.textContent = active ? "Verify code" : "Sign in";
+        if (active && twoFactorCodeInput) {
+          window.setTimeout(() => twoFactorCodeInput.focus(), 0);
+        } else if (!active && identifierInput) {
+          window.setTimeout(() => identifierInput.focus(), 0);
+        }
+      }
+
+      if (twoFactorBackBtn) {
+        twoFactorBackBtn.addEventListener("click", () => {
+          setAuthStep(null);
+          showError("");
+        });
+      }
+
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         showError("");
         loginBtn.disabled = true;
-        loginBtn.textContent = "Signing in...";
+        loginBtn.textContent = state.twoFactor ? "Verifying..." : "Signing in...";
         try {
-          const response = await fetch("/api/super/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              identifier: identifierInput.value,
-              password: passwordInput.value,
-            }),
-          });
+          let finalPayload = null;
 
-          const raw = await response.text();
-          const json = raw ? JSON.parse(raw) : null;
-          if (!response.ok) throw new Error(json?.error || "Login failed");
+          if (state.twoFactor) {
+            const code = String(twoFactorCodeInput?.value || "").trim();
+            if (!code) throw new Error("Two-factor code is required");
 
-          window.localStorage.setItem(TOKEN_KEY, json.token);
+            const verifyResponse = await fetch("/api/super/login/verify-2fa", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                challengeId: state.twoFactor.challengeId,
+                code,
+              }),
+            });
+            const verifyRaw = await verifyResponse.text();
+            const verifyJson = verifyRaw ? JSON.parse(verifyRaw) : null;
+            if (!verifyResponse.ok) throw new Error(verifyJson?.error || "Two-factor verification failed");
+            finalPayload = verifyJson;
+          } else {
+            const signInResponse = await fetch("/api/super/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                identifier: identifierInput.value,
+                password: passwordInput.value,
+              }),
+            });
+
+            const signInRaw = await signInResponse.text();
+            const signInJson = signInRaw ? JSON.parse(signInRaw) : null;
+            if (!signInResponse.ok) throw new Error(signInJson?.error || "Login failed");
+
+            if (signInJson?.requiresTwoFactor) {
+              setAuthStep(signInJson.twoFactor || {});
+              showError(`Verification code sent to ${signInJson?.twoFactor?.emailMasked || "your email"}.`);
+              return;
+            }
+            finalPayload = signInJson;
+          }
+
+          if (!finalPayload?.token) throw new Error("Login failed");
+          window.localStorage.setItem(TOKEN_KEY, finalPayload.token);
           window.location.assign("/super/");
         } catch (err) {
           showError(err?.message || "Login failed");
         } finally {
           loginBtn.disabled = false;
-          loginBtn.textContent = "Sign in";
+          loginBtn.textContent = state.twoFactor ? "Verify code" : "Sign in";
         }
       });
     })();

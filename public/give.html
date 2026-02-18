@@ -160,7 +160,7 @@
     <div class="contact">
       <div class="contact-text">Questions? Contact your church admin:</div>
       <button class="button button-secondary" onclick="whatsappAdmin()" style="margin-top: 8px;">
-        WhatsApp Admin
+        WhatsApp Support (+27 63 092 8649)
       </button>
     </div>
 
@@ -208,7 +208,7 @@
     // WhatsApp contact
     function whatsappAdmin() {
       // TODO: Get church admin phone from API
-      const adminPhone = '27658769444'; // Placeholder
+      const adminPhone = '27630928649'; // Churpay WhatsApp support
       const message = encodeURIComponent(`Hi, I scanned a Churpay QR but don't have the app installed.`);
       window.location.href = `https://wa.me/${adminPhone}?text=${message}`;
     }

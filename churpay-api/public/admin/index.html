@@ -4,15 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Churpay Admin Portal</title>
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/svg+xml" href="/assets/brand/churpay-logo.svg?v=20260216e" />
+  <link rel="shortcut icon" href="/assets/brand/churpay-logo.svg?v=20260216e" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/brand/tokens.css" />
-  <link rel="stylesheet" href="/admin/styles.css" />
+  <link rel="stylesheet" href="/brand/tokens.css?v=20260212c" />
+  <link rel="stylesheet" href="/admin/styles.css?v=20260217a" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen">
-    <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="loading-logo" data-logo />
+    <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="loading-logo" data-logo />
     <p>Loading admin portal...</p>
   </div>
 
@@ -29,21 +29,88 @@
     </form>
   </dialog>
 
+  <dialog id="promptDialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-card">
+      <h3 id="promptTitle">Enter details</h3>
+      <p id="promptBody">Please enter a value.</p>
+      <label class="field">
+        <span id="promptLabel">Value</span>
+        <input id="promptInput" type="text" placeholder="Type here..." />
+      </label>
+      <menu>
+        <button id="promptCancelBtn" value="cancel" type="submit" class="btn ghost">Cancel</button>
+        <button id="promptOkBtn" value="ok" type="submit" class="btn primary">Submit</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="payfastConnectDialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-card payfast-connect-card">
+      <h3>Activate Payments (Powered by PayFast)</h3>
+      <p class="meta-line">Connect your church PayFast merchant credentials. Churpay does not hold donor funds.</p>
+
+      <ol class="payfast-step-list">
+        <li>Create a PayFast merchant account if you do not have one.</li>
+        <li>Copy your Merchant ID and Merchant Key from PayFast settings.</li>
+        <li>Paste credentials below and run a connection test.</li>
+      </ol>
+
+      <p class="meta-line">
+        Need a PayFast account?
+        <a href="https://www.payfast.co.za/" target="_blank" rel="noopener noreferrer">Open PayFast</a>
+      </p>
+
+      <div id="payfastConnectError" class="inline-error hidden"></div>
+      <p id="payfastMaskText" class="meta-line hidden"></p>
+
+      <div class="form-grid">
+        <label class="field">
+          <span>Merchant ID</span>
+          <input id="payfastMerchantIdInput" type="text" placeholder="e.g. 10000100" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Merchant Key</span>
+          <input id="payfastMerchantKeyInput" type="text" placeholder="Paste merchant key" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Passphrase (optional)</span>
+          <input id="payfastPassphraseInput" type="password" placeholder="Optional PayFast passphrase" autocomplete="off" />
+        </label>
+      </div>
+
+      <menu class="payfast-connect-actions">
+        <button id="payfastModalCloseBtn" type="button" class="btn ghost">Close</button>
+        <button id="payfastDisconnectBtn" type="button" class="btn danger">Disconnect</button>
+        <button id="payfastConnectSubmitBtn" type="button" class="btn primary">Test &amp; Connect</button>
+      </menu>
+    </form>
+  </dialog>
+
   <section id="authView" class="auth-view">
     <div class="auth-card">
-      <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="auth-logo" data-logo />
+      <img src="/assets/brand/churpay-logo-bold.svg?v=20260216e" alt="Churpay" class="auth-logo" data-logo />
       <p class="auth-slogan">Giving made easy</p>
       <h1>Welcome back</h1>
-      <p class="auth-sub">Sign in with your admin phone or email.</p>
+      <p class="auth-sub">Sign in with your admin or accountant phone/email.</p>
       <form id="loginForm" class="form-grid">
-        <label class="field">
-          <span>Phone or email</span>
-          <input id="identifierInput" type="text" autocomplete="username" placeholder="0712345678 or admin@church.org" required />
-        </label>
-        <label class="field">
-          <span>Password</span>
-          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
-        </label>
+        <div id="credentialFields" class="form-grid">
+          <label class="field">
+            <span>Phone or email</span>
+            <input id="identifierInput" type="text" autocomplete="username" placeholder="0712345678 or admin@church.org" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+          </label>
+        </div>
+        <div id="twoFactorFields" class="form-grid hidden">
+          <p id="twoFactorHint" class="auth-sub">Enter the 6-digit sign-in code.</p>
+          <label class="field">
+            <span>Verification code</span>
+            <input id="twoFactorCodeInput" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" />
+          </label>
+          <button id="twoFactorBackBtn" type="button" class="btn ghost full">Use another account</button>
+        </div>
         <button id="loginBtn" type="submit" class="btn primary full">Sign in</button>
       </form>
       <div id="authError" class="inline-error hidden"></div>
@@ -54,12 +121,13 @@
     <div id="sidebarOverlay" class="sidebar-overlay"></div>
     <aside id="sidebar" class="sidebar">
       <a href="/admin/" class="sidebar-logo" aria-label="Churpay admin home">
-        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="logo-full" data-logo />
+        <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="logo-full" data-logo />
       </a>
       <div class="sidebar-divider"></div>
       <nav id="navTabs" class="sidebar-nav" aria-label="Admin navigation">
         <button class="nav-link active" data-tab="dashboard" type="button">Dashboard</button>
         <button class="nav-link" data-tab="transactions" type="button">Transactions</button>
+        <button class="nav-link" data-tab="statements" type="button">Statements</button>
         <button class="nav-link" data-tab="funds" type="button">Funds</button>
         <button class="nav-link" data-tab="qr" type="button">QR Codes</button>
         <button class="nav-link" data-tab="members" type="button">Members</button>
@@ -78,7 +146,7 @@
             <span></span>
             <span></span>
           </button>
-          <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="topbar-logo" data-logo />
+          <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="topbar-logo" data-logo />
           <div>
             <p id="pageKicker" class="page-kicker">Admin Portal</p>
             <h1 id="pageTitle">Dashboard</h1>
@@ -203,8 +271,13 @@
                 <select id="txStatusSelect">
                   <option value="">All statuses</option>
                   <option value="PAID">Paid</option>
+                  <option value="CONFIRMED">Confirmed</option>
+                  <option value="RECORDED">Recorded</option>
+                  <option value="PREPARED">Prepared</option>
                   <option value="PENDING">Pending</option>
                   <option value="FAILED">Failed</option>
+                  <option value="CANCELLED">Cancelled</option>
+                  <option value="REJECTED">Rejected</option>
                 </select>
               </label>
               <label class="field">
@@ -234,10 +307,12 @@
                     <th>Reference</th>
                     <th>Amount</th>
                     <th>Fund</th>
-                    <th>Member</th>
+                    <th>Payer</th>
+                    <th>Method</th>
                     <th>Channel</th>
                     <th>Status</th>
                     <th>Date</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="transactionsBody"></tbody>
@@ -248,6 +323,68 @@
               <button id="txPrevBtn" class="btn ghost" type="button">Previous</button>
               <span id="txPageLabel">Page 1</span>
               <button id="txNextBtn" class="btn ghost" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-statements" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Statements</h2>
+              <button id="openStatementPrintBtn" class="btn ghost" type="button">Open printable (PDF)</button>
+              <button id="downloadStatementBtn" class="btn ghost" type="button">Download CSV</button>
+            </div>
+
+            <p class="muted" style="margin:0 0 12px;">
+              Generate a giving statement for reconciliation and reporting. Default includes finalized records only (PayFast PAID + Cash CONFIRMED).
+            </p>
+
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>From</span>
+                <input id="statementFromInput" type="date" />
+              </label>
+              <label class="field">
+                <span>To</span>
+                <input id="statementToInput" type="date" />
+              </label>
+              <label class="field field-checkbox">
+                <input id="statementAllStatusesInput" type="checkbox" />
+                <span>Include pending/prepared</span>
+              </label>
+              <button id="loadStatementBtn" class="btn primary" type="button">Load statement</button>
+            </div>
+
+            <div class="card card-grid" style="margin-top:12px;">
+              <article class="stat-card"><p>Donation total</p><h3 id="statementDonationTotal">R 0.00</h3></article>
+              <article class="stat-card"><p>Processing fee (Churpay)</p><h3 id="statementFeeTotal">R 0.00</h3></article>
+              <article class="stat-card"><p>PayFast fees (church cost)</p><h3 id="statementPayfastFeeTotal">R 0.00</h3></article>
+              <article class="stat-card"><p>Net received</p><h3 id="statementNetReceivedTotal">R 0.00</h3></article>
+              <article class="stat-card"><p>Total charged</p><h3 id="statementTotalCharged">R 0.00</h3></article>
+              <article class="stat-card"><p>Transactions</p><h3 id="statementTxCount">0</h3></article>
+            </div>
+
+            <div id="statementMeta" class="meta-line">Choose a date range and load the statement.</div>
+
+            <div class="two-col-grid" style="margin-top:12px;">
+              <section>
+                <h3 style="margin:0 0 10px;">By fund</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Fund</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
+                    <tbody id="statementByFundBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <h3 style="margin:0 0 10px;">By method</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Method</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
+                    <tbody id="statementByMethodBody"></tbody>
+                  </table>
+                </div>
+              </section>
             </div>
           </div>
         </section>
@@ -358,6 +495,7 @@
                 <select id="memberRoleSelect">
                   <option value="">All roles</option>
                   <option value="admin">Admin</option>
+                  <option value="accountant">Accountant</option>
                   <option value="member">Member</option>
                 </select>
               </label>
@@ -377,6 +515,7 @@
                     <th>Name</th>
                     <th>Phone</th>
                     <th>Email</th>
+                    <th>Date of birth</th>
                     <th>Role</th>
                     <th>Joined</th>
                   </tr>
@@ -432,16 +571,63 @@
               </form>
             </section>
           </div>
+
+          <div id="payfastSetupCard" class="card hidden">
+            <div class="card-head">
+              <h2>Payments Setup</h2>
+              <span id="payfastStatusBadge" class="badge inactive">Not connected</span>
+            </div>
+            <p id="payfastStatusMeta" class="meta-line">Activate church-level PayFast credentials to start receiving payments directly.</p>
+            <div class="payfast-setup-actions">
+              <button id="openPayfastConnectBtn" class="btn primary" type="button">Activate Payments (Powered by PayFast)</button>
+              <button id="refreshPayfastStatusBtn" class="btn ghost" type="button">Refresh status</button>
+            </div>
+          </div>
+
+          <div id="accountantAccessCard" class="card">
+            <div class="card-head">
+              <h2>Accountant portal access</h2>
+            </div>
+            <p class="meta-line">Choose what accountants can see in this church portal.</p>
+            <div class="filter-grid compact-grid">
+              <label class="field field-checkbox">
+                <input id="accTabDashboard" type="checkbox" />
+                <span>Dashboard</span>
+              </label>
+              <label class="field field-checkbox">
+                <input id="accTabTransactions" type="checkbox" />
+                <span>Transactions</span>
+              </label>
+              <label class="field field-checkbox">
+                <input id="accTabStatements" type="checkbox" />
+                <span>Statements</span>
+              </label>
+              <label class="field field-checkbox">
+                <input id="accTabFunds" type="checkbox" />
+                <span>Funds</span>
+              </label>
+              <label class="field field-checkbox">
+                <input id="accTabQr" type="checkbox" />
+                <span>QR codes</span>
+              </label>
+              <label class="field field-checkbox">
+                <input id="accTabMembers" type="checkbox" />
+                <span>Members</span>
+              </label>
+              <button id="saveAccountantAccessBtn" class="btn primary" type="button">Save access</button>
+            </div>
+            <div id="accountantAccessMeta" class="meta-line">Only admins can change this.</div>
+          </div>
         </section>
       </main>
 
       <footer class="powered-by">
-        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="powered-logo" data-logo />
+        <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="powered-logo" data-logo />
         <span>Powered by Churpay</span>
       </footer>
     </div>
   </section>
 
-  <script src="/admin/app.js"></script>
+  <script src="/admin/app.js?v=20260217a"></script>
 </body>
 </html>

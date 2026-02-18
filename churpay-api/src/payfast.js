@@ -93,7 +93,11 @@ export function buildPayfastRedirect({
   const qs = encodeFormQuery({ ...base, signature });
 
   if (String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1") {
-    const maskedBase = passphrase ? qs.replace(pfEncode(passphrase), "***") : qs;
+    let maskedBase = qs;
+    if (passphrase) maskedBase = maskedBase.replace(pfEncode(passphrase), "***");
+    // Do not leak live credentials into logs.
+    maskedBase = maskedBase.replace(/(merchant_id=)[^&]*/i, "$1***");
+    maskedBase = maskedBase.replace(/(merchant_key=)[^&]*/i, "$1***");
     console.log("[payfast] redirect sig", { base: maskedBase, signature });
   }
 

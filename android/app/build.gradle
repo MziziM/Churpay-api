@@ -92,8 +92,9 @@ android {
         applicationId 'com.churgroup.churpaydemo'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        // Bump to avoid "downgrade not allowed" when installing over an older build.
+        versionCode 10015
+        versionName "1.0.5"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -112,30 +113,44 @@ android {
             // 2) Project props/env vars: CHURPAY_UPLOAD_*
             // EAS Build (cloud) commonly exposes Android keystore via env vars.
             // See: https://docs.expo.dev/build-reference/variables/
-            def easStoreFilePath = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_PATH")
-            def easStorePassword = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_PASSWORD")
-            def easKeyAlias = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_ALIAS")
-            def easKeyPassword = System.getenv("EAS_BUILD_ANDROID_KEYSTORE_ALIAS_PASSWORD")
+            def prop = { String name ->
+                def v = System.getProperty(name)
+                if (v != null && String.valueOf(v).trim()) return String.valueOf(v).trim()
+                v = project.findProperty(name)
+                if (v != null && String.valueOf(v).trim()) return String.valueOf(v).trim()
+                return null
+            }
+            def env = { String name ->
+                def v = System.getenv(name)
+                if (v != null && String.valueOf(v).trim()) return String.valueOf(v).trim()
+                return null
+            }
+
+            def easStoreFilePath = env("EAS_BUILD_ANDROID_KEYSTORE_PATH")
+            def easStorePassword = env("EAS_BUILD_ANDROID_KEYSTORE_PASSWORD")
+            def easKeyAlias = env("EAS_BUILD_ANDROID_KEYSTORE_ALIAS")
+            // Some environments use KEY_PASSWORD instead of ALIAS_PASSWORD
+            def easKeyPassword = env("EAS_BUILD_ANDROID_KEYSTORE_ALIAS_PASSWORD") ?: env("EAS_BUILD_ANDROID_KEYSTORE_KEY_PASSWORD")
 
             def storeFilePath =
-                    (project.findProperty("android.injected.signing.store.file") ?:
-                            project.findProperty("CHURPAY_UPLOAD_STORE_FILE") ?:
-                            System.getenv("CHURPAY_UPLOAD_STORE_FILE") ?:
+                    (prop("android.injected.signing.store.file") ?:
+                            prop("CHURPAY_UPLOAD_STORE_FILE") ?:
+                            env("CHURPAY_UPLOAD_STORE_FILE") ?:
                             easStoreFilePath)
             def storePasswordValue =
-                    (project.findProperty("android.injected.signing.store.password") ?:
-                            project.findProperty("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
-                            System.getenv("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
+                    (prop("android.injected.signing.store.password") ?:
+                            prop("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
+                            env("CHURPAY_UPLOAD_STORE_PASSWORD") ?:
                             easStorePassword)
             def keyAliasValue =
-                    (project.findProperty("android.injected.signing.key.alias") ?:
-                            project.findProperty("CHURPAY_UPLOAD_KEY_ALIAS") ?:
-                            System.getenv("CHURPAY_UPLOAD_KEY_ALIAS") ?:
+                    (prop("android.injected.signing.key.alias") ?:
+                            prop("CHURPAY_UPLOAD_KEY_ALIAS") ?:
+                            env("CHURPAY_UPLOAD_KEY_ALIAS") ?:
                             easKeyAlias)
             def keyPasswordValue =
-                    (project.findProperty("android.injected.signing.key.password") ?:
-                            project.findProperty("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
-                            System.getenv("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
+                    (prop("android.injected.signing.key.password") ?:
+                            prop("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
+                            env("CHURPAY_UPLOAD_KEY_PASSWORD") ?:
                             easKeyPassword)
 
             if (storeFilePath && storePasswordValue && keyAliasValue && keyPasswordValue) {
@@ -176,22 +191,6 @@ android {
 // EAS Build injects the Android keystore signing config via android/app/eas-build.gradle.
 if (file("$projectDir/eas-build.gradle").exists()) {
     apply from: "./eas-build.gradle"
-}
-
-// Guardrail: only enforce release signing config for local release builds.
-gradle.taskGraph.whenReady { graph ->
-    def wantsRelease = graph.allTasks.any { t -> t.name.toLowerCase().contains("release") }
-    if (!wantsRelease) return
-
-    def isEasBuild = file("$projectDir/eas-build.gradle").exists()
-    if (isEasBuild) return
-
-    if (android.signingConfigs.release.storeFile == null) {
-        throw new GradleException(
-                "Missing Android release signing config. Configure EAS Android keystore (eas credentials -p android) " +
-                        "or set android.injected.signing.* / CHURPAY_UPLOAD_* values."
-        )
-    }
 }
 
 // Apply static values from `gradle.properties` to the `android.packagingOptions`

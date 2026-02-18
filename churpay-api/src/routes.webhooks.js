@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import { db } from "./db.js";
 import { createNotification } from "./notifications.js";
+import { resolveChurchPayfastCredentials } from "./payfast-church.js";
 
 const router = express.Router();
 const BUILD = "v2026-02-05-1105";
@@ -44,6 +45,20 @@ function readFeeConfig() {
   };
 }
 
+async function listChurchStaffMembers(churchId) {
+  const id = String(churchId || "").trim();
+  if (!id) return [];
+  return db.manyOrNone(
+    `
+    select id, full_name as "fullName", role
+    from members
+    where church_id=$1 and lower(role) in ('admin','accountant')
+    order by created_at asc
+    `,
+    [id]
+  );
+}
+
 // PayFast sends application/x-www-form-urlencoded POST (ITN)
 // Debug helper: PayFast will POST ITN, but this helps confirm the route is mounted.
 router.get("/build", (req, res) => {
@@ -64,7 +79,6 @@ export const payfastItnRawParser = express.raw({
 export async function handlePayfastItn(req, res) {
   try {
     const debug = String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1";
-    const passphrase = process.env.PAYFAST_PASSPHRASE || "";
 
     const rawBody =
       typeof req.rawBody === "string"
@@ -87,46 +101,8 @@ export async function handlePayfastItn(req, res) {
     const parseForm = (raw) => Object.fromEntries(new URLSearchParams(raw));
     const params = parseForm(rawBody);
 
-    // Always log build marker and passphrase presence to confirm deployed code + env
-    console.log("[itn] build marker", BUILD, {
-      debug,
-      passphrasePresent: Boolean(passphrase),
-    });
-
     const receivedSig = String(params.signature || "").trim();
     if (!receivedSig) return res.status(400).send("missing signature");
-
-    // Build signature base exactly as PayFast sent it (raw form body):
-    // remove signature=, keep order/encoding, append passphrase only if present.
-    const parts = rawBody.split("&").filter(Boolean);
-    const unsignedParts = parts.filter((p) => !p.startsWith("signature="));
-    let sigBase = unsignedParts.join("&");
-
-    const trimmedPass = String(process.env.PAYFAST_PASSPHRASE || "").trim();
-    if (trimmedPass) {
-      const passEnc = encodeURIComponent(trimmedPass).replace(/%20/g, "+");
-      sigBase += `&passphrase=${passEnc}`;
-    }
-
-    const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
-    const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
-
-    const masked = trimmedPass
-      ? sigBase.replace(encodeURIComponent(trimmedPass).replace(/%20/g, "+"), "***")
-      : sigBase;
-
-    if (debug) {
-      console.log("[itn] sig debug", {
-        submitted: receivedSig,
-        computed: computedSig,
-        base: masked,
-      });
-    }
-
-    if (!match) {
-      console.warn("[itn] invalid signature", { m_payment_id: params.m_payment_id });
-      return res.status(400).send("invalid signature");
-    }
 
     const rawMPaymentId = String(params.m_payment_id || "").trim();
     const status = String(params.payment_status || "").toUpperCase();
@@ -144,8 +120,8 @@ export async function handlePayfastItn(req, res) {
     );
     let recurring = null;
 
-    // If this ITN is for a recurring cycle, PayFast can call back with a token and
-    // a cycle m_payment_id that may not exist in our local table yet.
+    // For recurring cycles, PayFast can call back with a token and an m_payment_id
+    // that does not exist locally yet. Resolve recurring now for church-level validation.
     if (!intent && (payfastToken || (UUID_REGEX.test(recurringIdFromCustom) && recurringIdFromCustom))) {
       recurring =
         (payfastToken
@@ -162,66 +138,141 @@ export async function handlePayfastItn(req, res) {
         (UUID_REGEX.test(recurringIdFromCustom)
           ? await db.oneOrNone("select * from recurring_givings where id=$1 limit 1", [recurringIdFromCustom])
           : null);
+    }
 
-      if (recurring && String(status || "").toUpperCase() === "COMPLETE") {
-        if (pfPaymentId) {
-          const alreadyTx = await db.oneOrNone(
-            "select id from transactions where provider='payfast' and provider_payment_id=$1 limit 1",
-            [pfPaymentId]
-          );
-          if (alreadyTx) {
-            return res.status(200).send("OK");
-          }
-        }
+    const churchIdFromParam = String(params.custom_str1 || "").trim();
+    const churchIdForValidation = String(intent?.church_id || recurring?.church_id || churchIdFromParam || "").trim();
+    if (!churchIdForValidation) {
+      console.warn("[itn] missing church context", { m_payment_id: mPaymentId });
+      return res.status(400).send("missing church context");
+    }
 
-        const nextCycle = Math.max(1, Number(recurring.cycles_completed || 0) + 1);
-        const recurringAmount = toCurrencyNumber(recurring.donation_amount || 0);
-        const recurringFee = toCurrencyNumber(recurring.platform_fee_amount || 0);
-        const recurringGross = toCurrencyNumber(recurring.gross_amount || recurringAmount + recurringFee);
-        const recurringMPaymentId = mPaymentId || makeRecurringMpaymentId();
-        const feeCfg = readFeeConfig();
+    const payfastCreds = await resolveChurchPayfastCredentials(churchIdForValidation);
+    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
+      console.warn("[itn] missing payfast credentials for church", {
+        churchId: churchIdForValidation,
+        m_payment_id: mPaymentId,
+      });
+      return res.status(400).send("invalid merchant context");
+    }
 
-        intent = await db.one(
-          `
-          insert into payment_intents (
-            church_id, fund_id, amount, currency, status,
-            member_name, member_phone, payer_name, payer_phone, payer_email, payer_type,
-            channel, provider, provider_payment_id, m_payment_id, item_name,
-            platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
-            source, recurring_giving_id, recurring_cycle_no,
-            service_date, notes,
-            created_at, updated_at
-          ) values (
-            $1,$2,$3,'ZAR','PENDING',
-            null,null,$4,$5,$6,'member',
-            'app','payfast',null,$7,$8,
-            $9,$10,$11,$12,$13,$14,
-            'RECURRING',$15,$16,
-            now()::date,null,
-            now(),now()
-          )
-          returning *
-          `,
-          [
-            recurring.church_id,
-            recurring.fund_id,
-            recurringAmount,
-            String([params.name_first, params.name_last].filter(Boolean).join(" ").trim() || "Recurring donor"),
-            String(params.cell_number || params.payer_phone || "").trim() || null,
-            String(params.email_address || "").trim() || null,
-            recurringMPaymentId,
-            String(params.item_name || `Recurring giving #${nextCycle}`).slice(0, 100),
-            recurringFee,
-            feeCfg.pct,
-            feeCfg.fixed,
-            recurringGross,
-            toCurrencyNumber(recurringFee * feeCfg.superPct),
-            feeCfg.superPct,
-            recurring.id,
-            nextCycle,
-          ]
+    const merchantIdFromItn = String(params.merchant_id || "").trim();
+    if (merchantIdFromItn && merchantIdFromItn !== String(payfastCreds.merchantId || "").trim()) {
+      console.warn("[itn] merchant_id mismatch", {
+        churchId: churchIdForValidation,
+        m_payment_id: mPaymentId,
+        submitted: merchantIdFromItn,
+      });
+      return res.status(400).send("invalid merchant");
+    }
+
+    const merchantKeyFromItn = String(params.merchant_key || "").trim();
+    if (merchantKeyFromItn && merchantKeyFromItn !== String(payfastCreds.merchantKey || "").trim()) {
+      console.warn("[itn] merchant_key mismatch", {
+        churchId: churchIdForValidation,
+        m_payment_id: mPaymentId,
+      });
+      return res.status(400).send("invalid merchant");
+    }
+
+    const passphrase = String(payfastCreds.passphrase || "").trim();
+
+    // Always log build marker and passphrase presence to confirm deployed code + env.
+    console.log("[itn] build marker", BUILD, {
+      debug,
+      passphrasePresent: Boolean(passphrase),
+      credentialSource: payfastCreds.source || "church",
+    });
+
+    // Build signature base exactly as PayFast sent it (raw form body):
+    // remove signature=, keep order/encoding, append passphrase only if present.
+    const parts = rawBody.split("&").filter(Boolean);
+    const unsignedParts = parts.filter((p) => !p.startsWith("signature="));
+    let sigBase = unsignedParts.join("&");
+
+    if (passphrase) {
+      const passEnc = encodeURIComponent(passphrase).replace(/%20/g, "+");
+      sigBase += `&passphrase=${passEnc}`;
+    }
+
+    const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
+    const match = computedSig.toLowerCase() === receivedSig.toLowerCase();
+
+    const masked = passphrase
+      ? sigBase.replace(encodeURIComponent(passphrase).replace(/%20/g, "+"), "***")
+      : sigBase;
+
+    if (debug) {
+      console.log("[itn] sig debug", {
+        submitted: receivedSig,
+        computed: computedSig,
+        base: masked,
+      });
+    }
+
+    if (!match) {
+      console.warn("[itn] invalid signature", { churchId: churchIdForValidation, m_payment_id: mPaymentId });
+      return res.status(400).send("invalid signature");
+    }
+
+    if (!intent && recurring && String(status || "").toUpperCase() === "COMPLETE") {
+      if (pfPaymentId) {
+        const alreadyTx = await db.oneOrNone(
+          "select id from transactions where provider='payfast' and provider_payment_id=$1 limit 1",
+          [pfPaymentId]
         );
+        if (alreadyTx) {
+          return res.status(200).send("OK");
+        }
       }
+
+      const nextCycle = Math.max(1, Number(recurring.cycles_completed || 0) + 1);
+      const recurringAmount = toCurrencyNumber(recurring.donation_amount || 0);
+      const recurringFee = toCurrencyNumber(recurring.platform_fee_amount || 0);
+      const recurringGross = toCurrencyNumber(recurring.gross_amount || recurringAmount + recurringFee);
+      const recurringMPaymentId = mPaymentId || makeRecurringMpaymentId();
+      const feeCfg = readFeeConfig();
+
+      intent = await db.one(
+        `
+        insert into payment_intents (
+          church_id, fund_id, amount, currency, status,
+          member_name, member_phone, payer_name, payer_phone, payer_email, payer_type,
+          channel, provider, provider_payment_id, m_payment_id, item_name,
+          platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
+          source, recurring_giving_id, recurring_cycle_no,
+          service_date, notes,
+          created_at, updated_at
+        ) values (
+          $1,$2,$3,'ZAR','PENDING',
+          null,null,$4,$5,$6,'member',
+          'app','payfast',null,$7,$8,
+          $9,$10,$11,$12,$13,$14,
+          'RECURRING',$15,$16,
+          now()::date,null,
+          now(),now()
+        )
+        returning *
+        `,
+        [
+          recurring.church_id,
+          recurring.fund_id,
+          recurringAmount,
+          String([params.name_first, params.name_last].filter(Boolean).join(" ").trim() || "Recurring donor"),
+          String(params.cell_number || params.payer_phone || "").trim() || null,
+          String(params.email_address || "").trim() || null,
+          recurringMPaymentId,
+          String(params.item_name || `Recurring giving #${nextCycle}`).slice(0, 100),
+          recurringFee,
+          feeCfg.pct,
+          feeCfg.fixed,
+          recurringGross,
+          toCurrencyNumber(recurringFee * feeCfg.superPct),
+          feeCfg.superPct,
+          recurring.id,
+          nextCycle,
+        ]
+      );
     }
 
     if (!intent) return res.status(404).send("unknown m_payment_id");
@@ -414,6 +465,33 @@ export async function handlePayfastItn(req, res) {
             [intent.recurring_giving_id, payfastToken || null, cycleNo]
           );
         }
+
+        // "Saved card" tokenization: if the member opted to save their card during checkout,
+        // store the returned PayFast token against their member record for future quick checkouts.
+        if (intent.save_card_requested && payfastToken) {
+          const email = String(intent.payer_email || "").trim();
+          const phone = String(intent.payer_phone || intent.member_phone || "").trim();
+          if (email || phone) {
+            await t.none(
+              `
+              update members
+              set
+                payfast_adhoc_token = nullif($3, ''),
+                payfast_adhoc_token_created_at = case
+                  when nullif($3, '') is null then payfast_adhoc_token_created_at
+                  when coalesce(payfast_adhoc_token,'') <> $3 then now()
+                  else payfast_adhoc_token_created_at
+                end,
+                payfast_adhoc_token_revoked_at = null,
+                updated_at = now()
+              where
+                ($1 <> '' and lower(email) = lower($1))
+                or ($2 <> '' and phone = $2)
+              `,
+              [email, phone, payfastToken]
+            );
+          }
+        }
       });
 
       // Post-commit best-effort notification (never block ITN processing).
@@ -440,6 +518,41 @@ export async function handlePayfastItn(req, res) {
           });
         } catch (err) {
           console.error("[itn] notify requester failed", err?.message || err);
+        }
+      }
+
+      if (createdTransactionId) {
+        try {
+          const staff = await listChurchStaffMembers(intent.church_id);
+          if (staff.length) {
+            const fund = await db.oneOrNone("select name from funds where id=$1", [intent.fund_id]);
+            const amount = toCurrencyNumber(intent.amount || 0);
+            const payerName = String(intent.payer_name || intent.member_name || "").trim() || "Someone";
+            const fundName = String(fund?.name || "").trim() || "a fund";
+            const payerType = String(intent.payer_type || "member").toLowerCase();
+
+            for (const staffMember of staff) {
+              await createNotification({
+                memberId: staffMember.id,
+                type: "GIVING_RECEIVED",
+                title: "New giving received",
+                body: `${payerName} gave R ${amount.toFixed(2)} to ${fundName}.`,
+                data: {
+                  paymentIntentId: intent.id,
+                  transactionId: createdTransactionId,
+                  reference: intent.m_payment_id,
+                  churchId: intent.church_id,
+                  fundId: intent.fund_id,
+                  amount,
+                  payerType,
+                  provider: "payfast",
+                  source: intent.source || null,
+                },
+              });
+            }
+          }
+        } catch (err) {
+          console.error("[itn] notify staff failed", err?.message || err);
         }
       }
 

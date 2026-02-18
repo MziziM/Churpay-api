@@ -1,18 +1,38 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Churpay Super Admin Portal</title>
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <script>
+    (function () {
+      const THEME_KEY = "churpay.admin.theme";
+      const systemThemeQuery = "(prefers-color-scheme: dark)";
+      const media = window.matchMedia ? window.matchMedia(systemThemeQuery) : null;
+      try {
+        const rawPreference = String(window.localStorage.getItem(THEME_KEY) || "system").toLowerCase();
+        const preference = rawPreference === "light" || rawPreference === "dark" || rawPreference === "system"
+          ? rawPreference
+          : "system";
+        const resolvedTheme = preference === "system"
+          ? (media && media.matches ? "dark" : "light")
+          : preference;
+        document.documentElement.setAttribute("data-theme", resolvedTheme);
+      } catch (_err) {
+        const fallbackTheme = media && media.matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", fallbackTheme);
+      }
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="/assets/brand/churpay-logo.svg?v=20260216e" />
+  <link rel="shortcut icon" href="/assets/brand/churpay-logo.svg?v=20260216e" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/brand/tokens.css" />
-  <link rel="stylesheet" href="/admin/styles.css" />
+  <link rel="stylesheet" href="/brand/tokens.css?v=20260212c" />
+  <link rel="stylesheet" href="/admin/styles.css?v=20260216e" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen">
-    <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="loading-logo" data-logo />
+    <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="loading-logo" data-logo />
     <p>Loading super admin portal...</p>
   </div>
 
@@ -38,6 +58,58 @@
       <menu>
         <button type="submit" value="cancel" class="btn ghost">Cancel</button>
         <button id="churchDialogSaveBtn" type="submit" value="ok" class="btn primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="churchBankDialog" class="confirm-dialog confirm-dialog-wide">
+    <form method="dialog" class="confirm-card" id="churchBankDialogForm" style="width:100%;">
+      <h3 id="churchBankDialogTitle">Edit church bank accounts</h3>
+      <p id="churchBankDialogMeta" class="meta-line">Update bank account details for payouts.</p>
+      <div id="churchBankAccountsList" class="meta-stack" style="gap:14px;"></div>
+      <button id="churchBankAddAccountBtn" type="button" class="btn ghost full">Add bank account</button>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="churchBankSaveBtn" type="submit" value="ok" class="btn primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="onboardingEditDialog" class="confirm-dialog confirm-dialog-wide">
+    <form method="dialog" class="confirm-card" id="onboardingEditDialogForm" style="width:100%;">
+      <h3 id="onboardingEditDialogTitle">Edit onboarding request</h3>
+      <p id="onboardingEditDialogMeta" class="meta-line">Fix church/admin details before approving.</p>
+      <div class="form-grid">
+        <label class="field">
+          <span>Church name</span>
+          <input id="onboardingEditChurchName" type="text" required />
+        </label>
+        <label class="field">
+          <span>Requested join code</span>
+          <input id="onboardingEditJoinCode" type="text" required />
+        </label>
+        <label class="field">
+          <span>Admin full name</span>
+          <input id="onboardingEditAdminName" type="text" required />
+        </label>
+        <label class="field">
+          <span>Admin phone</span>
+          <input id="onboardingEditAdminPhone" type="text" required />
+        </label>
+        <label class="field" style="grid-column: 1 / -1;">
+          <span>Admin email</span>
+          <input id="onboardingEditAdminEmail" type="email" required />
+        </label>
+      </div>
+      <div class="meta-stack" style="margin-top:12px;gap:10px;">
+        <h4 style="margin:0;">Bank accounts</h4>
+        <p class="meta-line" style="margin:0;">Add up to 5 accounts. Choose one primary account.</p>
+        <div id="onboardingBankAccountsList" class="meta-stack" style="gap:14px;"></div>
+        <button id="onboardingAddBankAccountBtn" type="button" class="btn ghost full">Add bank account</button>
+      </div>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="onboardingEditSaveBtn" type="submit" value="ok" class="btn primary">Save changes</button>
       </menu>
     </form>
   </dialog>
@@ -75,16 +147,163 @@
     </form>
   </dialog>
 
+  <dialog id="documentPreviewDialog" class="confirm-dialog confirm-dialog-wide">
+    <form method="dialog" class="confirm-card" style="width:100%;">
+      <h3 id="documentPreviewTitle">Document preview</h3>
+      <div class="meta-stack">
+        <p id="documentPreviewMeta" class="meta-line">Loading document...</p>
+        <div id="documentPreviewContainer" style="min-height:65vh;border:1px solid var(--cp-line, rgba(255,255,255,.2));border-radius:12px;overflow:hidden;background:rgba(255,255,255,.02);"></div>
+      </div>
+      <menu>
+        <a id="documentPreviewOpenNewTab" class="btn ghost" href="#" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+        <a id="documentPreviewDownloadLink" class="btn ghost" href="#" download>Download</a>
+        <button type="submit" value="cancel" class="btn primary">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="memberEditDialog" class="confirm-dialog member-edit-dialog">
+    <form method="dialog" class="confirm-card member-edit-card" id="memberEditDialogForm">
+      <header class="member-edit-hero">
+        <div class="member-edit-hero-copy">
+          <h3 id="memberEditDialogTitle">Edit member details</h3>
+          <p id="memberEditDialogMeta" class="meta-line">Update profile details and church assignment.</p>
+        </div>
+        <span id="memberEditRoleChip" class="member-edit-role-chip">MEMBER</span>
+      </header>
+
+      <div class="form-grid member-edit-grid">
+        <label class="field member-edit-full">
+          <span>Full name</span>
+          <input id="memberEditFullName" type="text" required />
+        </label>
+        <label class="field">
+          <span>Phone (optional)</span>
+          <input id="memberEditPhone" type="text" placeholder="e.g. 0712345678" />
+        </label>
+        <label class="field">
+          <span>Email (optional)</span>
+          <input id="memberEditEmail" type="email" placeholder="member@example.com" />
+        </label>
+        <label class="field">
+          <span>Church join code</span>
+          <input id="memberEditChurchJoinCode" type="text" placeholder="e.g. GCCOC-1234 (leave blank to keep current)" />
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <input id="memberEditRoleReadOnly" type="text" readonly />
+        </label>
+      </div>
+
+      <p class="member-edit-hint">To remove church assignment, click <strong>Clear church</strong>.</p>
+
+      <menu class="member-edit-actions">
+        <button type="button" id="memberEditClearChurchBtn" class="btn ghost">Clear church</button>
+        <div class="member-edit-actions-right">
+          <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+          <button id="memberEditSaveBtn" type="submit" value="ok" class="btn primary">Save changes</button>
+        </div>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="memberActionsDialog" class="confirm-dialog member-actions-dialog">
+    <form method="dialog" class="confirm-card member-actions-card">
+      <header class="member-actions-header">
+        <div>
+          <h3 id="memberActionsTitle">Member actions</h3>
+          <p id="memberActionsMeta" class="meta-line">Choose what you want to update.</p>
+        </div>
+        <span id="memberActionsRoleBadge" class="member-edit-role-chip">MEMBER</span>
+      </header>
+      <div class="member-actions-grid">
+        <button id="memberActionsEditBtn" type="button" class="btn ghost">Edit details</button>
+        <button id="memberActionsRoleBtn" type="button" class="btn ghost">Change role</button>
+        <button id="memberActionsDobBtn" type="button" class="btn ghost">Edit DOB</button>
+        <button id="memberActionsResetBtn" type="button" class="btn ghost">Reset password</button>
+        <button id="memberActionsDeleteBtn" type="button" class="btn danger">Delete inactive member</button>
+      </div>
+      <menu>
+        <button type="submit" value="cancel" class="btn primary">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="memberRoleDialog" class="confirm-dialog member-input-dialog">
+    <form method="dialog" class="confirm-card member-input-card" id="memberRoleDialogForm">
+      <h3 id="memberRoleDialogTitle">Change role</h3>
+      <p id="memberRoleDialogMeta" class="meta-line">Select a new role.</p>
+      <label class="field">
+        <span>Role</span>
+        <select id="memberRoleDialogSelect" required>
+          <option value="member">Member</option>
+          <option value="accountant">Accountant</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="memberRoleDialogSaveBtn" type="submit" value="ok" class="btn primary">Save role</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="memberDobDialog" class="confirm-dialog member-input-dialog">
+    <form method="dialog" class="confirm-card member-input-card" id="memberDobDialogForm">
+      <h3 id="memberDobDialogTitle">Edit DOB</h3>
+      <p id="memberDobDialogMeta" class="meta-line">Set date of birth in YYYY-MM-DD format.</p>
+      <label class="field">
+        <span>Date of birth</span>
+        <input id="memberDobDialogInput" type="date" />
+      </label>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="memberDobDialogClearBtn" type="button" class="btn ghost">Clear</button>
+        <button id="memberDobDialogSaveBtn" type="submit" value="ok" class="btn primary">Save DOB</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="legalDocDialog" class="confirm-dialog confirm-dialog-wide">
+    <form method="dialog" class="confirm-card" id="legalDocDialogForm" style="width:100%;">
+      <h3 id="legalDocDialogTitle">Edit legal document</h3>
+      <p id="legalDocDialogMeta" class="meta-line">Update website terms and fee disclosures without code changes.</p>
+      <div class="form-grid">
+        <label class="field">
+          <span>Key</span>
+          <input id="legalDocKeyInput" type="text" readonly />
+        </label>
+        <label class="field">
+          <span>Title</span>
+          <input id="legalDocTitleInput" type="text" required />
+        </label>
+        <label class="field">
+          <span>Body</span>
+          <textarea id="legalDocBodyInput" rows="12" required></textarea>
+        </label>
+      </div>
+      <menu>
+        <button type="submit" value="cancel" class="btn ghost">Cancel</button>
+        <button id="legalDocDialogSaveBtn" type="submit" value="ok" class="btn primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
   <section id="appView" class="app-shell hidden">
     <div id="sidebarOverlay" class="sidebar-overlay"></div>
     <aside id="sidebar" class="sidebar">
       <a href="/super/" class="sidebar-logo" aria-label="Churpay super admin home">
-        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="logo-full" data-logo />
+        <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="logo-full" data-logo />
       </a>
       <div class="sidebar-divider"></div>
       <nav id="navTabs" class="sidebar-nav" aria-label="Super admin navigation">
         <button class="nav-link active" data-tab="dashboard" type="button">Dashboard</button>
         <button class="nav-link" data-tab="churches" type="button">Churches</button>
+        <button class="nav-link" data-tab="onboarding" type="button">
+          <span>Onboarding</span>
+          <span id="onboardingPendingBadge" class="nav-count-badge hidden" aria-live="polite">0</span>
+        </button>
+        <button class="nav-link" data-tab="jobs" type="button">Jobs</button>
         <button class="nav-link" data-tab="transactions" type="button">Transactions</button>
         <button class="nav-link" data-tab="funds" type="button">Funds</button>
         <button class="nav-link" data-tab="members" type="button">Members</button>
@@ -104,7 +323,7 @@
             <span></span>
             <span></span>
           </button>
-          <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="topbar-logo" data-logo />
+          <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="topbar-logo" data-logo />
           <div>
             <p id="pageKicker" class="page-kicker">Super Admin Portal</p>
             <h1 id="pageTitle">Dashboard</h1>
@@ -144,6 +363,8 @@
 
           <div class="card card-grid">
             <article class="stat-card"><p>Total donations (30 days)</p><h3 id="statMonthTotal">R 0.00</h3></article>
+            <article class="stat-card"><p>Total processed (all time)</p><h3 id="statTotalProcessed">R 0.00</h3></article>
+            <article class="stat-card"><p>PayFast fees (all time)</p><h3 id="statTotalPayfastFees">R 0.00</h3></article>
             <article class="stat-card"><p>Total fees collected</p><h3 id="statTotalFeesCollected">R 0.00</h3></article>
             <article class="stat-card"><p>Super Admin cut</p><h3 id="statTotalSuperadminCut">R 0.00</h3></article>
             <article class="stat-card"><p>Net platform revenue</p><h3 id="statNetPlatformRevenue">R 0.00</h3></article>
@@ -198,7 +419,7 @@
                 </div>
               </section>
               <section>
-                <h3>Admins</h3>
+                <h3>Staff</h3>
                 <div class="table-wrap">
                   <table>
                     <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Role</th></tr></thead>
@@ -208,6 +429,51 @@
               </section>
             </div>
             <section>
+              <div class="card-head" style="margin-top:10px;">
+                <h3 style="margin:0;">Bank accounts</h3>
+                <button id="editChurchBankAccountsBtn" class="btn ghost" type="button">Edit bank accounts</button>
+              </div>
+              <div id="churchBankAccountsMeta" class="meta-line">Select a church to view bank accounts.</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Bank</th><th>Account</th><th>Number</th><th>Branch</th><th>Type</th><th>Primary</th></tr></thead>
+                  <tbody id="churchBankAccountsBody"></tbody>
+                </table>
+              </div>
+            </section>
+            <section id="churchAccountantAccessSection" class="hidden">
+              <h3>Accountant portal access</h3>
+              <p class="meta-line">Choose what accountants can see in the church admin portal.</p>
+              <div class="filter-grid compact-grid">
+                <label class="field field-checkbox">
+                  <input id="churchAccTabDashboard" type="checkbox" />
+                  <span>Dashboard</span>
+                </label>
+                <label class="field field-checkbox">
+                  <input id="churchAccTabTransactions" type="checkbox" />
+                  <span>Transactions</span>
+                </label>
+                <label class="field field-checkbox">
+                  <input id="churchAccTabStatements" type="checkbox" />
+                  <span>Statements</span>
+                </label>
+                <label class="field field-checkbox">
+                  <input id="churchAccTabFunds" type="checkbox" />
+                  <span>Funds</span>
+                </label>
+                <label class="field field-checkbox">
+                  <input id="churchAccTabQr" type="checkbox" />
+                  <span>QR codes</span>
+                </label>
+                <label class="field field-checkbox">
+                  <input id="churchAccTabMembers" type="checkbox" />
+                  <span>Members</span>
+                </label>
+                <button id="saveChurchAccountantAccessBtn" class="btn primary" type="button">Save access</button>
+              </div>
+              <div id="churchAccountantAccessMeta" class="meta-line">Select a church to configure access.</div>
+            </section>
+            <section>
               <h3>Recent transactions</h3>
               <div class="table-wrap">
                 <table>
@@ -216,6 +482,207 @@
                 </table>
               </div>
             </section>
+          </div>
+        </section>
+
+        <section id="panel-onboarding" class="panel hidden">
+          <div class="card">
+            <div class="card-head"><h2>Church onboarding requests</h2></div>
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Status</span>
+                <select id="onboardingStatusSelect">
+                  <option value="">All statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Search</span>
+                <input id="onboardingSearchInput" type="text" placeholder="Church, admin, email, join code" />
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input id="onboardingLimitInput" type="number" min="1" max="200" value="50" />
+              </label>
+              <button id="applyOnboardingFiltersBtn" class="btn primary" type="button">Apply</button>
+            </div>
+            <div id="onboardingMeta" class="meta-line">Loading...</div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Church</th>
+                    <th>Requested code</th>
+                    <th>Admin</th>
+                    <th>Email verified</th>
+                    <th>Documents</th>
+                    <th>Status</th>
+                    <th>Submitted</th>
+                    <th>Review note</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="onboardingBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Request detail</h2></div>
+            <div id="onboardingDetailsMeta" class="meta-line">Select a request to view details.</div>
+            <div class="two-col-grid">
+              <section>
+                <h3>Church details</h3>
+                <div id="onboardingDetailsChurch" class="meta-stack"></div>
+              </section>
+              <section>
+                <h3>Admin details</h3>
+                <div id="onboardingDetailsAdmin" class="meta-stack"></div>
+              </section>
+            </div>
+            <div class="filter-grid compact-grid">
+              <label class="field" style="grid-column: 1 / -1;">
+                <span>Review comment</span>
+                <textarea id="onboardingReviewNoteInput" rows="2" placeholder="Required when rejecting. Optional when approving."></textarea>
+              </label>
+              <button id="onboardingDownloadCipcBtn" class="btn ghost" type="button">Preview CIPC</button>
+              <button id="onboardingDownloadBankBtn" class="btn ghost" type="button">Preview bank letter</button>
+              <button id="onboardingEditBtn" class="btn ghost" type="button">Edit details</button>
+              <button id="onboardingReplaceCipcBtn" class="btn ghost" type="button">Replace CIPC</button>
+              <button id="onboardingReplaceBankBtn" class="btn ghost" type="button">Replace bank letter</button>
+              <button id="onboardingApproveBtn" class="btn primary" type="button">Approve</button>
+              <button id="onboardingRejectBtn" class="btn danger" type="button">Reject</button>
+              <button id="onboardingDeleteBtn" class="btn danger ghost" type="button">Delete (rejected)</button>
+            </div>
+            <div id="onboardingActionMeta" class="meta-line">Approval creates/promotes the church admin account.</div>
+          </div>
+        </section>
+
+        <section id="panel-jobs" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Job adverts</h2>
+              <button id="openCreateJobBtn" class="btn primary" type="button">Create advert</button>
+            </div>
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Status</span>
+                <select id="jobsStatusSelect">
+                  <option value="">All statuses</option>
+                  <option value="DRAFT">Draft</option>
+                  <option value="PUBLISHED">Published</option>
+                  <option value="CLOSED">Closed</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Church</span>
+                <select id="jobsChurchSelect">
+                  <option value="">All churches</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Search</span>
+                <input id="jobsSearchInput" type="text" placeholder="Title, church, location" />
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input id="jobsLimitInput" type="number" min="1" max="200" value="50" />
+              </label>
+              <button id="applyJobsFiltersBtn" class="btn ghost" type="button">Apply</button>
+            </div>
+            <div id="jobsMeta" class="meta-line">Loading...</div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Church</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Published</th>
+                    <th>Expires</th>
+                    <th>Apply</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="jobsBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2 id="jobFormHeading">Create job advert</h2></div>
+            <form id="jobForm" class="form-grid">
+              <input id="jobIdInput" type="hidden" />
+              <label class="field">
+                <span>Title</span>
+                <input id="jobTitleInput" type="text" required />
+              </label>
+              <label class="field">
+                <span>Church (optional)</span>
+                <select id="jobChurchSelect">
+                  <option value="">All churches / platform-wide</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Status</span>
+                <select id="jobStatusSelect">
+                  <option value="DRAFT">Draft</option>
+                  <option value="PUBLISHED">Published</option>
+                  <option value="CLOSED">Closed</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Employment type</span>
+                <select id="jobEmploymentTypeSelect">
+                  <option value="FULL_TIME">Full-time</option>
+                  <option value="PART_TIME">Part-time</option>
+                  <option value="CONTRACT">Contract</option>
+                  <option value="INTERNSHIP">Internship</option>
+                  <option value="VOLUNTEER">Volunteer</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Location</span>
+                <input id="jobLocationInput" type="text" value="South Africa" />
+              </label>
+              <label class="field">
+                <span>Department (optional)</span>
+                <input id="jobDepartmentInput" type="text" />
+              </label>
+              <label class="field">
+                <span>Summary (optional)</span>
+                <textarea id="jobSummaryInput" rows="2"></textarea>
+              </label>
+              <label class="field">
+                <span>Description</span>
+                <textarea id="jobDescriptionInput" rows="5" required></textarea>
+              </label>
+              <label class="field">
+                <span>Requirements (optional)</span>
+                <textarea id="jobRequirementsInput" rows="4"></textarea>
+              </label>
+              <label class="field">
+                <span>Application URL (optional)</span>
+                <input id="jobApplicationUrlInput" type="url" placeholder="https://..." />
+              </label>
+              <label class="field">
+                <span>Application email (optional)</span>
+                <input id="jobApplicationEmailInput" type="email" placeholder="jobs@church.org" />
+              </label>
+              <label class="field">
+                <span>Expires at (optional)</span>
+                <input id="jobExpiresAtInput" type="datetime-local" />
+              </label>
+              <div class="filter-grid compact-grid">
+                <button id="saveJobBtn" class="btn primary" type="submit">Save advert</button>
+                <button id="resetJobFormBtn" class="btn ghost" type="button">Reset</button>
+                <button id="deleteJobBtn" class="btn danger" type="button" disabled>Delete advert</button>
+              </div>
+            </form>
+            <div id="jobFormMeta" class="meta-line">Provide either application URL or application email.</div>
           </div>
         </section>
 
@@ -268,13 +735,13 @@
             <div class="card-head"><h2>Members</h2></div>
             <div class="filter-grid compact-grid">
               <label class="field"><span>Search</span><input id="memberSearchInput" type="text" placeholder="Name, email, phone" /></label>
-              <label class="field"><span>Role</span><select id="memberRoleSelect"><option value="">All roles</option><option value="super">Super</option><option value="admin">Admin</option><option value="member">Member</option></select></label>
+              <label class="field"><span>Role</span><select id="memberRoleSelect"><option value="">All roles</option><option value="super">Super</option><option value="admin">Admin</option><option value="accountant">Accountant</option><option value="member">Member</option></select></label>
               <label class="field"><span>Church</span><select id="memberChurchSelect"><option value="">All churches</option></select></label>
               <button id="applyMemberFiltersBtn" class="btn ghost" type="button">Apply</button>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Church</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Date of birth</th><th>Church</th><th>Role</th><th>Last active</th><th>Inactive for</th><th>Joined</th><th class="member-actions-header-col">Actions</th></tr></thead>
                 <tbody id="membersBody"></tbody>
               </table>
             </div>
@@ -302,6 +769,17 @@
               </section>
             </div>
           </div>
+
+          <div class="card">
+            <div class="card-head"><h2>Legal & content</h2></div>
+            <p id="legalDocsMeta" class="meta-line">Loading legal documents…</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Key</th><th>Title</th><th>Version</th><th>Updated</th><th>Actions</th></tr></thead>
+                <tbody id="legalDocsBody"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
 
         <section id="panel-audit" class="panel hidden">
@@ -318,12 +796,12 @@
       </main>
 
       <footer class="powered-by">
-        <img src="/assets/brand/churpay-logo-500x250.png" alt="Churpay" class="powered-logo" data-logo />
+        <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="powered-logo" data-logo />
         <span>Powered by Churpay</span>
       </footer>
     </div>
   </section>
 
-  <script src="/super/app.js"></script>
+  <script src="/super/app.js?v=20260216e"></script>
 </body>
 </html>

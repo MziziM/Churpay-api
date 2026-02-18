@@ -1,6 +1,6 @@
 {
   "name": "churpay-demo",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "private": true,
   "main": "expo/AppEntry.js",
   "scripts": {
@@ -19,10 +19,15 @@
     "expo": "^54.0.0",
     "expo-asset": "~12.0.12",
     "expo-clipboard": "~8.0.0",
+    "expo-constants": "~18.0.13",
     "expo-file-system": "~19.0.21",
     "expo-linking": "~8.0.0",
+    "expo-local-authentication": "~17.0.8",
+    "expo-notifications": "~0.32.16",
     "expo-print": "~15.0.8",
+    "expo-secure-store": "~15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-updates": "~29.0.16",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2",
@@ -32,8 +37,7 @@
     "react-native-qrcode-svg": "^6.3.15",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
-    "react-native-svg": "15.12.1",
-    "undefined": "..."
+    "react-native-svg": "15.12.1"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

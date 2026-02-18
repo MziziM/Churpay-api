@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Give for Someone | Churpay</title>
+  <link rel="stylesheet" href="/brand/tokens.css" />
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 700px at 10% -10%, rgba(14,165,183,.18), transparent 60%), var(--cp-bg, #070A12);
+      color: var(--cp-text, #F8FAFC);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 20px 16px 36px; }
+    .header { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+    .header img { height: 38px; width:auto; display:block; }
+    .header small { color: var(--cp-text-muted, rgba(248,250,252,.72)); font-size: 13px; }
+    .grid { display:grid; gap:16px; grid-template-columns: 1.1fr .9fr; }
+    .card {
+      background: var(--cp-surface, #0B1020);
+      border: 1px solid var(--cp-card-border, rgba(255,255,255,.12));
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 42px rgba(0,0,0,.32);
+    }
+    .title { margin:0 0 8px; font-size: 30px; line-height:1.12; }
+    .muted { margin:0; color: var(--cp-text-muted, rgba(248,250,252,.72)); line-height:1.45; }
+    .field { display:block; margin-top: 12px; }
+    .field span { display:block; font-size: 13px; margin-bottom: 6px; color: var(--cp-text-faint, rgba(248,250,252,.6)); }
+    .field input, .field textarea {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--cp-line, rgba(255,255,255,.18));
+      background: rgba(255,255,255,.03);
+      color: var(--cp-text, #F8FAFC);
+      padding: 11px 12px;
+      font-size: 16px;
+      outline: none;
+    }
+    .field textarea { resize: vertical; min-height: 84px; }
+    .fee-list {
+      margin: 14px 0;
+      padding: 0;
+      list-style: none;
+      border: 1px solid var(--cp-line, rgba(255,255,255,.16));
+      border-radius: 12px;
+      overflow: hidden;
+      background: rgba(255,255,255,.02);
+    }
+    .fee-list li {
+      display:flex;
+      justify-content: space-between;
+      padding: 11px 12px;
+      border-top: 1px solid var(--cp-line, rgba(255,255,255,.12));
+      font-size: 14px;
+    }
+    .fee-list li:first-child { border-top:none; }
+    .fee-list li.total { background: rgba(14,165,183,.14); font-weight: 700; font-size: 15px; }
+    .btn {
+      width: 100%;
+      margin-top: 8px;
+      border: 0;
+      border-radius: 999px;
+      padding: 13px 16px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      background: var(--cp-primary, #0EA5B7);
+      color: #061521;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .status { margin-top: 10px; min-height: 19px; font-size: 13px; color: var(--cp-text-muted, rgba(248,250,252,.72)); }
+    .error {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(248,113,113,.42);
+      background: rgba(248,113,113,.13);
+      color: #fecaca;
+      font-size: 13px;
+      display: none;
+    }
+    .meta { margin-top: 10px; color: var(--cp-text-faint, rgba(248,250,252,.58)); font-size: 13px; line-height: 1.4; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .title { font-size: 28px; } }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --cp-bg: #f8fafc;
+        --cp-surface: #ffffff;
+        --cp-card-border: rgba(15, 23, 42, 0.12);
+        --cp-line: rgba(15, 23, 42, 0.12);
+        --cp-text: #0f172a;
+        --cp-text-muted: rgba(15, 23, 42, 0.64);
+        --cp-text-faint: rgba(15, 23, 42, 0.56);
+      }
+      body {
+        background: radial-gradient(1200px 700px at 10% -10%, rgba(14,165,183,.16), transparent 60%), var(--cp-bg, #f8fafc);
+      }
+      .card {
+        box-shadow: 0 18px 42px rgba(2,6,23,.10);
+      }
+      .field input, .field textarea {
+        background: rgba(15, 23, 42, 0.03);
+        border-color: rgba(15, 23, 42, 0.14);
+      }
+      .fee-list {
+        background: rgba(15, 23, 42, 0.02);
+        border-color: rgba(15, 23, 42, 0.12);
+      }
+      .fee-list li { border-top-color: rgba(15, 23, 42, 0.10); }
+      .error { color: #7f1d1d; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <img src="/assets/brand/churpay-logo.svg" alt="Churpay" />
+      <small>Secure church giving powered by Churpay</small>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h1 class="title" id="title">Give for someone</h1>
+        <p class="muted" id="subtitle">Loading giving link...</p>
+
+        <form id="payForm">
+          <div id="amountWrap">
+            <label class="field">
+              <span>Amount (ZAR)</span>
+              <input id="amount" type="number" step="0.01" min="1" required />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Your full name (required)</span>
+            <input id="payerName" type="text" autocomplete="name" required />
+          </label>
+          <label class="field">
+            <span>Your phone number (required)</span>
+            <input id="payerPhone" type="tel" autocomplete="tel" required />
+          </label>
+          <label class="field">
+            <span>Your email (optional)</span>
+            <input id="payerEmail" type="email" autocomplete="email" />
+          </label>
+          <label class="field">
+            <span>Note (optional)</span>
+            <textarea id="notes" placeholder="e.g. Sponsored giving"></textarea>
+          </label>
+
+          <ul class="fee-list">
+            <li><span>Amount</span><strong id="amountLabel">R 0.00</strong></li>
+            <li><span>Processing fee</span><strong id="feeLabel">R 0.00</strong></li>
+            <li class="total"><span>Total charged</span><strong id="totalLabel">R 0.00</strong></li>
+          </ul>
+
+          <button id="payBtn" class="btn" type="submit">Continue to PayFast</button>
+          <p class="status" id="status"></p>
+          <div class="error" id="error"></div>
+        </form>
+      </section>
+
+      <aside class="card">
+        <h2 style="margin:0 0 10px;font-size:20px;">Summary</h2>
+        <p class="muted" id="metaLine">Fetching details...</p>
+        <p class="meta" id="messageLine"></p>
+        <p class="meta">You will be redirected to PayFast for secure processing.</p>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var elTitle = document.getElementById("title");
+      var elSubtitle = document.getElementById("subtitle");
+      var elMetaLine = document.getElementById("metaLine");
+      var elMessageLine = document.getElementById("messageLine");
+      var form = document.getElementById("payForm");
+      var payBtn = document.getElementById("payBtn");
+      var statusNode = document.getElementById("status");
+      var errorNode = document.getElementById("error");
+      var amountInput = document.getElementById("amount");
+      var amountWrap = document.getElementById("amountWrap");
+      var payerNameInput = document.getElementById("payerName");
+      var payerPhoneInput = document.getElementById("payerPhone");
+      var payerEmailInput = document.getElementById("payerEmail");
+      var notesInput = document.getElementById("notes");
+      var amountLabel = document.getElementById("amountLabel");
+      var feeLabel = document.getElementById("feeLabel");
+      var totalLabel = document.getElementById("totalLabel");
+
+      function showError(message) {
+        if (!message) {
+          errorNode.style.display = "none";
+          errorNode.textContent = "";
+          return;
+        }
+        errorNode.style.display = "block";
+        errorNode.textContent = message;
+      }
+
+      function setStatus(message) {
+        statusNode.textContent = message || "";
+      }
+
+      function parseJsonSafe(raw) {
+        if (!raw) return null;
+        try { return JSON.parse(raw); } catch (_) { return null; }
+      }
+
+      function getApiBase() {
+        if (window.CHURPAY_API_BASE && String(window.CHURPAY_API_BASE).trim()) {
+          return String(window.CHURPAY_API_BASE).trim().replace(/\/+$/, "");
+        }
+        return "https://api.churpay.com";
+      }
+
+      function toApiUrl(path) {
+        return getApiBase() + path;
+      }
+
+      function money(value) {
+        var n = Number(value || 0);
+        if (!Number.isFinite(n)) n = 0;
+        return "R " + n.toFixed(2);
+      }
+
+      function feeBreakdown(amount) {
+        var a = Number(amount || 0);
+        if (!Number.isFinite(a) || a < 0) a = 0;
+        var fee = 2.5 + (a * 0.0075);
+        var total = a + fee;
+        return {
+          amount: Math.round(a * 100) / 100,
+          fee: Math.round(fee * 100) / 100,
+          total: Math.round(total * 100) / 100,
+        };
+      }
+
+      function updateBreakdown() {
+        var p = feeBreakdown(amountInput.value);
+        amountLabel.textContent = money(p.amount);
+        feeLabel.textContent = money(p.fee);
+        totalLabel.textContent = money(p.total);
+      }
+
+      function getTokenFromPath() {
+        var m = window.location.pathname.match(/^\/l\/([^/?#]+)/i);
+        if (m && m[1]) return decodeURIComponent(m[1]);
+        return "";
+      }
+
+      async function loadContext(token) {
+        var response = await fetch(toApiUrl("/api/public/giving-links/" + encodeURIComponent(token)));
+        var raw = await response.text();
+        var json = parseJsonSafe(raw);
+        if (!response.ok) throw new Error((json && json.error) || "Could not load giving link");
+        return json && json.data ? json.data : null;
+      }
+
+      async function init() {
+        showError("");
+        setStatus("Loading...");
+        var token = getTokenFromPath();
+        if (!token) {
+          showError("Invalid link. Token is missing.");
+          setStatus("");
+          return;
+        }
+
+        var ctx = await loadContext(token);
+        if (!ctx || !ctx.church || !ctx.fund) {
+          showError("This giving link is not available.");
+          setStatus("");
+          return;
+        }
+        if (String(ctx.status || "") !== "active") {
+          showError("This giving link is not active.");
+          setStatus("");
+          return;
+        }
+
+        elTitle.textContent = "Give to " + ctx.church.name;
+        elSubtitle.textContent = "On behalf giving link";
+        elMetaLine.textContent = "Fund: " + ctx.fund.name + " (" + ctx.fund.code + ")";
+        elMessageLine.textContent = ctx.message ? ("Message: " + ctx.message) : "";
+
+        if (String(ctx.amountType || "").toUpperCase() === "FIXED") {
+          amountInput.value = Number(ctx.amountFixed || 0).toFixed(2);
+          amountInput.disabled = true;
+          amountWrap.style.opacity = "0.85";
+        } else {
+          amountInput.disabled = false;
+          amountWrap.style.opacity = "1";
+        }
+        updateBreakdown();
+        setStatus("");
+
+        form.addEventListener("submit", async function (event) {
+          event.preventDefault();
+          showError("");
+          setStatus("");
+
+          var amount = Number(amountInput.value);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            showError("Enter a valid amount.");
+            return;
+          }
+          if (!payerNameInput.value.trim() || !payerPhoneInput.value.trim()) {
+            showError("Your name and phone number are required.");
+            return;
+          }
+
+          payBtn.disabled = true;
+          payBtn.textContent = "Preparing checkout...";
+          setStatus("Preparing PayFast checkout...");
+
+          try {
+            var response = await fetch(toApiUrl("/api/public/giving-links/" + encodeURIComponent(token) + "/pay"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                amount: amount,
+                payerName: payerNameInput.value.trim(),
+                payerPhone: payerPhoneInput.value.trim(),
+                payerEmail: payerEmailInput.value.trim(),
+                notes: notesInput.value.trim(),
+              }),
+            });
+            var raw = await response.text();
+            var json = parseJsonSafe(raw);
+            if (!response.ok) throw new Error((json && json.error) || "Could not start payment");
+            var checkoutUrl = json && json.data && json.data.checkoutUrl;
+            if (!checkoutUrl) throw new Error("Checkout URL missing");
+            window.location.assign(checkoutUrl);
+          } catch (err) {
+            showError(err && err.message ? err.message : "Payment failed");
+            setStatus("");
+            payBtn.disabled = false;
+            payBtn.textContent = "Continue to PayFast";
+          }
+        });
+      }
+
+      amountInput.addEventListener("input", updateBreakdown);
+      init().catch(function (err) {
+        showError(err && err.message ? err.message : "Failed to load");
+        setStatus("");
+      });
+    })();
+  </script>
+</body>
+</html>

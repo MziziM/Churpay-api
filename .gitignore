@@ -1,3 +1,10 @@
 node_modules
 churpay-api/.env
 .expo/
+.env
+.env.*
+!.env.example
+credentials.json
+credentials/
+*.jks
+*.keystore

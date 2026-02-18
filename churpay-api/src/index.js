@@ -7,6 +7,8 @@ import webhooks from "./routes.webhooks.js";
 import superRoutes from "./routes.super.js";
 import publicRoutes from "./routes.public.js";
 import authRoutes from "./routes.auth.js";
+import notificationRoutes from "./routes.notifications.js";
+import { runNotificationJobs } from "./notification-jobs.js";
 import { db } from "./db.js";
 
 process.on("unhandledRejection", (e) => console.error("UNHANDLED REJECTION", e));
@@ -14,6 +16,7 @@ process.on("uncaughtException", (e) => console.error("UNCAUGHT EXCEPTION", e));
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
+const jsonBodyLimit = String(process.env.JSON_BODY_LIMIT || "35mb");
 
 function parseBool(value, fallback = false) {
   if (typeof value === "undefined" || value === null || value === "") return fallback;
@@ -49,8 +52,21 @@ function buildAllowedOrigins() {
 }
 
 const allowedOrigins = buildAllowedOrigins();
-if (isProduction && allowedOrigins.size === 0) {
-  console.warn("[cors] NODE_ENV=production but CORS_ORIGINS/PUBLIC_BASE_URL allowlist is empty; only non-browser clients will work.");
+const superRoutesEnabled = parseBool(process.env.SUPER_ROUTES_ENABLED, true);
+
+if (isProduction) {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is required in production");
+  }
+  if (allowedOrigins.size === 0) {
+    throw new Error("CORS_ORIGINS/PUBLIC_BASE_URL must include at least one allowed browser origin in production");
+  }
+  if (superRoutesEnabled) {
+    const missingSuperCreds = !String(process.env.SUPER_ADMIN_EMAIL || "").trim() || !String(process.env.SUPER_ADMIN_PASSWORD || "").trim();
+    if (missingSuperCreds) {
+      throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are required in production when SUPER_ROUTES_ENABLED=true");
+    }
+  }
 }
 
 const corsOptions = {
@@ -68,12 +84,45 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-app.use(express.json());
+app.use((req, res, next) => {
+  // Lightweight security-header baseline without external middleware dependency.
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-DNS-Prefetch-Control", "off");
+  if (isProduction) {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
+app.use(express.json({ limit: jsonBodyLimit }));
 
 // Do not pre-parse PayFast ITN as urlencoded; that route captures raw body for signature.
 app.use((req, res, next) => {
   if (req.originalUrl.startsWith("/webhooks/payfast/itn")) return next();
   return express.urlencoded({ extended: false })(req, res, next);
+});
+
+// Ensure API callers get JSON (not an HTML error page) for common body/parser failures.
+// This is important for onboarding (base64 docs) and mobile clients that parse JSON.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+
+  const wantsJson = req.originalUrl?.startsWith("/api/") || req.originalUrl?.startsWith("/auth") || req.originalUrl?.startsWith("/webhooks");
+  if (!wantsJson) return next(err);
+
+  const status = Number(err.status || err.statusCode) || 500;
+  const type = String(err.type || "");
+
+  if (status === 413 || type === "entity.too.large") {
+    return res.status(413).json({
+      error: "Request is too large. Please upload smaller documents (or contact support to increase upload limits).",
+    });
+  }
+
+  // Preserve existing error handling for other errors; return a safe message.
+  console.error("[api] middleware error:", err?.message || err);
+  return res.status(status >= 400 && status < 600 ? status : 500).json({ error: "Request failed" });
 });
 
 function createRateLimiter({ windowMs, max, keyPrefix = "", skip }) {
@@ -174,6 +223,24 @@ app.get(["/routes", "/api/routes"], (_, res) => {
   res.json({ ok: true, build: BUILD_MARKER, routes });
 });
 
+// App Links / Universal Links metadata (must not redirect).
+// NOTE: express.static ignores dotfiles by default, so serve `.well-known/*` explicitly.
+const WELL_KNOWN_DIR = path.join(process.cwd(), "public", ".well-known");
+
+app.get("/.well-known/assetlinks.json", (_req, res) => {
+  res.type("application/json");
+  res.sendFile(path.join(WELL_KNOWN_DIR, "assetlinks.json"), (err) => {
+    if (err) res.status(err?.statusCode || 404).end();
+  });
+});
+
+app.get(["/.well-known/apple-app-site-association", "/apple-app-site-association"], (_req, res) => {
+  res.type("application/json");
+  res.sendFile(path.join(WELL_KNOWN_DIR, "apple-app-site-association"), (err) => {
+    if (err) res.status(err?.statusCode || 404).end();
+  });
+});
+
 // Serve static files from public directory
 app.use(express.static("public"));
 
@@ -183,29 +250,39 @@ app.get("/admin", (_req, res) => {
 });
 
 // Super admin portal routes
-app.get("/super", (_req, res) => {
-  res.redirect(302, "/super/");
-});
+if (superRoutesEnabled) {
+  app.get("/super", (_req, res) => {
+    res.redirect(302, "/super/");
+  });
 
-app.get("/super/login", (_req, res) => {
-  res.redirect(302, "/super/login/");
-});
+  app.get("/super/login", (_req, res) => {
+    res.redirect(302, "/super/login/");
+  });
 
-app.get("/super/login/", (_req, res) => {
-  res.sendFile(path.join(process.cwd(), "public", "super", "login", "index.html"));
-});
+  app.get("/super/login/", (_req, res) => {
+    res.sendFile(path.join(process.cwd(), "public", "super", "login", "index.html"));
+  });
 
-app.get(["/super/", "/super/dashboard", "/super/churches", "/super/transactions", "/super/funds", "/super/members", "/super/settings", "/super/audit-logs"], (_req, res) => {
-  res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
-});
+  app.get(["/super/", "/super/dashboard", "/super/churches", "/super/onboarding", "/super/jobs", "/super/transactions", "/super/funds", "/super/members", "/super/settings", "/super/audit-logs"], (_req, res) => {
+    res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
+  });
 
-app.get("/super/churches/:churchId", (_req, res) => {
-  res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
-});
+  app.get("/super/churches/:churchId", (_req, res) => {
+    res.sendFile(path.join(process.cwd(), "public", "super", "index.html"));
+  });
+}
 
 // Serve the give landing page
 app.get("/give", (req, res) => {
   res.sendFile(path.join(process.cwd(), "public", "give.html"));
+});
+app.get("/g/:joinCode", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "give.html"));
+});
+
+// Shareable giving links page (payer flow)
+app.get("/l/:token", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "giving-link.html"));
 });
 
 // Auth routes exposed under multiple mounts to survive external prefixing
@@ -213,6 +290,32 @@ app.get("/give", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/auth", authRoutes);
 app.use("/api/public", publicRoutes);
+app.use("/api", notificationRoutes);
+
+function startNotificationJobsLoop() {
+  const enabled = parseBool(process.env.NOTIFICATION_JOBS_ENABLED, false);
+  if (!enabled) return;
+
+  const tz = String(process.env.NOTIFICATION_TIMEZONE || "Africa/Johannesburg").trim() || "Africa/Johannesburg";
+  const intervalMs = parseIntEnv("NOTIFICATION_JOBS_INTERVAL_MS", 15 * 60 * 1000);
+
+  const run = async () => {
+    try {
+      const result = await runNotificationJobs({ tz });
+      const birthdaysSent = Number(result?.jobs?.birthdays?.sent || 0);
+      const cashSent = Number(result?.jobs?.cashReminder?.sent || 0);
+      console.log("[jobs] notifications ran", { tz, birthdaysSent, cashSent });
+    } catch (err) {
+      console.error("[jobs] notifications failed", err?.message || err);
+    }
+  };
+
+  // Kick once at boot, then periodically.
+  run();
+  setInterval(run, intervalMs).unref();
+}
+
+startNotificationJobsLoop();
 const demoModeEnabled = parseBool(process.env.DEMO_MODE, false);
 if (demoModeEnabled) {
   // Demo-only open transactions routes intentionally mounted before protected payments router.
@@ -299,7 +402,9 @@ if (demoModeEnabled) {
   });
 }
 app.use("/api", payments);
-app.use("/api/super", superRoutes);
+if (superRoutesEnabled) {
+  app.use("/api/super", superRoutes);
+}
 app.use("/webhooks", webhooks);
 const PORT = process.env.PORT || 3001;
 

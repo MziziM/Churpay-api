@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.churgroup.churpaydemo",
+      "sha256_cert_fingerprints": [
+        "50:6C:60:5D:63:C9:96:50:5E:2A:9F:85:2D:F6:CC:10:D3:A9:2E:4E:98:DE:12:66:4D:D8:5E:A3:6E:2B:09:5B"
+      ]
+    }
+  }
+]
+

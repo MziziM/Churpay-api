@@ -1,22 +1,103 @@
 import express from "express";
 import { buildPayfastRedirect } from "./payfast.js";
 import { db } from "./db.js";
-import { requireAuth, requireAdmin } from "./auth.js";
+import { requireAuth, requireAdmin, requireStaff } from "./auth.js";
 import { handlePayfastItn, payfastItnRawParser } from "./routes.webhooks.js";
 import { createNotification } from "./notifications.js";
+import {
+  connectChurchPayfastCredentials,
+  disconnectChurchPayfastCredentials,
+  getChurchPayfastStatus,
+  normalizePayfastMode,
+  recordChurchPayfastConnectAttempt,
+  resolveChurchPayfastCredentials,
+  validatePayfastCredentialConnection,
+} from "./payfast-church.js";
 import crypto from "node:crypto";
 
 const router = express.Router();
 const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
 const isAdminRole = (role) => role === "admin" || role === "super";
+const ADMIN_PORTAL_TABS = ["dashboard", "transactions", "statements", "funds", "qr", "members", "settings"];
+const ACCOUNTANT_CONFIGURABLE_TABS = ["dashboard", "transactions", "statements", "funds", "qr", "members"];
+const ACCOUNTANT_DEFAULT_TABS = ["dashboard", "transactions", "statements"];
 const DEFAULT_PLATFORM_FEE_FIXED = 2.5;
 const DEFAULT_PLATFORM_FEE_PCT = 0.0075;
 const DEFAULT_SUPERADMIN_CUT_PCT = 1.0;
 const DEFAULT_CASH_RECORD_FEE_ENABLED = false;
 const DEFAULT_CASH_RECORD_FEE_RATE = 0.0075;
+const DEFAULT_RECURRING_GIVING_ENABLED = false;
+const RECURRING_COMING_SOON_MESSAGE =
+  "Recurring giving is coming soon. Please use one-time PayFast or cash for now.";
 const RECURRING_FREQUENCY_CODES = new Set([1, 2, 3, 4, 5, 6]);
 const RECURRING_DEFAULT_FREQUENCY = 3; // monthly
 const RECURRING_DEFAULT_CYCLES = 0; // 0 = indefinite in PayFast
+
+function normalizeAdminPortalTabs(value, { includeSettings = false } = {}) {
+  const allowlist = includeSettings ? ADMIN_PORTAL_TABS : ACCOUNTANT_CONFIGURABLE_TABS;
+  const list = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    const key = String(raw || "").trim().toLowerCase();
+    if (!key) continue;
+    if (!allowlist.includes(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+async function loadAdminPortalSettingsForChurch(churchId) {
+  if (!churchId) return {};
+  try {
+    const row = await db.oneOrNone("select admin_portal_settings from churches where id=$1", [churchId]);
+    const settings = row?.admin_portal_settings;
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
+    return settings;
+  } catch (err) {
+    // Older DBs may not have the column yet. Treat as default settings.
+    if (err?.code === "42703" || err?.code === "42P01") return {};
+    throw err;
+  }
+}
+
+async function getAdminPortalAccess({ role, churchId }) {
+  const normalizedRole = String(role || "").toLowerCase();
+  const settings = await loadAdminPortalSettingsForChurch(churchId);
+
+  if (normalizedRole === "admin" || normalizedRole === "super") {
+    return { role: normalizedRole, allowedTabs: ADMIN_PORTAL_TABS.slice(), settings };
+  }
+
+  const configured = normalizeAdminPortalTabs(settings?.accountantTabs || []);
+  const allowedTabs = configured.length ? configured : ACCOUNTANT_DEFAULT_TABS.slice();
+  return { role: normalizedRole, allowedTabs, settings };
+}
+
+function requireAdminPortalTabsAny(...tabs) {
+  const required = normalizeAdminPortalTabs(tabs, { includeSettings: true });
+  return async (req, res, next) => {
+    try {
+      const role = String(req.user?.role || "").toLowerCase();
+      if (role === "admin" || role === "super") return next();
+      if (role !== "accountant") return res.status(403).json({ error: "Forbidden" });
+
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+
+      const access = await getAdminPortalAccess({ role, churchId });
+      const ok = required.some((tab) => access.allowedTabs.includes(tab));
+      if (!ok) return res.status(403).json({ error: "Forbidden" });
+
+      return next();
+    } catch (err) {
+      console.error("[admin/portal-settings] tab guard error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  };
+}
 
 function makeMpaymentId() {
   return "CP-" + crypto.randomBytes(8).toString("hex").toUpperCase();
@@ -109,6 +190,12 @@ function readCashFeeConfig() {
   };
 }
 
+function readRecurringConfig() {
+  const enabledRaw = String(process.env.RECURRING_GIVING_ENABLED ?? DEFAULT_RECURRING_GIVING_ENABLED).toLowerCase();
+  const enabled = ["1", "true", "yes", "on"].includes(enabledRaw);
+  return { enabled };
+}
+
 function buildFeeBreakdown(amountRaw) {
   const amount = toCurrencyNumber(amountRaw);
   const cfg = readFeeConfig();
@@ -160,7 +247,8 @@ function csvEscape(value) {
 
 const TX_STATUS_EXPR =
   "upper(coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else t.provider end))";
-const STATEMENT_DEFAULT_STATUSES = ["PAID", "RECORDED", "CONFIRMED"];
+// "Finalized" records: PayFast/manual/simulated are PAID, while cash needs explicit staff confirmation.
+const STATEMENT_DEFAULT_STATUSES = ["PAID", "CONFIRMED"];
 
 function toBoolean(val) {
   if (typeof val === "undefined" || val === null) return undefined;
@@ -169,6 +257,45 @@ function toBoolean(val) {
   const str = String(val).toLowerCase();
   return ["1", "true", "yes", "on"].includes(str);
 }
+
+function createInMemoryRateLimiter({ windowMs, max, keyPrefix = "" }) {
+  const buckets = new Map();
+  let gcCounter = 0;
+
+  return (req, res, next) => {
+    const now = Date.now();
+    const keyPart = req.user?.id || req.ip || req.socket?.remoteAddress || "unknown";
+    const key = `${keyPrefix}${keyPart}`;
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      bucket = { count: 0, resetAt: now + windowMs };
+    }
+
+    bucket.count += 1;
+    buckets.set(key, bucket);
+
+    gcCounter += 1;
+    if (gcCounter % 200 === 0) {
+      for (const [bucketKey, value] of buckets.entries()) {
+        if (value.resetAt <= now) buckets.delete(bucketKey);
+      }
+    }
+
+    if (bucket.count > max) {
+      const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
+      return res.status(429).json({ error: "Too many requests. Please retry shortly." });
+    }
+
+    return next();
+  };
+}
+
+const payfastConnectRateLimiter = createInMemoryRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  keyPrefix: "payfast-connect:",
+});
 
 function normalizeFundCode(code, fallbackName) {
   const src = typeof code === "string" && code.trim() ? code.trim() : fallbackName;
@@ -456,10 +583,16 @@ async function loadAdminStatementData({
           coalesce(pi.payer_phone, pi.member_phone) as "memberPhone",
           coalesce(pi.payer_email, null) as "memberEmail",
           coalesce(pi.payer_type, 'member') as "payerType",
+          coalesce(pi.source, 'DIRECT_APP') as "paymentSource",
+          pi.on_behalf_of_member_id as "onBehalfOfMemberId",
+          ob.full_name as "onBehalfOfMemberName",
+          ob.phone as "onBehalfOfMemberPhone",
+          ob.email as "onBehalfOfMemberEmail",
           t.provider_payment_id as "providerPaymentId"
         from transactions t
         join funds f on f.id = t.fund_id
         left join payment_intents pi on pi.id = t.payment_intent_id
+        left join members ob on ob.id = pi.on_behalf_of_member_id
         where ${where.join(" and ")}
         order by t.created_at desc
         limit $${limitIdx}
@@ -482,13 +615,36 @@ async function loadAdminStatementData({
 }
 
 async function loadMember(userId) {
-  return db.one(
-    `select m.id, m.full_name, m.phone, m.role, m.church_id, c.name as church_name
-     from members m
-     left join churches c on c.id = m.church_id
-     where m.id=$1`,
-    [userId]
-  );
+  try {
+    return await db.one(
+      `select
+         m.id,
+         m.full_name,
+         m.phone,
+         m.email,
+         m.role,
+         m.church_id,
+         m.payfast_adhoc_token,
+         m.payfast_adhoc_token_revoked_at,
+         c.name as church_name
+       from members m
+       left join churches c on c.id = m.church_id
+       where m.id=$1`,
+      [userId]
+    );
+  } catch (err) {
+    // Backward compatible fallback if saved-card columns aren't migrated yet.
+    if (err?.code === "42703") {
+      return db.one(
+        `select m.id, m.full_name, m.phone, m.email, m.role, m.church_id, c.name as church_name
+         from members m
+         left join churches c on c.id = m.church_id
+         where m.id=$1`,
+        [userId]
+      );
+    }
+    throw err;
+  }
 }
 
 function nextSundayIsoDate() {
@@ -507,6 +663,15 @@ function requireChurch(req, res) {
     return null;
   }
   return req.user.church_id;
+}
+
+function requireChurchAdminRole(req, res) {
+  const role = String(req.user?.role || "").toLowerCase();
+  if (role !== "admin") {
+    res.status(403).json({ error: "Church admin only" });
+    return false;
+  }
+  return true;
 }
 
 function normalizeBaseUrl() {
@@ -533,13 +698,10 @@ function appendQueryParam(url, key, value) {
 }
 
 function getPayfastCallbackUrls(paymentIntentId, mPaymentId = null) {
-  const baseUrl = normalizeBaseUrl() || "";
-  const defaultReturn = `${baseUrl}/api/payfast/return`;
-  const defaultCancel = `${baseUrl}/api/payfast/cancel`;
-
-  let returnUrl = String(process.env.PAYFAST_RETURN_URL || defaultReturn).trim();
-  let cancelUrl = String(process.env.PAYFAST_CANCEL_URL || defaultCancel).trim();
-  const notifyUrl = String(process.env.PAYFAST_NOTIFY_URL || `${baseUrl}/webhooks/payfast/itn`).trim();
+  const baseUrl = normalizeBaseUrl() || "https://api.churpay.com";
+  let returnUrl = `${baseUrl}/api/payfast/return`;
+  let cancelUrl = `${baseUrl}/api/payfast/cancel`;
+  const notifyUrl = `${baseUrl}/webhooks/payfast/itn`;
 
   returnUrl = appendQueryParam(returnUrl, "pi", paymentIntentId);
   cancelUrl = appendQueryParam(cancelUrl, "pi", paymentIntentId);
@@ -621,7 +783,7 @@ router.get("/churches/:churchId/funds", requireAuth, async (req, res) => {
 });
 
 // Admin-only QR payload generator for in-app donation QR codes.
-router.get("/churches/me/qr", requireAdmin, async (req, res) => {
+router.get("/churches/me/qr", requireStaff, requireAdminPortalTabsAny("qr"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -754,19 +916,28 @@ router.get(["/churches/:churchId/transactions", "/churches/me/transactions"], re
         t.channel,
         t.provider,
         t.provider_payment_id as "providerPaymentId",
+        t.payment_intent_id as "paymentIntentId",
         coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else upper(t.provider) end) as status,
+        coalesce(pi.cash_verified_by_admin, false) as "cashVerifiedByAdmin",
+        pi.cash_verification_note as "cashVerificationNote",
         pi.service_date as "serviceDate",
         t.created_at as "createdAt",
         coalesce(pi.payer_name, pi.member_name) as "memberName",
         coalesce(pi.payer_phone, pi.member_phone) as "memberPhone",
         coalesce(pi.payer_email, null) as "memberEmail",
         coalesce(pi.payer_type, 'member') as "payerType",
+        coalesce(pi.source, 'DIRECT_APP') as "paymentSource",
+        pi.on_behalf_of_member_id as "onBehalfOfMemberId",
+        ob.full_name as "onBehalfOfMemberName",
+        ob.phone as "onBehalfOfMemberPhone",
+        ob.email as "onBehalfOfMemberEmail",
         f.id as "fundId",
         f.code as "fundCode",
         f.name as "fundName"
       from transactions t
       join funds f on f.id = t.fund_id
       left join payment_intents pi on pi.id = t.payment_intent_id
+      left join members ob on ob.id = pi.on_behalf_of_member_id
       where ${where.join(" and ")}
       order by t.created_at desc
       limit $${limitIdx} offset $${offsetIdx}
@@ -914,7 +1085,12 @@ router.delete("/funds/:id", requireAdmin, async (req, res) => {
 
 router.post("/payment-intents", requireAuth, async (req, res) => {
   try {
-    let { fundId, amount, channel = "app" } = req.body || {};
+    let { fundId, amount, channel = "app", saveCard, useSavedCard } = req.body || {};
+    const wantsSaveCard = ["1", "true", "yes"].includes(String(saveCard || "").toLowerCase()) || saveCard === true;
+    const wantsUseSavedCard = ["1", "true", "yes"].includes(String(useSavedCard || "").toLowerCase()) || useSavedCard === true;
+    if (wantsSaveCard && wantsUseSavedCard) {
+      return res.status(400).json({ error: "Choose either saveCard or useSavedCard, not both" });
+    }
 
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
@@ -928,6 +1104,29 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
     const member = await loadMember(req.user.id);
     if (!member.church_id) return res.status(400).json({ error: "Join a church first" });
     const churchId = member.church_id;
+
+    if (wantsSaveCard) {
+      if (!member.email) {
+        return res.status(400).json({ error: "Add an email to your profile to save a card for next time." });
+      }
+    }
+
+    if (wantsUseSavedCard) {
+      const enabled = ["1", "true", "yes"].includes(String(process.env.PAYFAST_SAVED_CARD_ENABLED || "").toLowerCase());
+      if (!enabled) {
+        return res.status(503).json({
+          error: "Saved card payments are coming soon. Please use PayFast for now.",
+          code: "SAVED_CARD_COMING_SOON",
+        });
+      }
+      const token = String(member.payfast_adhoc_token || "").trim();
+      if (!token || member.payfast_adhoc_token_revoked_at) {
+        return res.status(400).json({ error: "No saved card found for this account." });
+      }
+      if (!member.email) {
+        return res.status(400).json({ error: "Add an email to your profile to use saved card payments." });
+      }
+    }
 
     if (!fundId) {
       return res.status(400).json({ error: "Missing fundId" });
@@ -1031,8 +1230,18 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
     const intent = await db.one(
       `
       insert into payment_intents
-        (church_id, fund_id, amount, status, provider, member_name, member_phone, payer_name, payer_phone, payer_type, item_name, m_payment_id, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct)
-      values ($1,$2,$3,'PENDING','payfast',$4,$5,$6,$7,'member',$8,$9,$10,$11,$12,$13,$14,$15)
+        (church_id, fund_id, amount, status, provider,
+         member_name, member_phone,
+         payer_name, payer_phone, payer_email, payer_type,
+         item_name, m_payment_id,
+         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
+         source, save_card_requested)
+      values ($1,$2,$3,'PENDING','payfast',
+              $4,$5,
+              $6,$7,$8,'member',
+              $9,$10,
+              $11,$12,$13,$14,$15,$16,
+              $17,$18)
       returning *
     `,
       [
@@ -1043,6 +1252,7 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
         member.phone || "",
         member.full_name || "",
         member.phone || "",
+        member.email || null,
         itemName,
         mPaymentId,
         pricing.platformFeeAmount,
@@ -1051,16 +1261,30 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
         pricing.amountGross,
         pricing.superadminCutAmount,
         pricing.superadminCutPct,
+        wantsUseSavedCard ? "SAVED_CARD" : "DIRECT_APP",
+        wantsSaveCard,
       ]
     );
 
     const { returnUrl, cancelUrl, notifyUrl } = getPayfastCallbackUrls(intent.id, mPaymentId);
 
+    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
+    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
+      return res.status(503).json({
+        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+        code: "PAYFAST_NOT_CONNECTED",
+      });
+    }
+    const mode = payfastCreds.mode;
+    const merchantId = payfastCreds.merchantId;
+    const merchantKey = payfastCreds.merchantKey;
+    const passphrase = payfastCreds.passphrase || "";
+
     const checkoutUrl = buildPayfastRedirect({
-      mode: process.env.PAYFAST_MODE,
-      merchantId: process.env.PAYFAST_MERCHANT_ID,
-      merchantKey: process.env.PAYFAST_MERCHANT_KEY,
-      passphrase: process.env.PAYFAST_PASSPHRASE,
+      mode,
+      merchantId,
+      merchantKey,
+      passphrase,
       mPaymentId,
       amount: intent.amount_gross || pricing.amountGross,
       itemName,
@@ -1069,6 +1293,10 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
       notifyUrl,
       customStr1: churchId,
       customStr2: fundId,
+      nameFirst: member.full_name || undefined,
+      emailAddress: member.email || undefined,
+      subscriptionType: wantsSaveCard || wantsUseSavedCard ? 2 : undefined,
+      token: wantsUseSavedCard ? String(member.payfast_adhoc_token || "").trim() || undefined : undefined,
     });
 
     res.json({
@@ -1090,6 +1318,15 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
 
 router.post("/recurring-givings", requireAuth, async (req, res) => {
   try {
+    const recurringCfg = readRecurringConfig();
+    if (!recurringCfg.enabled) {
+      return res.status(503).json({
+        error: RECURRING_COMING_SOON_MESSAGE,
+        code: "RECURRING_COMING_SOON",
+        meta: { comingSoon: true },
+      });
+    }
+
     const churchId = requireChurch(req, res);
     if (!churchId) return;
 
@@ -1129,13 +1366,17 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Church not found" });
     }
 
-    const mode = (process.env.PAYFAST_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
-    const merchantId = process.env.PAYFAST_MERCHANT_ID;
-    const merchantKey = process.env.PAYFAST_MERCHANT_KEY;
-    const passphrase = process.env.PAYFAST_PASSPHRASE || "";
-    if (!merchantId || !merchantKey) {
-      return res.status(500).json({ error: "PayFast is not configured" });
+    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
+    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
+      return res.status(503).json({
+        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+        code: "PAYFAST_NOT_CONNECTED",
+      });
     }
+    const mode = payfastCreds.mode;
+    const merchantId = payfastCreds.merchantId;
+    const merchantKey = payfastCreds.merchantKey;
+    const passphrase = payfastCreds.passphrase || "";
 
     const pricing = buildFeeBreakdown(amount);
     const mPaymentId = makeMpaymentId();
@@ -1437,14 +1678,17 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       ]
     );
 
-    const mode = (process.env.PAYFAST_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
-    const merchantId = process.env.PAYFAST_MERCHANT_ID;
-    const merchantKey = process.env.PAYFAST_MERCHANT_KEY;
-    const passphrase = process.env.PAYFAST_PASSPHRASE;
-
-    if (!merchantId || !merchantKey) {
-      return res.status(500).json({ error: "Server misconfigured: PayFast merchant keys missing" });
+    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
+    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
+      return res.status(503).json({
+        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+        code: "PAYFAST_NOT_CONNECTED",
+      });
     }
+    const mode = payfastCreds.mode;
+    const merchantId = payfastCreds.merchantId;
+    const merchantKey = payfastCreds.merchantKey;
+    const passphrase = payfastCreds.passphrase || "";
 
     const callbackUrls = getPayfastCallbackUrls(intent.id, intent.m_payment_id || intent.id);
     const returnUrl = callbackUrls.returnUrl || `${baseUrl}/give?success=true`;
@@ -1700,14 +1944,18 @@ router.get("/churches/:churchId/totals", requireAdmin, async (req, res) => {
 
     const rows = await db.manyOrNone(
       `
-      select f.code, f.name, coalesce(sum(t.amount),0)::numeric(12,2) as total
+      select
+        f.code,
+        f.name,
+        coalesce(sum(case when ${TX_STATUS_EXPR} = any($2) then t.amount else 0 end),0)::numeric(12,2) as total
       from funds f
       left join transactions t on t.fund_id=f.id and t.church_id=f.church_id
+      left join payment_intents pi on pi.id = t.payment_intent_id
       where f.church_id=$1
       group by f.code, f.name
       order by f.name asc
       `,
-      [churchId]
+      [churchId, STATEMENT_DEFAULT_STATUSES]
     );
 
     const grand = rows.reduce((acc, r) => acc + Number(r.total), 0);
@@ -1719,7 +1967,179 @@ router.get("/churches/:churchId/totals", requireAdmin, async (req, res) => {
   }
 });
 
-router.get("/admin/dashboard/totals", requireAdmin, async (req, res) => {
+router.get("/churches/payfast/status", requireAdmin, async (req, res) => {
+  try {
+    if (!requireChurchAdminRole(req, res)) return;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const status = await getChurchPayfastStatus(churchId);
+    return res.json({
+      connected: !!status.connected,
+      connectedAt: status.connectedAt || null,
+      mode: status.mode || normalizePayfastMode(process.env.PAYFAST_MODE),
+      merchantIdMasked: status.merchantIdMasked || "",
+      merchantKeyMasked: status.merchantKeyMasked || "",
+      storageReady: !!status.storageReady,
+      encryptionKeyConfigured: !!status.encryptionKeyConfigured,
+      fallbackEnabled: !!status.fallbackEnabled,
+      lastAttemptAt: status.lastAttemptAt || null,
+      lastAttemptStatus: status.lastAttemptStatus || null,
+      lastAttemptError: status.lastAttemptError || null,
+    });
+  } catch (err) {
+    console.error("[churches/payfast/status] error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/churches/payfast/connect", requireAdmin, payfastConnectRateLimiter, async (req, res) => {
+  try {
+    if (!requireChurchAdminRole(req, res)) return;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const merchantId = String(req.body?.merchantId || "").trim();
+    const merchantKey = String(req.body?.merchantKey || "").trim();
+    const passphrase = String(req.body?.passphrase || "").trim();
+
+    if (!merchantId || !merchantKey) {
+      return res.status(400).json({ error: "merchantId and merchantKey are required" });
+    }
+
+    const validation = await validatePayfastCredentialConnection({
+      merchantId,
+      merchantKey,
+      passphrase,
+      mode: process.env.PAYFAST_MODE,
+    });
+
+    if (!validation?.ok) {
+      const failedMessage = validation?.error || "Invalid Merchant Credentials";
+      await recordChurchPayfastConnectAttempt({
+        churchId,
+        status: "failed",
+        error: failedMessage,
+      });
+
+      if (validation?.code === "PAYFAST_VALIDATION_UNAVAILABLE") {
+        return res.status(503).json({ error: failedMessage, code: validation.code });
+      }
+      return res.status(400).json({ error: "Invalid Merchant Credentials" });
+    }
+
+    await connectChurchPayfastCredentials({
+      churchId,
+      merchantId,
+      merchantKey,
+      passphrase,
+    });
+
+    const merchantIdMasked =
+      merchantId.length > 5 ? `${merchantId.slice(0, 3)}${"*".repeat(Math.max(1, merchantId.length - 5))}${merchantId.slice(-2)}` : "***";
+    console.info("[churches/payfast/connect] connected", {
+      churchId,
+      adminId: req.user?.id || null,
+      merchantIdMasked,
+    });
+
+    return res.json({ status: "connected" });
+  } catch (err) {
+    const code = String(err?.code || "");
+    if (code === "PAYFAST_STORAGE_NOT_READY") {
+      return res.status(503).json({ error: "PayFast credential storage is not ready. Run migrations and retry." });
+    }
+    if (code === "PAYFAST_CREDENTIAL_ENCRYPTION_KEY_MISSING") {
+      return res.status(500).json({ error: "Server misconfigured: PAYFAST_CREDENTIAL_ENCRYPTION_KEY missing" });
+    }
+    console.error("[churches/payfast/connect] error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/churches/payfast/disconnect", requireAdmin, async (req, res) => {
+  try {
+    if (!requireChurchAdminRole(req, res)) return;
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    await disconnectChurchPayfastCredentials(churchId);
+    console.info("[churches/payfast/disconnect] disconnected", {
+      churchId,
+      adminId: req.user?.id || null,
+    });
+
+    return res.json({ status: "disconnected" });
+  } catch (err) {
+    const code = String(err?.code || "");
+    if (code === "PAYFAST_STORAGE_NOT_READY") {
+      return res.status(503).json({ error: "PayFast credential storage is not ready. Run migrations and retry." });
+    }
+    console.error("[churches/payfast/disconnect] error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/portal-settings", requireStaff, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const role = String(req.user?.role || "").toLowerCase();
+    const access = await getAdminPortalAccess({ role, churchId });
+    const accountantTabs = normalizeAdminPortalTabs(access.settings?.accountantTabs || []);
+
+    return res.json({
+      ok: true,
+      role: access.role,
+      allowedTabs: access.allowedTabs,
+      settings: { accountantTabs },
+    });
+  } catch (err) {
+    console.error("[admin/portal-settings] GET error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.patch("/admin/portal-settings", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const accountantTabs = normalizeAdminPortalTabs(req.body?.accountantTabs || []);
+    if (!accountantTabs.length) {
+      return res.status(400).json({ error: "Select at least one accountant tab." });
+    }
+
+    try {
+      await db.none(
+        `
+        update churches
+        set admin_portal_settings = jsonb_set(
+          coalesce(admin_portal_settings, '{}'::jsonb),
+          '{accountantTabs}',
+          $2::jsonb,
+          true
+        )
+        where id = $1
+        `,
+        [churchId, JSON.stringify(accountantTabs)]
+      );
+    } catch (err) {
+      if (err?.code === "42703") {
+        return res.status(503).json({ error: "Portal settings not available yet. Run migrations and retry." });
+      }
+      throw err;
+    }
+
+    return res.json({ ok: true, settings: { accountantTabs } });
+  } catch (err) {
+    console.error("[admin/portal-settings] PATCH error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/dashboard/totals", requireStaff, requireAdminPortalTabsAny("dashboard"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -1744,7 +2164,11 @@ router.get("/admin/dashboard/totals", requireAdmin, async (req, res) => {
   }
 });
 
-router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res) => {
+router.get(
+  "/admin/dashboard/transactions/recent",
+  requireStaff,
+  requireAdminPortalTabsAny("dashboard", "transactions"),
+  async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -1780,6 +2204,7 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
       `
       select
         t.id,
+        t.payment_intent_id as "paymentIntentId",
         t.reference,
         t.amount,
         coalesce(t.platform_fee_amount,0)::numeric(12,2) as "platformFeeAmount",
@@ -1792,17 +2217,27 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
         t.provider_payment_id as "providerPaymentId",
         coalesce(pi.status, case when t.provider in ('payfast','simulated','manual') then 'PAID' when t.provider is null then 'PAID' else upper(t.provider) end) as status,
         pi.service_date as "serviceDate",
+        coalesce(pi.cash_verified_by_admin,false) as "cashVerifiedByAdmin",
+        pi.cash_verified_at as "cashVerifiedAt",
+        pi.cash_verified_by as "cashVerifiedBy",
+        pi.cash_verification_note as "cashVerificationNote",
         t.created_at as "createdAt",
         coalesce(pi.payer_name, pi.member_name) as "memberName",
         coalesce(pi.payer_phone, pi.member_phone) as "memberPhone",
         coalesce(pi.payer_email, null) as "memberEmail",
         coalesce(pi.payer_type, 'member') as "payerType",
+        coalesce(pi.source, 'DIRECT_APP') as "paymentSource",
+        pi.on_behalf_of_member_id as "onBehalfOfMemberId",
+        ob.full_name as "onBehalfOfMemberName",
+        ob.phone as "onBehalfOfMemberPhone",
+        ob.email as "onBehalfOfMemberEmail",
         f.id as "fundId",
         f.code as "fundCode",
         f.name as "fundName"
       from transactions t
       join funds f on f.id = t.fund_id
       left join payment_intents pi on pi.id = t.payment_intent_id
+      left join members ob on ob.id = pi.on_behalf_of_member_id
       where ${where.join(" and ")}
       order by t.created_at desc
       limit $${limitIdx} offset $${offsetIdx}
@@ -1831,7 +2266,11 @@ router.get("/admin/dashboard/transactions/recent", requireAdmin, async (req, res
   }
 });
 
-router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res) => {
+router.get(
+  "/admin/dashboard/transactions/export",
+  requireStaff,
+  requireAdminPortalTabsAny("dashboard", "transactions"),
+  async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -1876,11 +2315,17 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
         coalesce(pi.payer_phone, pi.member_phone) as "memberPhone",
         coalesce(pi.payer_email, null) as "memberEmail",
         coalesce(pi.payer_type, 'member') as "payerType",
+        coalesce(pi.source, 'DIRECT_APP') as "paymentSource",
+        pi.on_behalf_of_member_id as "onBehalfOfMemberId",
+        ob.full_name as "onBehalfOfMemberName",
+        ob.phone as "onBehalfOfMemberPhone",
+        ob.email as "onBehalfOfMemberEmail",
         f.code as "fundCode",
         f.name as "fundName"
       from transactions t
       join funds f on f.id = t.fund_id
       left join payment_intents pi on pi.id = t.payment_intent_id
+      left join members ob on ob.id = pi.on_behalf_of_member_id
       where ${where.join(" and ")}
       order by t.created_at desc
       limit $${limitIdx}
@@ -1934,7 +2379,7 @@ router.get("/admin/dashboard/transactions/export", requireAdmin, async (req, res
   }
 });
 
-router.get("/admin/statements/summary", requireAdmin, async (req, res) => {
+router.get("/admin/statements/summary", requireStaff, requireAdminPortalTabsAny("statements"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -1966,7 +2411,7 @@ router.get("/admin/statements/summary", requireAdmin, async (req, res) => {
   }
 });
 
-router.get("/admin/statements/export", requireAdmin, async (req, res) => {
+router.get("/admin/statements/export", requireStaff, requireAdminPortalTabsAny("statements"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -2086,7 +2531,7 @@ router.get("/admin/statements/export", requireAdmin, async (req, res) => {
   }
 });
 
-router.get("/admin/statements/print", requireAdmin, async (req, res) => {
+router.get("/admin/statements/print", requireStaff, requireAdminPortalTabsAny("statements"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -2120,7 +2565,7 @@ router.get("/admin/statements/print", requireAdmin, async (req, res) => {
     const byMethod = data.breakdown?.byMethod || [];
 
     const assetBase = normalizeBaseUrl() || "https://api.churpay.com";
-    const logoUrl = `${assetBase}/assets/brand/churpay-logo-500x250.png`;
+    const logoUrl = `${assetBase}/assets/brand/churpay-logo.svg`;
     const autoprint = ["1", "true", "yes"].includes(String(req.query.autoprint || "").toLowerCase());
 
     const totalsRow = {
@@ -2161,8 +2606,12 @@ router.get("/admin/statements/print", requireAdmin, async (req, res) => {
     .stat .k { font-size: 12px; color: var(--muted); }
     .stat .v { margin-top: 6px; font-size: 16px; font-weight: 800; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 12px; }
+    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
     th { font-size: 12px; color: var(--muted); font-weight: 700; }
+    .table-shell { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .table-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; }
+    .table-scroll table { min-width: 680px; }
+    .table-scroll.tx table { min-width: 1220px; }
     .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 11px; }
     .pill.ok { border-color: rgba(14,165,183,.35); background: rgba(14,165,183,.10); color: #0b4b57; }
     .pill.warn { border-color: rgba(245,158,11,.35); background: rgba(245,158,11,.12); color: #7c2d12; }
@@ -2173,6 +2622,8 @@ router.get("/admin/statements/print", requireAdmin, async (req, res) => {
     @media print {
       .wrap { max-width: none; padding: 0; }
       .card { break-inside: avoid; }
+      .table-scroll { overflow: visible !important; }
+      .table-scroll table { min-width: 0 !important; }
       a { color: inherit; text-decoration: none; }
     }
   </style>
@@ -2213,86 +2664,98 @@ router.get("/admin/statements/print", requireAdmin, async (req, res) => {
 
       <div class="card">
         <h2>Breakdown</h2>
-        <table>
-          <thead><tr><th>Fund</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
-          <tbody>
-            ${byFund.length ? byFund.map((r) => `
-              <tr>
-                <td>${escapeHtml(r.fundName || r.fundCode || "-")}</td>
-                <td>${escapeHtml(formatMoneyZar(r.donationTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.feeTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.payfastFeeTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.netReceivedTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.totalCharged))}</td>
-                <td>${escapeHtml(String(r.transactionCount || 0))}</td>
-              </tr>
-            `).join("") : `<tr><td colspan="7" class="muted">No records.</td></tr>`}
-          </tbody>
-        </table>
+        <div class="table-shell">
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Fund</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
+              <tbody>
+                ${byFund.length ? byFund.map((r) => `
+                  <tr>
+                    <td>${escapeHtml(r.fundName || r.fundCode || "-")}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.donationTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.feeTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.payfastFeeTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.netReceivedTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.totalCharged))}</td>
+                    <td>${escapeHtml(String(r.transactionCount || 0))}</td>
+                  </tr>
+                `).join("") : `<tr><td colspan="7" class="muted">No records.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="section">
       <h3>By method</h3>
       <div class="card">
-        <table>
-          <thead><tr><th>Method</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
-          <tbody>
-            ${byMethod.length ? byMethod.map((r) => `
-              <tr>
-                <td>${escapeHtml(String(r.provider || "unknown").toUpperCase())}</td>
-                <td>${escapeHtml(formatMoneyZar(r.donationTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.feeTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.payfastFeeTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.netReceivedTotal))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.totalCharged))}</td>
-                <td>${escapeHtml(String(r.transactionCount || 0))}</td>
-              </tr>
-            `).join("") : `<tr><td colspan="7" class="muted">No records.</td></tr>`}
-          </tbody>
-        </table>
+        <div class="table-shell">
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Method</th><th>Donation</th><th>Processing fee</th><th>PayFast fee</th><th>Net received</th><th>Total charged</th><th>Count</th></tr></thead>
+              <tbody>
+                ${byMethod.length ? byMethod.map((r) => `
+                  <tr>
+                    <td>${escapeHtml(String(r.provider || "unknown").toUpperCase())}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.donationTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.feeTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.payfastFeeTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.netReceivedTotal))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.totalCharged))}</td>
+                    <td>${escapeHtml(String(r.transactionCount || 0))}</td>
+                  </tr>
+                `).join("") : `<tr><td colspan="7" class="muted">No records.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="section">
       <h3>Transactions (most recent first)</h3>
       <div class="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Reference</th>
-              <th>Status</th>
-              <th>Method</th>
-              <th>Donation</th>
-              <th>Processing fee</th>
-              <th>PayFast fee</th>
-              <th>Net received</th>
-              <th>Total charged</th>
-              <th>Fund</th>
-              <th>Member</th>
-              <th>Service date</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.length ? rows.map((r) => `
-              <tr>
-                <td>${escapeHtml(r.reference || "-")}</td>
-                <td><span class="pill ${STATEMENT_DEFAULT_STATUSES.includes(String(r.status || "").toUpperCase()) ? "ok" : "warn"}">${escapeHtml(String(r.status || "-"))}</span></td>
-                <td>${escapeHtml(String(r.provider || "-").toUpperCase())}</td>
-                <td>${escapeHtml(formatMoneyZar(r.amount))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.platformFeeAmount))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.payfastFeeAmount))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.churchNetAmount))}</td>
-                <td>${escapeHtml(formatMoneyZar(r.amountGross))}</td>
-                <td>${escapeHtml(r.fundName || r.fundCode || "-")}</td>
-                <td>${escapeHtml(r.memberName || r.memberPhone || "-")}</td>
-                <td>${escapeHtml(formatDateIsoLike(r.serviceDate))}</td>
-                <td>${escapeHtml(new Date(r.createdAt).toISOString().replace("T", " ").slice(0, 19) + " UTC")}</td>
-              </tr>
-            `).join("") : `<tr><td colspan="12" class="muted">No records for this period.</td></tr>`}
-          </tbody>
-        </table>
+        <div class="table-shell">
+          <div class="table-scroll tx">
+            <table>
+              <thead>
+                <tr>
+                  <th>Reference</th>
+                  <th>Status</th>
+                  <th>Method</th>
+                  <th>Donation</th>
+                  <th>Processing fee</th>
+                  <th>PayFast fee</th>
+                  <th>Net received</th>
+                  <th>Total charged</th>
+                  <th>Fund</th>
+                  <th>Member</th>
+                  <th>Service date</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.length ? rows.map((r) => `
+                  <tr>
+                    <td>${escapeHtml(r.reference || "-")}</td>
+                    <td><span class="pill ${STATEMENT_DEFAULT_STATUSES.includes(String(r.status || "").toUpperCase()) ? "ok" : "warn"}">${escapeHtml(String(r.status || "-"))}</span></td>
+                    <td>${escapeHtml(String(r.provider || "-").toUpperCase())}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.amount))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.platformFeeAmount))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.payfastFeeAmount))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.churchNetAmount))}</td>
+                    <td>${escapeHtml(formatMoneyZar(r.amountGross))}</td>
+                    <td>${escapeHtml(r.fundName || r.fundCode || "-")}</td>
+                    <td>${escapeHtml(r.memberName || r.memberPhone || "-")}</td>
+                    <td>${escapeHtml(formatDateIsoLike(r.serviceDate))}</td>
+                    <td>${escapeHtml(new Date(r.createdAt).toISOString().replace("T", " ").slice(0, 19) + " UTC")}</td>
+                  </tr>
+                `).join("") : `<tr><td colspan="12" class="muted">No records for this period.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
         <p class="muted" style="margin:10px 0 0;font-size:11px;">Rows shown: ${escapeHtml(String(rows.length))} (limit=${escapeHtml(String(maxRows))}).</p>
       </div>
     </section>
@@ -2324,7 +2787,72 @@ router.get("/admin/statements/print", requireAdmin, async (req, res) => {
   }
 });
 
-router.get("/admin/members", requireAdmin, async (req, res) => {
+router.patch("/admin/members/:memberId/role", requireAdmin, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const memberId = String(req.params.memberId || "").trim();
+    if (!memberId || !UUID_REGEX.test(memberId)) {
+      return res.status(400).json({ error: "Valid memberId is required" });
+    }
+
+    if (String(req.user?.id || "") === memberId) {
+      return res.status(400).json({ error: "You cannot change your own role." });
+    }
+
+    const role = String(req.body?.role || "").trim().toLowerCase();
+    if (!["member", "accountant", "admin"].includes(role)) {
+      return res.status(400).json({ error: "Invalid role" });
+    }
+
+    const existing = await db.oneOrNone(
+      `select id, role from members where id=$1 and church_id=$2`,
+      [memberId, churchId]
+    );
+    if (!existing) return res.status(404).json({ error: "Member not found" });
+
+    const currentRole = String(existing.role || "").toLowerCase();
+    if (currentRole === "admin" && role !== "admin") {
+      const row = await db.one(
+        `
+        select count(*)::int as count
+        from members
+        where church_id=$1 and lower(role)='admin' and id <> $2
+        `,
+        [churchId, memberId]
+      );
+      if (Number(row.count || 0) <= 0) {
+        return res.status(409).json({ error: "You cannot remove the last admin from this church." });
+      }
+    }
+
+    const updated = await db.one(
+      `
+      update members
+      set role=$3, updated_at=now()
+      where id=$1 and church_id=$2
+      returning
+        id,
+        full_name as "fullName",
+        phone,
+        email,
+        date_of_birth as "dateOfBirth",
+        role,
+        created_at as "createdAt",
+        updated_at as "updatedAt"
+      `,
+      [memberId, churchId, role]
+    );
+
+    return res.json({ ok: true, member: updated });
+  } catch (err) {
+    console.error("[admin/members] role update error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/members", requireStaff, requireAdminPortalTabsAny("members"), async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -2369,12 +2897,13 @@ router.get("/admin/members", requireAdmin, async (req, res) => {
         m.full_name as "fullName",
         m.phone,
         m.email,
+        m.date_of_birth as "dateOfBirth",
         m.role,
         m.created_at as "createdAt",
         m.updated_at as "updatedAt"
       from members m
       where ${where.join(" and ")}
-      order by case when m.role in ('admin','super') then 0 else 1 end, m.created_at desc
+      order by case when lower(m.role) in ('admin','accountant','super') then 0 else 1 end, m.created_at desc
       limit $${idx} offset $${idx + 1}
       `,
       [...params, limit, offset]
@@ -2511,6 +3040,43 @@ router.post("/cash-givings", requireAuth, async (req, res) => {
       ]
     );
 
+    // Best-effort: notify church staff to confirm the cash record.
+    try {
+      const staff = await db.manyOrNone(
+        `
+        select id
+        from members
+        where church_id=$1 and lower(role) in ('admin','accountant')
+        `,
+        [churchId]
+      );
+      const amount = toCurrencyNumber(pricing.amount || 0);
+      const statusLabel = String(intent.status || "").toUpperCase() || "RECORDED";
+      for (const staffMember of staff) {
+        await createNotification({
+          memberId: staffMember.id,
+          type: "CASH_RECORDED",
+          title: "Cash giving recorded",
+          body: `${member.full_name || "A member"} recorded R ${amount.toFixed(2)} cash to ${fund.name} (${statusLabel}).`,
+          data: {
+            paymentIntentId: intent.id,
+            transactionId: txRow.id,
+            reference,
+            churchId,
+            fundId,
+            amount,
+            status: statusLabel,
+            provider: "cash",
+            payerType: "member",
+            serviceDate: isoServiceDate,
+            requiresAdminConfirmation: true,
+          },
+        });
+      }
+    } catch (err) {
+      console.error("[cash-givings] notify staff failed", err?.message || err);
+    }
+
     res.status(201).json({
       paymentIntentId: intent.id,
       transactionId: txRow.id,
@@ -2635,7 +3201,106 @@ router.post("/giving-links", requireAuth, async (req, res) => {
 });
 
 // Admin verification for cash records (prepared/recorded).
-router.post("/admin/cash-givings/:paymentIntentId/confirm", requireAdmin, async (req, res) => {
+router.get("/admin/cash-givings", requireStaff, async (req, res) => {
+  try {
+    const churchId = resolveChurchId(req, res, "me");
+    if (!churchId) return;
+
+    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+    const fundId = typeof req.query.fundId === "string" ? req.query.fundId.trim() : "";
+    const statusRaw = typeof req.query.status === "string" ? req.query.status.trim().toUpperCase() : "";
+    const includeVerified = toBoolean(req.query.includeVerified) === true;
+
+    const where = ["pi.church_id=$1", "pi.provider='cash'"];
+    const params = [churchId];
+    let idx = 2;
+
+    if (!includeVerified) {
+      where.push("coalesce(pi.cash_verified_by_admin,false)=false");
+    }
+
+    if (fundId && UUID_REGEX.test(fundId)) {
+      params.push(fundId);
+      where.push(`pi.fund_id=$${idx}`);
+      idx++;
+    }
+
+    if (statusRaw) {
+      params.push(statusRaw);
+      where.push(`upper(coalesce(pi.status,''))=$${idx}`);
+      idx++;
+    } else {
+      params.push(["PREPARED", "RECORDED"]);
+      where.push(`upper(coalesce(pi.status,'')) = any($${idx})`);
+      idx++;
+    }
+
+    const countRow = await db.one(
+      `
+      select count(*)::int as count
+      from payment_intents pi
+      where ${where.join(" and ")}
+      `,
+      params
+    );
+
+    params.push(limit);
+    const limitIdx = idx;
+    idx++;
+    params.push(offset);
+    const offsetIdx = idx;
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        pi.id as "paymentIntentId",
+        pi.m_payment_id as reference,
+        pi.status,
+        pi.amount,
+        pi.amount_gross as "amountGross",
+        pi.platform_fee_amount as "platformFeeAmount",
+        pi.platform_fee_pct as "platformFeePct",
+        pi.platform_fee_fixed as "platformFeeFixed",
+        pi.superadmin_cut_amount as "superadminCutAmount",
+        pi.superadmin_cut_pct as "superadminCutPct",
+        pi.service_date as "serviceDate",
+        pi.notes,
+        coalesce(pi.cash_verified_by_admin,false) as "cashVerifiedByAdmin",
+        pi.cash_verified_at as "cashVerifiedAt",
+        pi.cash_verified_by as "cashVerifiedBy",
+        pi.cash_verification_note as "cashVerificationNote",
+        pi.payer_name as "payerName",
+        pi.payer_phone as "payerPhone",
+        pi.payer_email as "payerEmail",
+        coalesce(pi.payer_type,'member') as "payerType",
+        pi.channel,
+        pi.created_at as "createdAt",
+        t.id as "transactionId",
+        f.id as "fundId",
+        f.code as "fundCode",
+        f.name as "fundName"
+      from payment_intents pi
+      join funds f on f.id = pi.fund_id
+      left join transactions t on t.payment_intent_id = pi.id
+      where ${where.join(" and ")}
+      order by pi.created_at desc
+      limit $${limitIdx} offset $${offsetIdx}
+      `,
+      params
+    );
+
+    return res.json({
+      cashGivings: rows,
+      meta: { limit, offset, count: Number(countRow.count || 0), returned: rows.length },
+    });
+  } catch (err) {
+    console.error("[admin/cash-givings] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/admin/cash-givings/:paymentIntentId/confirm", requireStaff, async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;
@@ -2707,7 +3372,7 @@ router.post("/admin/cash-givings/:paymentIntentId/confirm", requireAdmin, async 
   }
 });
 
-router.post("/admin/cash-givings/:paymentIntentId/reject", requireAdmin, async (req, res) => {
+router.post("/admin/cash-givings/:paymentIntentId/reject", requireStaff, async (req, res) => {
   try {
     const churchId = resolveChurchId(req, res, "me");
     if (!churchId) return;

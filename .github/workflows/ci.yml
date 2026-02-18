@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+
+jobs:
+  api-quality:
+    name: API Quality Gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: churpay-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: churpay-api/package-lock.json
+
+      - name: Install API deps
+        run: npm ci
+
+      - name: Migration lint
+        run: npm run migrate:lint
+
+      - name: API integration tests
+        run: npm test
+
+  web-build:
+    name: Web Build + Artifact Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: churpay-web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: churpay-web/package-lock.json
+
+      - name: Install web deps
+        run: npm ci
+
+      - name: Build website
+        run: npm run build
+
+      - name: Validate build artifacts
+        run: |
+          test -f dist/index.html
+          test -d dist/assets
