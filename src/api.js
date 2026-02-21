@@ -429,6 +429,19 @@ export function searchChurchesPublic(query, { limit = 10 } = {}) {
   return request(`/public/churches/search${qs ? `?${qs}` : ""}`, { auth: false });
 }
 
+export function getPublicGiveContext({ joinCode, fundCode, amount } = {}) {
+  const code = String(joinCode || "").trim().toUpperCase();
+  if (!code) return Promise.reject(new Error("joinCode is required"));
+  const params = new URLSearchParams();
+  params.append("joinCode", code);
+  if (fundCode) params.append("fund", String(fundCode).trim().toLowerCase());
+  if (typeof amount !== "undefined" && amount !== null && amount !== "") {
+    params.append("amount", String(amount));
+  }
+  const qs = params.toString();
+  return request(`/public/give/context${qs ? `?${qs}` : ""}`, { auth: false });
+}
+
 export function listFunds(includeInactive = false) {
   const query = includeInactive ? "?includeInactive=1" : "";
   return request(`/funds${query}`);
@@ -457,6 +470,181 @@ export function createPaymentIntent({ fundId, amount, saveCard, useSavedCard } =
   if (saveCard) body.saveCard = true;
   if (useSavedCard) body.useSavedCard = true;
   return request("/payment-intents", { method: "POST", body });
+}
+
+export function createExternalGivingPaymentIntent({ joinCode, fundId, fundCode, amount, channel } = {}) {
+  const body = { joinCode, amount };
+  if (fundId) body.fundId = fundId;
+  if (fundCode) body.fundCode = fundCode;
+  if (channel) body.channel = channel;
+  return request("/external-giving/payment-intents", { method: "POST", body });
+}
+
+export function createExternalCashGiving({ joinCode, fundId, fundCode, amount, flow, serviceDate, notes, channel } = {}) {
+  const body = { joinCode, amount };
+  if (fundId) body.fundId = fundId;
+  if (fundCode) body.fundCode = fundCode;
+  if (flow) body.flow = flow;
+  if (serviceDate) body.serviceDate = serviceDate;
+  if (notes) body.notes = notes;
+  if (channel) body.channel = channel;
+  return request("/external-giving/cash-givings", { method: "POST", body });
+}
+
+export function createRecurringGiving({ fundId, amount, frequency, billingDate, cycles, notes } = {}) {
+  const body = { fundId, amount };
+  if (frequency) body.frequency = frequency;
+  if (billingDate) body.billingDate = billingDate;
+  if (typeof cycles !== "undefined" && cycles !== null && cycles !== "") body.cycles = cycles;
+  if (notes) body.notes = notes;
+  return request("/recurring-givings", { method: "POST", body });
+}
+
+export function listRecurringGivings({ limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  if (offset) params.append("offset", String(offset));
+  const qs = params.toString();
+  return request(`/recurring-givings${qs ? `?${qs}` : ""}`);
+}
+
+export function cancelRecurringGiving(recurringGivingId) {
+  const id = String(recurringGivingId || "").trim();
+  if (!id) return Promise.reject(new Error("recurringGivingId is required"));
+  return request(`/recurring-givings/${encodeURIComponent(id)}/cancel`, { method: "POST", body: {} });
+}
+
+export function getChurchLifeStatus() {
+  return request("/church-life/status");
+}
+
+export function listChurchLifeServices({ limit = 40, from } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  if (from) params.append("from", String(from));
+  const qs = params.toString();
+  return request(`/church-life/services${qs ? `?${qs}` : ""}`);
+}
+
+export function createChurchLifeCheckIn({ serviceId, method = "TAP", notes } = {}) {
+  const body = { serviceId, method };
+  if (notes) body.notes = notes;
+  return request("/church-life/check-ins", { method: "POST", body });
+}
+
+export function createChurchLifeApology({ serviceId, reason, message } = {}) {
+  const body = { serviceId };
+  if (reason) body.reason = reason;
+  if (message) body.message = message;
+  return request("/church-life/apologies", { method: "POST", body });
+}
+
+export function listChurchLifeEvents({ limit = 50, includePastDays = 30 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  if (includePastDays || includePastDays === 0) params.append("includePastDays", String(includePastDays));
+  const qs = params.toString();
+  return request(`/church-life/events${qs ? `?${qs}` : ""}`);
+}
+
+export function createChurchLifePrayerRequest({ category, visibility, subject, message } = {}) {
+  const body = { message };
+  if (category) body.category = category;
+  if (visibility) body.visibility = visibility;
+  if (subject) body.subject = subject;
+  return request("/church-life/prayer-requests", { method: "POST", body });
+}
+
+export function listChurchLifePrayerRequests({ limit = 40 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  const qs = params.toString();
+  return request(`/church-life/prayer-requests${qs ? `?${qs}` : ""}`);
+}
+
+export function listChurchLifeChildrenCheckIns({ serviceId, status = "open", limit = 120 } = {}) {
+  const params = new URLSearchParams();
+  if (serviceId) params.append("serviceId", String(serviceId));
+  if (status) params.append("status", String(status));
+  if (limit) params.append("limit", String(limit));
+  const qs = params.toString();
+  return request(`/church-life/children-check-ins${qs ? `?${qs}` : ""}`);
+}
+
+export function pickupChurchLifeChildCheckIn(checkInId, { checkoutMethod = "PARENT", checkoutNotes } = {}) {
+  const id = String(checkInId || "").trim();
+  if (!id) return Promise.reject(new Error("checkInId is required"));
+  const body = { checkoutMethod };
+  if (checkoutNotes) body.checkoutNotes = checkoutNotes;
+  return request(`/church-life/children-check-ins/${encodeURIComponent(id)}/pickup`, { method: "POST", body });
+}
+
+export function listAdminChurchLifeServices({ limit = 120 } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  const qs = params.toString();
+  return request(`/admin/church-life/services${qs ? `?${qs}` : ""}`);
+}
+
+export function createAdminChurchLifeUsherCheckIn({ serviceId, memberRef, notes } = {}) {
+  const body = { serviceId, memberRef };
+  if (notes) body.notes = notes;
+  return request("/admin/church-life/check-ins/usher", { method: "POST", body });
+}
+
+export function listAdminChurchLifeLiveCheckIns({ serviceId, limit = 120 } = {}) {
+  const params = new URLSearchParams();
+  if (serviceId) params.append("serviceId", String(serviceId));
+  if (limit) params.append("limit", String(limit));
+  const qs = params.toString();
+  return request(`/admin/church-life/check-ins/live${qs ? `?${qs}` : ""}`);
+}
+
+export function getAdminChurchLifeChildrenHousehold({ parentRef, limit = 80 } = {}) {
+  const ref = String(parentRef || "").trim();
+  if (!ref) return Promise.reject(new Error("parentRef is required"));
+  const params = new URLSearchParams();
+  params.append("parentRef", ref);
+  if (limit) params.append("limit", String(limit));
+  return request(`/admin/church-life/children-household?${params.toString()}`);
+}
+
+export function createAdminChurchLifeChildCheckIn({
+  serviceId,
+  householdChildId,
+  childName,
+  parentName,
+  parentPhone,
+  parentEmail,
+  checkInMethod = "TEACHER",
+  checkInNotes,
+} = {}) {
+  const body = { serviceId, checkInMethod };
+  if (householdChildId) body.householdChildId = householdChildId;
+  if (childName) body.childName = childName;
+  if (parentName) body.parentName = parentName;
+  if (parentPhone) body.parentPhone = parentPhone;
+  if (parentEmail) body.parentEmail = parentEmail;
+  if (checkInNotes) body.checkInNotes = checkInNotes;
+  return request("/admin/church-life/children-check-ins", { method: "POST", body });
+}
+
+export function listAdminChurchLifeChildrenCheckIns({ serviceId, status = "open", limit = 150 } = {}) {
+  const params = new URLSearchParams();
+  if (serviceId) params.append("serviceId", String(serviceId));
+  if (status) params.append("status", String(status));
+  if (limit) params.append("limit", String(limit));
+  const qs = params.toString();
+  return request(`/admin/church-life/children-check-ins${qs ? `?${qs}` : ""}`);
+}
+
+export function pickupAdminChurchLifeChildCheckIn(checkInId, { checkoutMethod, checkoutNotes } = {}) {
+  const id = String(checkInId || "").trim();
+  if (!id) return Promise.reject(new Error("checkInId is required"));
+  const body = {};
+  if (checkoutMethod) body.checkoutMethod = checkoutMethod;
+  if (checkoutNotes) body.checkoutNotes = checkoutNotes;
+  return request(`/admin/church-life/children-check-ins/${encodeURIComponent(id)}/pickup`, { method: "POST", body });
 }
 
 export function createGivingLink({ fundId, amountType = "FIXED", amountFixed, message, expiresInHours = 48, maxUses = 1 } = {}) {
@@ -564,6 +752,16 @@ export function listTransactions({ limit = 50, offset = 0, fundId, channel, from
 
 export function getAdminDashboardTotals() {
   return request("/admin/dashboard/totals");
+}
+
+export function listAdminDonors({ limit = 50, offset = 0, search, source } = {}) {
+  const params = new URLSearchParams();
+  if (limit) params.append("limit", String(limit));
+  if (offset) params.append("offset", String(offset));
+  if (search) params.append("search", String(search));
+  if (source) params.append("source", String(source));
+  const qs = params.toString();
+  return request(`/admin/donors${qs ? `?${qs}` : ""}`);
 }
 
 export function getAdminRecentTransactions({ limit = 20, offset = 0, fundId, channel, from, to } = {}) {

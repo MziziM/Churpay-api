@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator, Linking, Image, Pressable, Alert, ScrollView, RefreshControl, Share, Modal, useWindowDimensions, AppState, Switch, Platform } from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator, Linking, Image, Pressable, Alert, ScrollView, RefreshControl, Share, Modal, useWindowDimensions, AppState, Switch, Platform, TextInput } from "react-native";
 import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import QRCode from "react-native-qrcode-svg";
@@ -28,9 +28,31 @@ import {
   searchChurchesPublic,
   getProfile,
   updateProfile,
+  getPublicGiveContext,
   listFunds,
   listTransactions,
   createPaymentIntent,
+  createExternalGivingPaymentIntent,
+  createExternalCashGiving,
+  createRecurringGiving,
+  listRecurringGivings,
+  cancelRecurringGiving,
+  getChurchLifeStatus,
+  listChurchLifeServices,
+  createChurchLifeCheckIn,
+  createChurchLifeApology,
+  listChurchLifeEvents,
+  createChurchLifePrayerRequest,
+  listChurchLifePrayerRequests,
+  listChurchLifeChildrenCheckIns,
+  pickupChurchLifeChildCheckIn,
+  listAdminChurchLifeServices,
+  createAdminChurchLifeUsherCheckIn,
+  listAdminChurchLifeLiveCheckIns,
+  getAdminChurchLifeChildrenHousehold,
+  createAdminChurchLifeChildCheckIn,
+  listAdminChurchLifeChildrenCheckIns,
+  pickupAdminChurchLifeChildCheckIn,
   createGivingLink,
   createCashGiving,
   getPaymentIntent,
@@ -70,7 +92,35 @@ const money = (n) => `R ${Number(n || 0).toFixed(2)}`;
 const PLATFORM_FEE_FIXED = 2.5;
 const PLATFORM_FEE_PCT = 0.0075;
 const PROFILE_CACHE_KEY = "churpay.profile.cache.v1";
-const isAdminRole = (role) => role === "admin" || role === "accountant" || role === "super";
+const CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS = 2500;
+const normalizeStaffRole = (role) => {
+  const key = String(role || "")
+    .trim()
+    .toLowerCase();
+  return key === "accountant" ? "finance" : key;
+};
+const isAdminRole = (role) => {
+  const key = normalizeStaffRole(role);
+  return key === "admin" || key === "super";
+};
+const isStaffRole = (role) => {
+  const key = normalizeStaffRole(role);
+  return ["admin", "super", "finance", "pastor", "volunteer", "usher", "teacher"].includes(key);
+};
+const isStaffMemberCheckInRole = (role) => {
+  const key = normalizeStaffRole(role);
+  return ["admin", "super", "pastor", "volunteer", "usher"].includes(key);
+};
+const isStaffChildrenCheckInRole = (role) => {
+  const key = normalizeStaffRole(role);
+  return ["admin", "super", "pastor", "volunteer", "usher", "teacher"].includes(key);
+};
+const resolveStaffHomeRoute = (role, churchId) => {
+  if (!churchId) return isAdminRole(role) ? "AdminChurch" : "JoinChurch";
+  const key = normalizeStaffRole(role);
+  if (key !== "admin" && key !== "super") return "AdminCheckIns";
+  return "AdminFunds";
+};
 const formatDateInput = (date) => new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const roundCurrency = (value) => Number((Math.round(Number(value || 0) * 100) / 100).toFixed(2));
 const estimateCheckoutPricing = (amount) => {
@@ -134,6 +184,80 @@ const firstNameFromFullName = (raw) => {
   if (!normalized) return "";
   return normalized.split(/\s+/)[0] || "";
 };
+const RECURRING_FREQUENCY_OPTIONS = [
+  { code: "weekly", label: "Weekly" },
+  { code: "biweekly", label: "2 weeks" },
+  { code: "monthly", label: "Monthly" },
+  { code: "quarterly", label: "Quarterly" },
+  { code: "annually", label: "Yearly" },
+];
+const recurringFrequencyLabel = (value) => {
+  const key = String(value || "").trim().toLowerCase();
+  if (key === "1" || key === "weekly") return "Weekly";
+  if (key === "2" || key === "biweekly") return "Every 2 weeks";
+  if (key === "3" || key === "monthly") return "Monthly";
+  if (key === "4" || key === "quarterly") return "Quarterly";
+  if (key === "5" || key === "biannually" || key === "semiannually") return "Every 6 months";
+  if (key === "6" || key === "annually" || key === "yearly") return "Yearly";
+  return "Recurring";
+};
+const isRecurringStatusActive = (status) => {
+  const normalized = String(status || "").toUpperCase();
+  return normalized === "ACTIVE" || normalized === "PENDING_SETUP";
+};
+const CHURCH_LIFE_ACTIONS = [
+  { key: "checkin", label: "Check In" },
+  { key: "children", label: "Children Pickup" },
+  { key: "prayer", label: "Prayer Request" },
+  { key: "events", label: "Events" },
+  { key: "apologies", label: "Apologies" },
+];
+const CHURCH_LIFE_CHECKIN_METHODS = [
+  { value: "TAP", label: "One tap" },
+  { value: "QR", label: "QR check-in" },
+];
+const CHURCH_LIFE_APOLOGY_REASONS = ["Travel", "Sick", "Work", "Family", "Other"];
+const CHURCH_LIFE_PRAYER_CATEGORIES = [
+  "GENERAL",
+  "HEALTH",
+  "FAMILY",
+  "FINANCIAL",
+  "GRIEF",
+  "MENTAL_HEALTH",
+  "ADDICTION",
+  "THANKSGIVING",
+  "OTHER",
+];
+const CHURCH_LIFE_PRAYER_VISIBILITIES = ["RESTRICTED", "TEAM_ONLY", "CHURCH"];
+const formatDateTimeLabel = (value) => {
+  if (!value) return "-";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return "-";
+  return dt.toLocaleString();
+};
+const formatDateLabel = (value) => {
+  if (!value) return "-";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return "-";
+  return dt.toLocaleDateString();
+};
+const formatServiceLabel = (service) => {
+  if (!service) return "Service";
+  const name = String(service.serviceName || "Service").trim() || "Service";
+  const date = formatDateLabel(service.serviceDate || service.startsAt || null);
+  return `${name} (${date})`;
+};
+const churchLifeAccessMessage = (status) => {
+  const subscription = status?.subscription || null;
+  const trialEndsAt = subscription?.currentPeriodEnd || null;
+  const hasTrial = typeof subscription?.note === "string" && subscription.note.toLowerCase().includes("trial");
+  if (status?.active) return "";
+  if (hasTrial && trialEndsAt) {
+    return `ChurPay Growth trial runs until ${formatDateTimeLabel(trialEndsAt)}.`;
+  }
+  return "ChurPay Growth must be ACTIVE for Church Life tools.";
+};
+const isIsoDate = (raw) => /^\d{4}-\d{2}-\d{2}$/.test(String(raw || "").trim());
 const formatBirthDateForInput = (raw) => {
   const normalized = normalizeBirthDateInput(raw);
   if (!normalized) return "";
@@ -482,14 +606,51 @@ const QuickAmountChip = ({ label, active, onPress }) => {
   );
 };
 
+const ChoicePillRow = ({ options = [], value, onChange, mapLabel = (option) => option.label || option.value || String(option) }) => {
+  const { spacing, palette, radius, typography } = useTheme();
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.xs }}>
+      {options.map((option) => {
+        const rawValue = typeof option === "string" ? option : option?.value;
+        const selected = String(value || "") === String(rawValue || "");
+        return (
+          <Pressable
+            key={String(rawValue)}
+            onPress={() => onChange(rawValue)}
+            style={({ pressed }) => ({
+              paddingVertical: spacing.xs,
+              paddingHorizontal: spacing.md,
+              borderRadius: radius.pill,
+              borderWidth: 1,
+              borderColor: selected ? palette.primary : palette.border,
+              backgroundColor: selected ? palette.primary : palette.card,
+              opacity: pressed ? 0.88 : 1,
+            })}
+          >
+            <Text style={{ color: selected ? palette.onPrimary : palette.text, fontWeight: "700", fontSize: typography.small }}>
+              {mapLabel(option)}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+};
+
 const AdminTabBar = ({ navigation, activeTab }) => {
   const { palette, spacing, typography, radius } = useTheme();
-  const tabs = [
+  const { profile } = useContext(AuthContext);
+  const role = normalizeStaffRole(profile?.role);
+  const allTabs = [
     { key: "funds", label: "Funds", screen: "AdminFunds" },
+    { key: "checkins", label: "Check-ins", screen: "AdminCheckIns" },
     { key: "qr", label: "QR", screen: "AdminQr" },
     { key: "transactions", label: "Transactions", screen: "AdminTransactions" },
     { key: "profile", label: "Profile", screen: "Profile" },
   ];
+  const tabs = role === "admin" || role === "super"
+    ? allTabs
+    : allTabs.filter((tab) => tab.key === "checkins" || tab.key === "profile");
 
   return (
     <Card
@@ -829,8 +990,8 @@ function WelcomeScreen({ navigation }) {
   const heroLogoHeight = heroLogoWidth / 2;
 
   const continueFlow = () => {
-    if (token && isAdminRole(profile?.role)) {
-      return navigation.replace(profile?.churchId ? "AdminFunds" : "AdminChurch");
+    if (token && isStaffRole(profile?.role)) {
+      return navigation.replace(resolveStaffHomeRoute(profile?.role, profile?.churchId));
     }
     if (token && profile?.churchId) return navigation.replace("Give");
     if (token) return navigation.replace("JoinChurch");
@@ -905,8 +1066,8 @@ function LoginScreen({ navigation, route }) {
       }
 
       await setSession(data);
-      if (isAdminRole(data?.member?.role)) {
-        navigation.replace(data?.member?.churchId ? "AdminFunds" : "AdminChurch");
+      if (isStaffRole(data?.member?.role)) {
+        navigation.replace(resolveStaffHomeRoute(data?.member?.role, data?.member?.churchId));
       } else {
         navigation.replace(data?.member?.churchId ? "Give" : "JoinChurch");
       }
@@ -948,8 +1109,8 @@ function LoginScreen({ navigation, route }) {
       }
       // If 2FA is disabled (or already verified), fall back to normal login completion.
       await setSession(data);
-      if (isAdminRole(data?.member?.role)) {
-        navigation.replace(data?.member?.churchId ? "AdminFunds" : "AdminChurch");
+      if (isStaffRole(data?.member?.role)) {
+        navigation.replace(resolveStaffHomeRoute(data?.member?.role, data?.member?.churchId));
       } else {
         navigation.replace(data?.member?.churchId ? "Give" : "JoinChurch");
       }
@@ -973,7 +1134,7 @@ function LoginScreen({ navigation, route }) {
       const data = await verifyAdminTwoFactor({ challengeId, code });
       closeAdminOtp();
       await setSession(data);
-      navigation.replace(data?.member?.churchId ? "AdminFunds" : "AdminChurch");
+      navigation.replace(resolveStaffHomeRoute(data?.member?.role, data?.member?.churchId));
     } catch (e) {
       setAdminOtpError(e?.message || "Could not verify code");
     } finally {
@@ -1650,7 +1811,7 @@ function JoinChurchScreen({ navigation, route }) {
 
   useEffect(() => {
     if (!token) navigation.replace("Welcome");
-    if (isAdminRole(profile?.role)) navigation.replace(profile?.churchId ? "AdminFunds" : "AdminChurch");
+    if (isStaffRole(profile?.role)) navigation.replace(resolveStaffHomeRoute(profile?.role, profile?.churchId));
     if (profile?.churchId && !isSwitchMode) navigation.replace("Give");
   }, [isSwitchMode, profile?.churchId, profile?.role, navigation, token]);
 
@@ -1667,7 +1828,13 @@ function JoinChurchScreen({ navigation, route }) {
       if (res?.token) await setSession(res);
       else if (res?.member) setProfile(res.member);
       await refreshProfile();
-      navigation.replace("Give");
+      const nextRole = res?.member?.role || profile?.role;
+      const nextChurchId = res?.member?.churchId || profile?.churchId || null;
+      if (isStaffRole(nextRole)) {
+        navigation.replace(resolveStaffHomeRoute(nextRole, nextChurchId));
+      } else {
+        navigation.replace("Give");
+      }
     } catch (e) {
       const message = e?.message || "Could not join church";
       if (String(message).toLowerCase().includes("unauthorized")) {
@@ -1751,11 +1918,12 @@ function GiveScreen({ navigation, route }) {
   const [error, setError] = useState("");
   const [unreadCount, setUnreadCount] = useState(0);
   const lastPrefillKeyRef = useRef("");
+  const routeFundCode = String(route?.params?.fundCode || "").trim().toLowerCase();
 
   useEffect(() => {
     if (!funds?.length) return;
 
-    const fundCode = String(route?.params?.fundCode || "").trim().toLowerCase();
+    const fundCode = routeFundCode;
     const amountRaw = route?.params?.amount;
     const key = `${fundCode}|${String(amountRaw ?? "")}`;
 
@@ -1772,7 +1940,7 @@ function GiveScreen({ navigation, route }) {
       setAmount(String(n));
       setError("");
     }
-  }, [funds, route?.params?.amount, route?.params?.fundCode]);
+  }, [funds, route?.params?.amount, routeFundCode]);
 
   const refreshUnreadCount = useCallback(async () => {
     try {
@@ -1788,10 +1956,11 @@ function GiveScreen({ navigation, route }) {
       navigation.replace("Welcome");
       return;
     }
-    if (isAdminRole(profile?.role)) {
-      navigation.replace(profile?.churchId ? "AdminFunds" : "AdminChurch");
+    if (isStaffRole(profile?.role)) {
+      navigation.replace(resolveStaffHomeRoute(profile?.role, profile?.churchId));
       return;
     }
+
     if (!profile?.churchId) {
       // Hydrate once from /auth/me before forcing a re-join flow.
       const hydrated = await safe(refreshProfile());
@@ -1805,13 +1974,13 @@ function GiveScreen({ navigation, route }) {
         return;
       }
     }
+
     try {
       setLoading(true);
       setError("");
-      const data = await listFunds();
-      const nextFunds = data?.funds || [];
+      const ownFundsRes = await listFunds();
+      const nextFunds = ownFundsRes?.funds || [];
       setFunds(nextFunds);
-      // If the fund list changes (e.g. switch church), clear any stale selection.
       setSelected((prev) => (prev && nextFunds.some((f) => f.id === prev.id) ? prev : null));
     } catch (e) {
       setError(e?.message || "Could not load funds");
@@ -1821,7 +1990,6 @@ function GiveScreen({ navigation, route }) {
   }, [navigation, profile?.churchId, profile?.role, refreshProfile, token]);
 
   useEffect(() => {
-    // Load initially and whenever the screen regains focus (e.g. after switching church or admin creating funds).
     loadFunds();
     refreshUnreadCount();
     const unsubscribe = navigation.addListener("focus", () => {
@@ -1860,8 +2028,12 @@ function GiveScreen({ navigation, route }) {
     if (!selected) return setError("Choose a fund");
     if (!Number.isFinite(amt) || amt <= 0) return setError("Enter an amount");
     setError("");
-    navigation.navigate("Confirm", { fund: selected, amount: amt });
+    navigation.navigate("Confirm", {
+      fund: selected,
+      amount: amt,
+    });
   };
+
   const welcomeTitle = useMemo(() => {
     const firstName = firstNameFromFullName(profile?.fullName);
     return firstName ? `Welcome Back ${firstName}` : "Welcome Back";
@@ -1882,7 +2054,10 @@ function GiveScreen({ navigation, route }) {
             highlight: !!unreadCount,
             onPress: () => navigation.navigate("Notifications"),
           },
+          { label: "Church Life", onPress: () => navigation.navigate("ChurchLife") },
+          { label: "Recurring", onPress: () => navigation.navigate("RecurringGivings") },
           { label: "History", onPress: () => navigation.navigate("MemberTransactions") },
+          { label: "Other church", onPress: () => navigation.navigate("ExternalGiving") },
           { label: "Profile", onPress: () => navigation.navigate("Profile") },
         ]}
       />
@@ -1890,7 +2065,9 @@ function GiveScreen({ navigation, route }) {
       <Card style={{ gap: spacing.md }} padding={spacing.xl}>
         <View style={{ gap: spacing.xs }}>
           <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Choose fund</Text>
-          <Text style={{ color: palette.muted }}>Select where this donation should go.</Text>
+          <Text style={{ color: palette.muted }}>
+            Select where this donation should go.
+          </Text>
         </View>
         {loading ? (
           <LoadingCards count={3} />
@@ -1987,6 +2164,924 @@ function GiveScreen({ navigation, route }) {
   );
 }
 
+function ExternalGivingScreen({ navigation, route }) {
+  const { spacing, palette, typography, radius } = useTheme();
+  const { profile, token } = useContext(AuthContext);
+  const [funds, setFunds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [amount, setAmount] = useState("");
+  const [error, setError] = useState("");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [externalContext, setExternalContext] = useState(null);
+  const [externalJoinCode, setExternalJoinCode] = useState("");
+  const [loadedJoinCode, setLoadedJoinCode] = useState("");
+  const [churchQuery, setChurchQuery] = useState("");
+  const [churchMatches, setChurchMatches] = useState([]);
+  const [churchSearching, setChurchSearching] = useState(false);
+  const lastPrefillKeyRef = useRef("");
+  const routeJoinCode = String(route?.params?.joinCode || "").trim().toUpperCase();
+  const routeFundCode = String(route?.params?.fundCode || "").trim().toLowerCase();
+
+  useEffect(() => {
+    if (!routeJoinCode) return;
+    setExternalJoinCode(routeJoinCode);
+    setLoadedJoinCode(routeJoinCode);
+  }, [routeJoinCode]);
+
+  useEffect(() => {
+    if (!funds?.length) return;
+    const fundCode = routeFundCode;
+    const amountRaw = route?.params?.amount;
+    const key = `${fundCode}|${String(amountRaw ?? "")}`;
+    if (key === "|" || lastPrefillKeyRef.current === key) return;
+    lastPrefillKeyRef.current = key;
+
+    if (fundCode) {
+      const match = funds.find((f) => String(f?.code || "").trim().toLowerCase() === fundCode);
+      if (match) setSelected(match);
+    }
+
+    const n = Number(amountRaw);
+    if (Number.isFinite(n) && n > 0) {
+      setAmount(String(n));
+      setError("");
+    }
+  }, [funds, route?.params?.amount, routeFundCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const q = String(churchQuery || "").trim();
+    if (q.length < 2) {
+      setChurchMatches([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        setChurchSearching(true);
+        const res = await searchChurchesPublic(q, { limit: 10 });
+        const list = res?.churches || res?.data?.churches || [];
+        if (!cancelled) setChurchMatches(Array.isArray(list) ? list : []);
+      } catch (_err) {
+        if (!cancelled) setChurchMatches([]);
+      } finally {
+        if (!cancelled) setChurchSearching(false);
+      }
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [churchQuery]);
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const res = await getUnreadNotificationCount();
+      setUnreadCount(Number(res?.count || 0));
+    } catch (_err) {
+      // non-fatal
+    }
+  }, []);
+
+  const loadExternalFunds = useCallback(async ({ joinCodeOverride } = {}) => {
+    if (!token) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (isStaffRole(profile?.role)) {
+      navigation.replace(resolveStaffHomeRoute(profile?.role, profile?.churchId));
+      return;
+    }
+
+    const requestedJoinCode = String(
+      typeof joinCodeOverride === "string" ? joinCodeOverride : loadedJoinCode
+    )
+      .trim()
+      .toUpperCase();
+
+    if (!requestedJoinCode) {
+      setExternalContext(null);
+      setFunds([]);
+      setSelected(null);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      const externalRes = await getPublicGiveContext({
+        joinCode: requestedJoinCode,
+        fundCode: routeFundCode || undefined,
+        amount: route?.params?.amount,
+      });
+      const data = externalRes?.data || {};
+      const church = data?.church || null;
+      const contextFunds = Array.isArray(data?.funds) ? data.funds : [];
+      if (!church?.id) throw new Error("Church not found for that join code.");
+
+      setLoadedJoinCode(requestedJoinCode);
+      setExternalContext({
+        church,
+        fund: data?.fund || null,
+      });
+      setFunds(contextFunds);
+      const preferredFundCode = String(routeFundCode || "").trim().toLowerCase();
+      const nextSelected =
+        contextFunds.find((f) => String(f?.id || "") === String(data?.fund?.id || "")) ||
+        (preferredFundCode
+          ? contextFunds.find((f) => String(f?.code || "").trim().toLowerCase() === preferredFundCode)
+          : null) ||
+        contextFunds[0] ||
+        null;
+      setSelected(nextSelected);
+      if (profile?.churchId && String(church.id) === String(profile.churchId)) {
+        setError("This join code belongs to your own church. Use My church for regular giving.");
+      }
+    } catch (e) {
+      setExternalContext(null);
+      setFunds([]);
+      setSelected(null);
+      setError(e?.message || "Could not load recipient church funds");
+    } finally {
+      setLoading(false);
+    }
+  }, [loadedJoinCode, navigation, profile?.churchId, profile?.role, route?.params?.amount, routeFundCode, token]);
+
+  useEffect(() => {
+    refreshUnreadCount();
+    if (loadedJoinCode) {
+      loadExternalFunds({ joinCodeOverride: loadedJoinCode });
+    }
+    const unsubscribe = navigation.addListener("focus", () => {
+      refreshUnreadCount();
+      if (loadedJoinCode) {
+        loadExternalFunds({ joinCodeOverride: loadedJoinCode });
+      }
+    });
+    return unsubscribe;
+  }, [loadedJoinCode, loadExternalFunds, navigation, refreshUnreadCount]);
+
+  const quickAmounts = [50, 100, 200, 500];
+
+  const onChangeAmount = (raw) => {
+    setAmount(normalizeCurrencyInput(raw));
+  };
+
+  const isExternalChurch = Boolean(
+    externalContext?.church?.id &&
+    (!profile?.churchId || String(externalContext.church.id) !== String(profile.churchId))
+  );
+
+  const isOwnChurchTarget = Boolean(
+    externalContext?.church?.id &&
+    profile?.churchId &&
+    String(externalContext.church.id) === String(profile.churchId)
+  );
+
+  const onContinue = () => {
+    const amt = Number.parseFloat(String(amount || ""));
+    if (!selected) return setError("Choose a fund");
+    if (!Number.isFinite(amt) || amt <= 0) return setError("Enter an amount");
+    if (!isExternalChurch) return setError("Load a valid external church join code.");
+
+    setError("");
+    navigation.navigate("Confirm", {
+      fund: selected,
+      amount: amt,
+      externalGiving: {
+        joinCode: String(externalContext?.church?.joinCode || "").trim().toUpperCase(),
+        churchId: externalContext?.church?.id || null,
+        churchName: externalContext?.church?.name || null,
+      },
+    });
+  };
+
+  const loadExternalByJoinCode = async (joinCodeRaw) => {
+    const requestedJoinCode = String(joinCodeRaw || "").trim().toUpperCase();
+    if (!requestedJoinCode) {
+      setError("Join code is required for external giving.");
+      return;
+    }
+    setLoadedJoinCode(requestedJoinCode);
+    await loadExternalFunds({ joinCodeOverride: requestedJoinCode });
+  };
+
+  return (
+    <Screen footer={<PrimaryButton label="Continue" onPress={onContinue} disabled={loading || !selected || !Number(amount) || !isExternalChurch} />}>
+      <BrandHeader />
+      <TopHeroHeader
+        tone="member"
+        badge="External Giving"
+        title="Give to another church"
+        subtitle="Load recipient church funds with a join code, then continue to PayFast."
+        churchName={externalContext?.church?.name || null}
+        actions={[
+          {
+            label: unreadCount ? `Alerts (${unreadCount})` : "Alerts",
+            highlight: !!unreadCount,
+            onPress: () => navigation.navigate("Notifications"),
+          },
+          { label: "My church", onPress: () => navigation.navigate("Give") },
+          { label: "Church Life", onPress: () => navigation.navigate("ChurchLife") },
+          { label: "History", onPress: () => navigation.navigate("MemberTransactions") },
+          { label: "Profile", onPress: () => navigation.navigate("Profile") },
+        ]}
+      />
+
+      <Card style={{ gap: spacing.md }} padding={spacing.xl}>
+        <View style={{ gap: spacing.xs }}>
+          <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Recipient church</Text>
+          <Text style={{ color: palette.muted }}>Enter the church join code or search by name.</Text>
+        </View>
+        <TextField
+          label="Join code"
+          value={externalJoinCode}
+          onChangeText={(value) => setExternalJoinCode(String(value || "").toUpperCase())}
+          placeholder="e.g. GCCOC-1234"
+          autoCapitalize="characters"
+        />
+        <View style={{ flexDirection: "row", gap: spacing.xs, flexWrap: "wrap" }}>
+          <PrimaryButton
+            label={loading ? "Loading..." : "Load church funds"}
+            variant="secondary"
+            onPress={() => loadExternalByJoinCode(externalJoinCode)}
+            disabled={loading || !String(externalJoinCode || "").trim()}
+          />
+          <PrimaryButton
+            label="My church"
+            variant="ghost"
+            onPress={() => navigation.navigate("Give")}
+            disabled={loading}
+          />
+        </View>
+        <TextField
+          label="Find church name"
+          value={churchQuery}
+          onChangeText={setChurchQuery}
+          placeholder="Search church name..."
+        />
+        {churchSearching ? <Text style={{ color: palette.muted, fontSize: typography.small }}>Searching…</Text> : null}
+        {churchMatches?.length ? (
+          <View style={{ gap: spacing.xs }}>
+            {churchMatches.map((c) => (
+              <Pressable
+                key={c.id || c.joinCode || c.name}
+                onPress={() => {
+                  const nextJoinCode = String(c.joinCode || "").toUpperCase();
+                  setExternalJoinCode(nextJoinCode);
+                  setChurchQuery(String(c.name || ""));
+                  setChurchMatches([]);
+                  if (nextJoinCode) {
+                    loadExternalByJoinCode(nextJoinCode);
+                  }
+                }}
+                style={{
+                  paddingVertical: spacing.sm,
+                  paddingHorizontal: spacing.md,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: palette.border,
+                  backgroundColor: palette.focus,
+                }}
+              >
+                <Text style={{ color: palette.text, fontWeight: "700" }}>{c.name}</Text>
+                <Text style={{ color: palette.muted, marginTop: 2 }}>{String(c.joinCode || "").toUpperCase()}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </Card>
+
+      {externalContext?.church ? (
+        <Card style={{ gap: spacing.xs, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.focus }} padding={spacing.lg}>
+          <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+            {externalContext.church.name || "Recipient church"}
+          </Text>
+          <Text style={{ color: palette.muted, fontSize: typography.small }}>
+            Join code: {String(externalContext.church.joinCode || "").toUpperCase()}
+          </Text>
+          {isOwnChurchTarget ? (
+            <Text style={{ color: palette.muted, fontSize: typography.small, marginTop: spacing.xs }}>
+              This is your own church. Use My church giving for normal member giving.
+            </Text>
+          ) : null}
+        </Card>
+      ) : null}
+
+      <Card style={{ gap: spacing.md }} padding={spacing.xl}>
+        <View style={{ gap: spacing.xs }}>
+          <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Choose fund</Text>
+          <Text style={{ color: palette.muted }}>
+            {loadedJoinCode ? "Select where this donation should go in the recipient church." : "Load a church first to view funds."}
+          </Text>
+        </View>
+        {loading ? (
+          <LoadingCards count={3} />
+        ) : !loadedJoinCode ? (
+          <Card style={{ alignItems: "center", gap: spacing.sm, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.background }}>
+            <Text style={{ fontSize: 24 }}>🔎</Text>
+            <Text style={{ color: palette.text, fontWeight: "700" }}>Enter a join code to start</Text>
+          </Card>
+        ) : funds.length ? (
+          <View style={{ gap: spacing.md }}>
+            {funds.map((f) => (
+              <FundCard key={f.id} fund={f} selected={selected?.id === f.id} onPress={() => setSelected(f)} />
+            ))}
+          </View>
+        ) : (
+          <Card style={{ alignItems: "center", gap: spacing.md, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.background }}>
+            <Text style={{ fontSize: 28 }}>💒</Text>
+            <Text style={{ color: palette.text, fontSize: typography.h2, fontWeight: "700", textAlign: "center" }}>
+              No funds available yet
+            </Text>
+            <Text style={{ color: palette.muted, textAlign: "center", fontSize: typography.body, lineHeight: 24 }}>
+              This church has no active funds yet. Ask their admin to publish at least one fund.
+            </Text>
+          </Card>
+        )}
+      </Card>
+
+      <Card style={{ gap: spacing.md }} padding={spacing.xl}>
+        <View style={{ gap: spacing.xs }}>
+          <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Amount</Text>
+          <Text style={{ color: palette.muted }}>Enter an amount or use a quick amount.</Text>
+        </View>
+        <TextField label={null} value={amount} onChangeText={onChangeAmount} placeholder="R 200.00" keyboardType="decimal-pad" />
+        <View style={{ flexDirection: "row", gap: spacing.xs, flexWrap: "wrap" }}>
+          {quickAmounts.map((value) => (
+            <QuickAmountChip
+              key={value}
+              label={`R${value}`}
+              active={Number(amount) === value}
+              onPress={() => setAmount(String(value))}
+            />
+          ))}
+        </View>
+      </Card>
+
+      <ErrorBanner message={error} />
+    </Screen>
+  );
+}
+
+function ChurchLifeScreen({ navigation }) {
+  const { spacing, palette, typography, radius } = useTheme();
+  const { token, profile } = useContext(AuthContext);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [activeAction, setActiveAction] = useState("checkin");
+  const [status, setStatus] = useState({ active: false, memberId: null, subscription: null });
+  const [services, setServices] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [prayerRequests, setPrayerRequests] = useState([]);
+  const [childrenCheckIns, setChildrenCheckIns] = useState([]);
+  const [selectedServiceId, setSelectedServiceId] = useState("");
+  const [checkInMethod, setCheckInMethod] = useState("TAP");
+  const [checkInNotes, setCheckInNotes] = useState("");
+  const recentCheckInSubmissionsRef = useRef(new Map());
+  const [apologyReason, setApologyReason] = useState("");
+  const [apologyMessage, setApologyMessage] = useState("");
+  const [prayerCategory, setPrayerCategory] = useState("GENERAL");
+  const [prayerVisibility, setPrayerVisibility] = useState("RESTRICTED");
+  const [prayerSubject, setPrayerSubject] = useState("");
+  const [prayerMessage, setPrayerMessage] = useState("");
+
+  const selectedService = useMemo(() => {
+    if (!services.length) return null;
+    return services.find((service) => String(service?.id || "") === String(selectedServiceId || "")) || services[0] || null;
+  }, [services, selectedServiceId]);
+
+  useEffect(() => {
+    if (!services.length) {
+      if (selectedServiceId) setSelectedServiceId("");
+      return;
+    }
+    if (!selectedServiceId || !services.some((service) => String(service?.id || "") === String(selectedServiceId))) {
+      setSelectedServiceId(String(services[0]?.id || ""));
+    }
+  }, [services, selectedServiceId]);
+
+  const loadChurchLife = useCallback(async ({ silent = false } = {}) => {
+    if (!token) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (isStaffRole(profile?.role)) {
+      navigation.replace(resolveStaffHomeRoute(profile?.role, profile?.churchId));
+      return;
+    }
+
+    if (!silent) setLoading(true);
+    setError("");
+
+    try {
+      const statusRes = await getChurchLifeStatus();
+      setStatus(statusRes || { active: false, memberId: null, subscription: null });
+
+      if (!statusRes?.active) {
+        setServices([]);
+        setEvents([]);
+        setPrayerRequests([]);
+        setChildrenCheckIns([]);
+        return;
+      }
+
+      const [servicesRes, eventsRes, prayersRes, childrenRes] = await Promise.all([
+        listChurchLifeServices({ limit: 80 }),
+        listChurchLifeEvents({ limit: 50, includePastDays: 30 }),
+        listChurchLifePrayerRequests({ limit: 40 }),
+        listChurchLifeChildrenCheckIns({ status: "open", limit: 120 }).catch((err) => {
+          const statusCode = Number(err?.status || 0);
+          if (statusCode === 404 || statusCode === 503) {
+            return { checkIns: [], unavailable: true };
+          }
+          throw err;
+        }),
+      ]);
+      setServices(Array.isArray(servicesRes?.services) ? servicesRes.services : []);
+      setEvents(Array.isArray(eventsRes?.events) ? eventsRes.events : []);
+      setPrayerRequests(Array.isArray(prayersRes?.prayerRequests) ? prayersRes.prayerRequests : []);
+      setChildrenCheckIns(Array.isArray(childrenRes?.checkIns) ? childrenRes.checkIns : []);
+    } catch (err) {
+      setError(err?.message || "Could not load Church Life.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [navigation, profile?.churchId, profile?.role, token]);
+
+  useEffect(() => {
+    loadChurchLife();
+    const unsubscribe = navigation.addListener("focus", () => {
+      loadChurchLife({ silent: true });
+    });
+    return unsubscribe;
+  }, [navigation, loadChurchLife]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadChurchLife({ silent: true });
+  }, [loadChurchLife]);
+
+  const submitCheckIn = async () => {
+    const serviceId = String(selectedService?.id || "").trim();
+    if (!serviceId) throw new Error("Select a service first.");
+    const throttleKey = `${serviceId}:${String(checkInMethod || "TAP").toUpperCase()}`;
+    const now = Date.now();
+    const previous = Number(recentCheckInSubmissionsRef.current.get(throttleKey) || 0);
+    if (previous && now - previous < CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS) {
+      throw new Error("Check-in already submitted. Please wait a moment before retrying.");
+    }
+    recentCheckInSubmissionsRef.current.set(throttleKey, now);
+    try {
+      const response = await createChurchLifeCheckIn({
+        serviceId,
+        method: checkInMethod,
+        notes: String(checkInNotes || "").trim() || undefined,
+      });
+      setCheckInNotes("");
+      const serviceLabel = response?.service?.serviceName || "service";
+      const actionLabel = response?.idempotent ? "already checked in. Existing record reused" : "checked in";
+      setFeedback(`You are ${actionLabel} for ${serviceLabel}.`);
+      await loadChurchLife({ silent: true });
+    } catch (err) {
+      recentCheckInSubmissionsRef.current.delete(throttleKey);
+      throw err;
+    } finally {
+      const cutoff = now - CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS * 6;
+      for (const [key, timestamp] of recentCheckInSubmissionsRef.current.entries()) {
+        if (Number(timestamp || 0) < cutoff) {
+          recentCheckInSubmissionsRef.current.delete(key);
+        }
+      }
+    }
+  };
+
+  const submitApology = async () => {
+    const serviceId = String(selectedService?.id || "").trim();
+    if (!serviceId) throw new Error("Select a service first.");
+    const reason = String(apologyReason || "").trim();
+    const message = String(apologyMessage || "").trim();
+    if (!reason && !message) throw new Error("Add a reason or short message.");
+    const response = await createChurchLifeApology({
+      serviceId,
+      reason: reason || undefined,
+      message: message || undefined,
+    });
+    setApologyMessage("");
+    setFeedback(`Apology submitted for ${response?.service?.serviceName || "service"}.`);
+    await loadChurchLife({ silent: true });
+  };
+
+  const submitPrayer = async () => {
+    const message = String(prayerMessage || "").trim();
+    if (!message) throw new Error("Prayer message is required.");
+    await createChurchLifePrayerRequest({
+      category: prayerCategory,
+      visibility: prayerVisibility,
+      subject: String(prayerSubject || "").trim() || undefined,
+      message,
+    });
+    setPrayerSubject("");
+    setPrayerMessage("");
+    setFeedback("Prayer request sent to your church team.");
+    await loadChurchLife({ silent: true });
+  };
+
+  const submitChildPickup = async (checkInId, childName) => {
+    const id = String(checkInId || "").trim();
+    if (!id) throw new Error("Child check-in record is missing.");
+    await pickupChurchLifeChildCheckIn(id, { checkoutMethod: "PARENT" });
+    const label = String(childName || "Child").trim() || "Child";
+    setFeedback(`${label} marked as collected.`);
+    await loadChurchLife({ silent: true });
+  };
+
+  const performAction = async (fn) => {
+    try {
+      setBusy(true);
+      setError("");
+      setFeedback("");
+      await fn();
+    } catch (err) {
+      setError(err?.message || "Action failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const activeServiceStatus = selectedService?.memberStatus || null;
+
+  return (
+    <Screen
+      footer={<PrimaryButton label="Back home" variant="ghost" onPress={() => navigation.navigate("Give")} />}
+      contentContainerStyle={{ paddingBottom: spacing.xl }}
+      footerContainerStyle={{ paddingTop: spacing.sm }}
+    >
+      <BrandHeader />
+      <TopHeroHeader
+        tone="member"
+        badge="Church Life"
+        title="Church Life"
+        subtitle="Check in, prayer requests, events and apologies."
+        churchName={profile?.churchName}
+        actions={[
+          { label: "Give", onPress: () => navigation.navigate("Give") },
+          { label: "History", onPress: () => navigation.navigate("MemberTransactions") },
+          { label: "Alerts", onPress: () => navigation.navigate("Notifications") },
+          { label: "Profile", onPress: () => navigation.navigate("Profile") },
+        ]}
+      />
+
+      <Card style={{ gap: spacing.sm }} padding={spacing.lg}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm }}>
+          <View style={{ flex: 1, gap: spacing.xs }}>
+            <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>ChurPay Growth</Text>
+            <Text style={{ color: palette.muted }}>
+              {status?.active ? "Church Life features are unlocked for your church." : churchLifeAccessMessage(status)}
+            </Text>
+            {status?.memberId ? (
+              <Text style={{ color: palette.primary, fontWeight: "700", fontSize: typography.small }}>Member ID: {status.memberId}</Text>
+            ) : null}
+          </View>
+          <StatusChip label={status?.active ? "ACTIVE" : "LOCKED"} active={!!status?.active} />
+        </View>
+        <PrimaryButton label={refreshing ? "Refreshing..." : "Refresh"} variant="secondary" onPress={onRefresh} disabled={refreshing} />
+      </Card>
+
+      <ErrorBanner message={error} />
+
+      {feedback ? (
+        <Card
+          style={{
+            borderColor: palette.primary,
+            backgroundColor: palette.focus,
+          }}
+        >
+          <Text style={{ color: palette.primary, fontSize: typography.small, fontWeight: "700" }}>{feedback}</Text>
+        </Card>
+      ) : null}
+
+      {loading ? <LoadingCards count={3} /> : null}
+
+      {!loading && !status?.active ? (
+        <EmptyStateCard
+          icon="🔒"
+          title="Church Life is locked"
+          subtitle="Your church needs ACTIVE ChurPay Growth access. Giving still works normally."
+          actionLabel="Go to giving"
+          onAction={() => navigation.navigate("Give")}
+        />
+      ) : null}
+
+      {!loading && status?.active ? (
+        <>
+          <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+            <View style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>Choose action</Text>
+              <Text style={{ color: palette.muted }}>Keep it simple: one place for church life.</Text>
+            </View>
+            <ChoicePillRow
+              options={CHURCH_LIFE_ACTIONS.map((item) => ({ value: item.key, label: item.label }))}
+              value={activeAction}
+              onChange={(next) => setActiveAction(String(next))}
+            />
+          </Card>
+
+          {activeAction === "events" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <SectionTitle title="Upcoming events" subtitle="Published events from your church." />
+              {events.length ? (
+                <View style={{ gap: spacing.md }}>
+                  {events.map((event) => {
+                    const posterUri = String(event?.posterDataUrl || event?.posterUrl || "").trim();
+                    return (
+                      <Card key={String(event?.id)} style={{ gap: spacing.sm }} padding={spacing.md}>
+                        {posterUri ? (
+                          <Image
+                            source={{ uri: posterUri }}
+                            style={{
+                              width: "100%",
+                              height: 180,
+                              borderRadius: radius.md,
+                              borderWidth: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.card,
+                            }}
+                            resizeMode="cover"
+                          />
+                        ) : null}
+                        <Text style={{ color: palette.text, fontSize: typography.h2, fontWeight: "800" }}>{event?.title || "Event"}</Text>
+                        <Body>{formatDateTimeLabel(event?.startsAt)}</Body>
+                        {event?.venue ? <Body>{event.venue}</Body> : null}
+                        {event?.description ? <Text style={{ color: palette.muted }}>{event.description}</Text> : null}
+                      </Card>
+                    );
+                  })}
+                </View>
+              ) : (
+                <EmptyStateCard icon="📅" title="No events right now" subtitle="Your church will post events here." />
+              )}
+            </Card>
+          ) : null}
+
+          {activeAction === "checkin" || activeAction === "apologies" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <View style={{ gap: spacing.xs }}>
+                <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>Select service</Text>
+                <Text style={{ color: palette.muted }}>Check-in and apologies are tied to one service.</Text>
+              </View>
+
+              {services.length ? (
+                <>
+                  <ChoicePillRow
+                    options={services.map((service) => ({
+                      value: service.id,
+                      label: `${service.serviceName || "Service"} • ${formatDateLabel(service.serviceDate || service.startsAt)}`,
+                    }))}
+                    value={selectedService?.id || ""}
+                    onChange={setSelectedServiceId}
+                    mapLabel={(option) => option.label}
+                  />
+                  <Card
+                    style={{
+                      gap: spacing.xs,
+                      borderWidth: 1,
+                      borderColor: palette.border,
+                      backgroundColor: palette.focus,
+                    }}
+                    padding={spacing.md}
+                  >
+                    <Text style={{ color: palette.text, fontWeight: "700" }}>{formatServiceLabel(selectedService)}</Text>
+                    {selectedService?.startsAt ? <Body>Starts: {formatDateTimeLabel(selectedService.startsAt)}</Body> : null}
+                    {activeServiceStatus?.checkedInAt ? (
+                      <Text style={{ color: palette.primary, fontWeight: "700", fontSize: typography.small }}>
+                        Checked in: {formatDateTimeLabel(activeServiceStatus.checkedInAt)}
+                      </Text>
+                    ) : null}
+                    {activeServiceStatus?.apologyStatus ? (
+                      <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                        Apology: {String(activeServiceStatus.apologyStatus).toUpperCase()}
+                      </Text>
+                    ) : null}
+                  </Card>
+                </>
+              ) : (
+                <EmptyStateCard icon="⛪" title="No published services" subtitle="Ask your church admin to publish at least one service." />
+              )}
+            </Card>
+          ) : null}
+
+          {activeAction === "children" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <SectionTitle title="Children pickup" subtitle="Collect your checked-in children after service." />
+              {childrenCheckIns.length ? (
+                <View style={{ gap: spacing.sm }}>
+                  {childrenCheckIns.map((row) => {
+                    const checkedOut = String(row?.status || "").toUpperCase() === "CHECKED_OUT";
+                    const childLabel = row?.childName || row?.childMemberId || "Child";
+                    const serviceLabel = row?.serviceName
+                      ? `${row.serviceName} • ${formatDateLabel(row?.serviceDate || row?.serviceStartsAt)}`
+                      : formatDateLabel(row?.serviceDate || row?.serviceStartsAt);
+                    return (
+                      <Card key={String(row?.id || `${row?.childMemberId || "child"}-${row?.checkedInAt || ""}`)} style={{ gap: spacing.xs }} padding={spacing.md}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm }}>
+                          <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h3 }}>{childLabel}</Text>
+                          <StatusChip label={checkedOut ? "CHECKED OUT" : "CHECKED IN"} active={!checkedOut} />
+                        </View>
+                        <Text style={{ color: palette.muted, fontSize: typography.small }}>{serviceLabel || "Service"}</Text>
+                        <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                          Checked in: {formatDateTimeLabel(row?.checkedInAt)}
+                        </Text>
+                        {checkedOut ? (
+                          <Text style={{ color: palette.primary, fontSize: typography.small, fontWeight: "700" }}>
+                            Collected: {formatDateTimeLabel(row?.checkedOutAt)}
+                          </Text>
+                        ) : (
+                          <PrimaryButton
+                            label={busy ? "Confirming..." : "Confirm pickup"}
+                            onPress={() => performAction(() => submitChildPickup(row?.id, childLabel))}
+                            disabled={busy || !row?.id}
+                          />
+                        )}
+                      </Card>
+                    );
+                  })}
+                </View>
+              ) : (
+                <EmptyStateCard
+                  icon="🧒"
+                  title="No children to collect"
+                  subtitle="When a teacher checks in your child, pickup will appear here."
+                />
+              )}
+            </Card>
+          ) : null}
+
+          {activeAction === "checkin" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <SectionTitle title="Check in" subtitle="Use one tap or QR mode for this service." />
+              <ChoicePillRow
+                options={CHURCH_LIFE_CHECKIN_METHODS}
+                value={checkInMethod}
+                onChange={(next) => setCheckInMethod(String(next))}
+                mapLabel={(option) => option.label}
+              />
+              <TextField
+                label="Notes (optional)"
+                value={checkInNotes}
+                onChangeText={setCheckInNotes}
+                placeholder="Optional check-in note"
+              />
+              <PrimaryButton
+                label={busy ? "Checking in..." : "Check in now"}
+                onPress={() => performAction(submitCheckIn)}
+                disabled={busy || !selectedService}
+              />
+            </Card>
+          ) : null}
+
+          {activeAction === "apologies" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <SectionTitle title="Submit apology" subtitle="Tell your church if you cannot attend this service." />
+              <ChoicePillRow
+                options={CHURCH_LIFE_APOLOGY_REASONS.map((reason) => ({ value: reason, label: reason }))}
+                value={apologyReason}
+                onChange={(next) => setApologyReason(String(next))}
+              />
+              <TextField
+                label="Reason (optional)"
+                value={apologyReason}
+                onChangeText={setApologyReason}
+                placeholder="Reason"
+              />
+              <View style={{ gap: spacing.xs }}>
+                <Text style={{ color: palette.muted, fontSize: typography.small, fontWeight: "600" }}>Message (optional)</Text>
+                <TextInput
+                  value={apologyMessage}
+                  onChangeText={setApologyMessage}
+                  multiline
+                  numberOfLines={4}
+                  placeholder="Add a short message"
+                  placeholderTextColor={palette.muted}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: palette.border,
+                    borderRadius: radius.md,
+                    backgroundColor: palette.card,
+                    color: palette.text,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                    minHeight: 96,
+                    textAlignVertical: "top",
+                  }}
+                />
+              </View>
+              <PrimaryButton
+                label={busy ? "Submitting..." : "Submit apology"}
+                onPress={() => performAction(submitApology)}
+                disabled={busy || !selectedService}
+              />
+            </Card>
+          ) : null}
+
+          {activeAction === "prayer" ? (
+            <Card style={{ gap: spacing.md }} padding={spacing.lg}>
+              <SectionTitle title="Prayer request" subtitle="Sensitive categories default to restricted visibility." />
+              <ChoicePillRow
+                options={CHURCH_LIFE_PRAYER_CATEGORIES.map((category) => ({
+                  value: category,
+                  label: category.replaceAll("_", " "),
+                }))}
+                value={prayerCategory}
+                onChange={(next) => setPrayerCategory(String(next))}
+                mapLabel={(option) => option.label}
+              />
+              <ChoicePillRow
+                options={CHURCH_LIFE_PRAYER_VISIBILITIES.map((visibility) => ({
+                  value: visibility,
+                  label: visibility.replaceAll("_", " "),
+                }))}
+                value={prayerVisibility}
+                onChange={(next) => setPrayerVisibility(String(next))}
+                mapLabel={(option) => option.label}
+              />
+              <TextField
+                label="Subject (optional)"
+                value={prayerSubject}
+                onChangeText={setPrayerSubject}
+                placeholder="Short subject"
+              />
+              <View style={{ gap: spacing.xs }}>
+                <Text style={{ color: palette.muted, fontSize: typography.small, fontWeight: "600" }}>Prayer message</Text>
+                <TextInput
+                  value={prayerMessage}
+                  onChangeText={setPrayerMessage}
+                  multiline
+                  numberOfLines={5}
+                  placeholder="Share your prayer request"
+                  placeholderTextColor={palette.muted}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: palette.border,
+                    borderRadius: radius.md,
+                    backgroundColor: palette.card,
+                    color: palette.text,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                    minHeight: 120,
+                    textAlignVertical: "top",
+                  }}
+                />
+              </View>
+              <PrimaryButton
+                label={busy ? "Sending..." : "Send prayer request"}
+                onPress={() => performAction(submitPrayer)}
+                disabled={busy}
+              />
+
+              <Card style={{ gap: spacing.sm, borderWidth: 1, borderColor: palette.border }} padding={spacing.md}>
+                <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h3 }}>My recent requests</Text>
+                {prayerRequests.length ? (
+                  <View style={{ gap: spacing.sm }}>
+                    {prayerRequests.slice(0, 5).map((item) => (
+                      <View
+                        key={String(item?.id)}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: palette.border,
+                          borderRadius: radius.md,
+                          backgroundColor: palette.card,
+                          padding: spacing.sm,
+                          gap: spacing.xs,
+                        }}
+                      >
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm }}>
+                          <Text style={{ color: palette.text, fontWeight: "700" }}>
+                            {String(item?.category || "GENERAL").replaceAll("_", " ")}
+                          </Text>
+                          <StatusChip label={String(item?.status || "NEW")} active />
+                        </View>
+                        <Body>{item?.subject || item?.message || "-"}</Body>
+                        <Text style={{ color: palette.muted, fontSize: typography.small }}>{formatDateTimeLabel(item?.createdAt)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Body muted>No prayer requests yet.</Body>
+                )}
+              </Card>
+            </Card>
+          ) : null}
+        </>
+      ) : null}
+    </Screen>
+  );
+}
+
 function ConfirmScreen({ navigation, route }) {
   const { spacing, palette, typography } = useTheme();
   const { profile } = useContext(AuthContext);
@@ -1995,30 +3090,57 @@ function ConfirmScreen({ navigation, route }) {
   const [error, setError] = useState("");
   const fund = route.params?.fund;
   const amount = route.params?.amount;
+  const externalGiving = route.params?.externalGiving || null;
+  const isExternalGiving = Boolean(
+    externalGiving?.joinCode &&
+    externalGiving?.churchId &&
+    (!profile?.churchId || String(externalGiving.churchId) !== String(profile.churchId))
+  );
+  const recipientChurchName = isExternalGiving ? externalGiving?.churchName || "Recipient church" : profile?.churchName;
   const pricing = useMemo(() => estimateCheckoutPricing(Number(amount || 0)), [amount]);
   const cashPricing = useMemo(() => estimateCashPricing(Number(amount || 0)), [amount]);
   const [serviceDate, setServiceDate] = useState(nextSundayIso());
   const [notes, setNotes] = useState("");
   const [saveCard, setSaveCard] = useState(false);
-  const canSaveCard = Boolean(profile?.email);
-  const hasSavedCard = Boolean(profile?.hasSavedCard);
+  const [recurringFrequency, setRecurringFrequency] = useState("monthly");
+  const [recurringCycles, setRecurringCycles] = useState("0");
+  const [recurringBillingDate, setRecurringBillingDate] = useState(formatDateInput(new Date()));
+  const [recurringSubmitting, setRecurringSubmitting] = useState(false);
+  const canSaveCard = Boolean(profile?.email) && !isExternalGiving;
+  const hasSavedCard = Boolean(profile?.hasSavedCard) && !isExternalGiving;
 
   const createIntent = async ({ useSavedCard = false } = {}) => {
     try {
       setSubmitting(true);
       setError("");
-      const res = await createPaymentIntent({
-        fundId: fund.id,
-        amount: Number(amount),
-        saveCard: !useSavedCard && saveCard,
-        useSavedCard,
-      });
-      const checkoutUrl = res?.checkoutUrl || res?.paymentUrl;
+      const res = isExternalGiving
+        ? await createExternalGivingPaymentIntent({
+            joinCode: String(externalGiving?.joinCode || "").trim().toUpperCase(),
+            fundId: fund?.id,
+            amount: Number(amount),
+            channel: "member_app",
+          })
+        : await createPaymentIntent({
+            fundId: fund.id,
+            amount: Number(amount),
+            saveCard: !useSavedCard && saveCard,
+            useSavedCard,
+          });
+      const payload = res?.data || res || {};
+      const checkoutUrl = payload?.checkoutUrl || payload?.paymentUrl;
       if (checkoutUrl) {
         navigation.navigate("Pending", {
           intent: {
-            ...res,
-            pricing: res?.pricing || pricing,
+            ...payload,
+            paymentIntentId: payload?.paymentIntentId || payload?.id || null,
+            mPaymentId: payload?.mPaymentId || payload?.m_payment_id || null,
+            fundName: payload?.fund?.name || fund?.name || null,
+            recipientChurchName: payload?.church?.name || recipientChurchName || null,
+            pricing: payload?.pricing || {
+              donationAmount: Number(payload?.amount || pricing.donationAmount),
+              churpayFee: Number(payload?.processingFee || pricing.churpayFee),
+              totalCharged: Number(payload?.totalCharged || pricing.totalCharged),
+            },
           },
         });
         await Linking.openURL(checkoutUrl);
@@ -2032,17 +3154,79 @@ function ConfirmScreen({ navigation, route }) {
     }
   };
 
+  const createRecurring = async () => {
+    try {
+      setRecurringSubmitting(true);
+      setError("");
+      if (isExternalGiving) throw new Error("Recurring setup is only available for your own church.");
+      if (!fund?.id) throw new Error("Choose a fund first");
+
+      const cyclesValue = Number.parseInt(String(recurringCycles || "").trim(), 10);
+      if (!Number.isInteger(cyclesValue) || cyclesValue < 0) {
+        throw new Error("Cycles must be 0 or a positive number");
+      }
+      if (!isIsoDate(recurringBillingDate)) {
+        throw new Error("Billing date must be YYYY-MM-DD");
+      }
+
+      const res = await createRecurringGiving({
+        fundId: fund.id,
+        amount: Number(amount),
+        frequency: recurringFrequency,
+        billingDate: recurringBillingDate,
+        cycles: cyclesValue,
+        notes: notes?.trim() ? notes.trim() : undefined,
+      });
+
+      const data = res?.data || {};
+      const checkoutUrl = data?.checkoutUrl || res?.checkoutUrl || data?.paymentUrl || res?.paymentUrl;
+      const setupPaymentIntentId = data?.setupPaymentIntentId || res?.setupPaymentIntentId;
+      const mPaymentId = data?.mPaymentId || res?.mPaymentId;
+
+      if (setupPaymentIntentId || mPaymentId) {
+        navigation.navigate("Pending", {
+          intent: {
+            paymentIntentId: setupPaymentIntentId,
+            mPaymentId,
+            pricing: data?.pricing || pricing,
+            amount: Number(amount),
+          },
+        });
+      }
+
+      if (checkoutUrl) {
+        await Linking.openURL(checkoutUrl);
+      } else {
+        throw new Error("Recurring checkout link missing");
+      }
+    } catch (e) {
+      setError(e?.message || "Could not start recurring setup");
+    } finally {
+      setRecurringSubmitting(false);
+    }
+  };
+
   const saveCash = async (flow) => {
     try {
       setCashSubmitting(true);
       setError("");
-      const res = await createCashGiving({
-        fundId: fund.id,
-        amount: Number(amount),
-        flow,
-        serviceDate,
-        notes: notes?.trim() ? notes.trim() : undefined,
-      });
+      const res = isExternalGiving
+        ? await createExternalCashGiving({
+            joinCode: String(externalGiving?.joinCode || "").trim().toUpperCase(),
+            fundId: fund?.id,
+            amount: Number(amount),
+            flow,
+            serviceDate,
+            notes: notes?.trim() ? notes.trim() : undefined,
+            channel: "member_app",
+          })
+        : await createCashGiving({
+            fundId: fund.id,
+            amount: Number(amount),
+            flow,
+            serviceDate,
+            notes: notes?.trim() ? notes.trim() : undefined,
+          });
       navigation.replace("CashReceipt", { cash: res });
     } catch (e) {
       setError(e?.message || "Could not save cash giving");
@@ -2059,36 +3243,46 @@ function ConfirmScreen({ navigation, route }) {
             <PrimaryButton
               label={submitting ? "Opening saved card..." : "Pay with saved card"}
               onPress={() => createIntent({ useSavedCard: true })}
-              disabled={submitting || cashSubmitting}
+              disabled={submitting || cashSubmitting || recurringSubmitting}
             />
           ) : null}
           <PrimaryButton
             label={submitting ? "Opening PayFast..." : saveCard ? "Pay with PayFast (save card)" : "Pay with PayFast"}
             onPress={() => createIntent({ useSavedCard: false })}
-            disabled={submitting || cashSubmitting}
+            disabled={submitting || cashSubmitting || recurringSubmitting}
           />
-          <PrimaryButton
-            label="Share a giving link (someone else pays)"
-            variant="ghost"
-            onPress={() =>
-              navigation.navigate("GivingLink", {
-                fund,
-                amount: Number(amount),
-              })
-            }
-            disabled={submitting || cashSubmitting}
-          />
+          {!isExternalGiving ? (
+            <PrimaryButton
+              label={recurringSubmitting ? "Opening recurring setup..." : "Set up recurring with PayFast"}
+              variant="secondary"
+              onPress={createRecurring}
+              disabled={submitting || cashSubmitting || recurringSubmitting}
+            />
+          ) : null}
+          {!isExternalGiving ? (
+            <PrimaryButton
+              label="Share a giving link (someone else pays)"
+              variant="ghost"
+              onPress={() =>
+                navigation.navigate("GivingLink", {
+                  fund,
+                  amount: Number(amount),
+                })
+              }
+              disabled={submitting || cashSubmitting || recurringSubmitting}
+            />
+          ) : null}
           <PrimaryButton
             label={cashSubmitting ? "Saving cash record..." : "Record as Cash (now)"}
             variant="secondary"
             onPress={() => saveCash("recorded")}
-            disabled={submitting || cashSubmitting}
+            disabled={submitting || cashSubmitting || recurringSubmitting}
           />
           <PrimaryButton
             label={cashSubmitting ? "Saving..." : "Prepare Cash (for service)"}
             variant="ghost"
             onPress={() => saveCash("prepared")}
-            disabled={submitting || cashSubmitting}
+            disabled={submitting || cashSubmitting || recurringSubmitting}
           />
           <PrimaryButton label="Back" variant="ghost" onPress={() => navigation.goBack()} />
         </View>
@@ -2096,11 +3290,23 @@ function ConfirmScreen({ navigation, route }) {
     >
       <BrandHeader />
       <SectionTitle
-        title="Confirm payment"
-        subtitle="Review your giving details before redirecting to PayFast."
-        churchName={profile?.churchName}
+        title={isExternalGiving ? "Confirm external payment" : "Confirm payment"}
+        subtitle={
+          isExternalGiving
+            ? "You are giving to another church as a donor. Review details before PayFast."
+            : "Review your giving details before redirecting to PayFast."
+        }
+        churchName={recipientChurchName}
       />
       <Card style={{ gap: spacing.md }}>
+        {isExternalGiving ? (
+          <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+            <Text style={{ color: palette.muted }}>Recipient church</Text>
+            <Text style={{ color: palette.text, fontWeight: "700", maxWidth: "65%", textAlign: "right" }}>
+              {recipientChurchName}
+            </Text>
+          </View>
+        ) : null}
         <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
           <Text style={{ color: palette.muted }}>Fund</Text>
           <Text style={{ color: palette.text, fontWeight: "700", maxWidth: "65%", textAlign: "right" }}>{fund?.name || "-"}</Text>
@@ -2131,23 +3337,76 @@ function ConfirmScreen({ navigation, route }) {
             <Switch
               value={!!saveCard}
               onValueChange={setSaveCard}
-              disabled={submitting || cashSubmitting}
+              disabled={submitting || cashSubmitting || recurringSubmitting}
               trackColor={{ false: "#334155", true: palette.primary }}
               thumbColor={saveCard ? "#ffffff" : "#cbd5e1"}
             />
           </View>
         ) : (
           <Text style={{ color: palette.muted, fontSize: typography.small }}>
-            Add an email in Profile to enable saved card checkouts.
+            {isExternalGiving ? "Saved-card checkout is only available for your own church." : "Add an email in Profile to enable saved card checkouts."}
           </Text>
         )}
       </Card>
+
+      {!isExternalGiving ? (
+      <Card style={{ gap: spacing.md }}>
+        <View style={{ gap: spacing.xs }}>
+          <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Recurring setup</Text>
+          <Text style={{ color: palette.muted }}>
+            Set this amount to repeat automatically via PayFast. You will approve once now to activate it.
+          </Text>
+        </View>
+        <View style={{ flexDirection: "row", gap: spacing.xs, flexWrap: "wrap" }}>
+          {RECURRING_FREQUENCY_OPTIONS.map((option) => {
+            const active = recurringFrequency === option.code;
+            return (
+              <Pressable
+                key={option.code}
+                onPress={() => setRecurringFrequency(option.code)}
+                style={{
+                  paddingVertical: spacing.xs,
+                  paddingHorizontal: spacing.md,
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  borderColor: active ? palette.primary : palette.border,
+                  backgroundColor: active ? palette.focus : palette.card,
+                }}
+              >
+                <Text style={{ color: active ? palette.primary : palette.text, fontWeight: "700", fontSize: typography.small }}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <TextField
+          label="Start billing date (YYYY-MM-DD)"
+          value={recurringBillingDate}
+          onChangeText={setRecurringBillingDate}
+          placeholder={formatDateInput(new Date())}
+          autoCapitalize="none"
+        />
+        <TextField
+          label="Cycles (0 = ongoing)"
+          value={recurringCycles}
+          onChangeText={(raw) => setRecurringCycles(String(raw || "").replace(/[^0-9]/g, ""))}
+          placeholder="0"
+          keyboardType="number-pad"
+        />
+        <Text style={{ color: palette.muted, fontSize: typography.small }}>
+          You can view and cancel plans anytime from the Recurring screen.
+        </Text>
+      </Card>
+      ) : null}
 
       <Card style={{ gap: spacing.md }}>
         <View style={{ gap: spacing.xs }}>
           <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Cash giving (no in-app payment)</Text>
           <Text style={{ color: palette.muted }}>
-            Record your cash giving for receipts and church records. You will not be charged in the app.
+            {isExternalGiving
+              ? "Record external donor cash giving for recipient church records. You will not be charged in the app."
+              : "Record your cash giving for receipts and church records. You will not be charged in the app."}
           </Text>
         </View>
 
@@ -2179,7 +3438,9 @@ function ConfirmScreen({ navigation, route }) {
           <Text style={{ color: palette.text, fontWeight: "800" }}>{money(cashPricing.totalCharged)}</Text>
         </View>
         <Text style={{ color: palette.muted, fontSize: typography.small }}>
-          Prepared cash records can be confirmed by your church admin after counting.
+          {isExternalGiving
+            ? "Prepared cash records can be confirmed by the recipient church admin after counting."
+            : "Prepared cash records can be confirmed by your church admin after counting."}
         </Text>
       </Card>
       <ErrorBanner message={error} />
@@ -2365,6 +3626,7 @@ function PendingScreen({ navigation, route }) {
   const { spacing, palette, radius, typography } = useTheme();
   const { profile } = useContext(AuthContext);
   const intent = route.params?.intent || {};
+  const recipientChurchName = intent?.recipientChurchName || intent?.church?.name || profile?.churchName;
   const paymentIntentId = intent?.paymentIntentId || intent?.id || null;
   const fallbackRef = intent?.mPaymentId || intent?.m_payment_id || null;
   const [status, setStatus] = useState("PENDING");
@@ -2429,7 +3691,7 @@ function PendingScreen({ navigation, route }) {
       <SectionTitle
         title="Payment pending"
         subtitle="Waiting for PayFast confirmation. Keep this screen open while payment completes."
-        churchName={profile?.churchName}
+        churchName={recipientChurchName}
       />
       <Card style={{ alignItems: "center", gap: spacing.md }}>
         <View
@@ -2478,6 +3740,7 @@ function SuccessScreen({ navigation, route }) {
   const { spacing, palette, radius, typography } = useTheme();
   const { profile } = useContext(AuthContext);
   const intent = route.params?.intent || {};
+  const recipientChurchName = intent?.recipientChurchName || intent?.church?.name || profile?.churchName;
   const isPaid = String(intent?.status || "").toUpperCase() === "PAID";
   const paymentRef = intent?.mPaymentId || intent?.m_payment_id || null;
   const onShareReceipt = async () => {
@@ -2486,7 +3749,7 @@ function SuccessScreen({ navigation, route }) {
       `Amount: ${money(intent?.amount || 0)}`,
       intent?.fundName ? `Fund: ${intent.fundName}` : null,
       paymentRef ? `Reference: ${paymentRef}` : null,
-      profile?.churchName ? `Church: ${profile.churchName}` : null,
+      recipientChurchName ? `Church: ${recipientChurchName}` : null,
     ]
       .filter(Boolean)
       .join("\n");
@@ -2502,7 +3765,7 @@ function SuccessScreen({ navigation, route }) {
             label="View transactions"
             variant="ghost"
             onPress={() => {
-              if (isAdminRole(profile?.role)) {
+              if (isStaffRole(profile?.role)) {
                 navigation.navigate("AdminTransactions");
               } else {
                 navigation.navigate("MemberTransactions");
@@ -2514,7 +3777,7 @@ function SuccessScreen({ navigation, route }) {
       }
     >
       <BrandHeader />
-      <SectionTitle title="Thank you for giving" subtitle="Your generosity makes a difference." churchName={profile?.churchName} />
+      <SectionTitle title="Thank you for giving" subtitle="Your generosity makes a difference." churchName={recipientChurchName} />
       <Card style={{ alignItems: "center", gap: spacing.md }}>
         <View
           style={{
@@ -2552,6 +3815,7 @@ function CashReceiptScreen({ navigation, route }) {
   const { spacing, palette, radius, typography } = useTheme();
   const { profile } = useContext(AuthContext);
   const cash = route.params?.cash || {};
+  const receiptChurchName = cash?.church?.name || profile?.churchName || null;
   const status = String(cash?.status || "").toUpperCase() || "RECORDED";
   const reference = cash?.reference || null;
   const fundName = cash?.fund?.name || cash?.fundName || "-";
@@ -2574,7 +3838,7 @@ function CashReceiptScreen({ navigation, route }) {
       serviceDate ? `Service date: ${serviceDate}` : null,
       fundName ? `Fund: ${fundName}` : null,
       reference ? `Reference: ${reference}` : null,
-      profile?.churchName ? `Church: ${profile.churchName}` : null,
+      receiptChurchName ? `Church: ${receiptChurchName}` : null,
     ]
       .filter(Boolean)
       .join("\n");
@@ -2595,7 +3859,7 @@ function CashReceiptScreen({ navigation, route }) {
       <SectionTitle
         title="Cash giving saved"
         subtitle="Recorded for receipts and church records."
-        churchName={profile?.churchName}
+        churchName={receiptChurchName}
       />
       <Card style={{ alignItems: "center", gap: spacing.md }}>
         <View
@@ -2702,6 +3966,7 @@ function MemberTransactionsScreen({ navigation }) {
       footer={
         <View style={{ gap: spacing.sm }}>
           <PrimaryButton label={loading ? "Refreshing..." : "Refresh"} onPress={load} disabled={loading} />
+          <PrimaryButton label="Recurring plans" variant="secondary" onPress={() => navigation.navigate("RecurringGivings")} />
           <PrimaryButton label="Back home" variant="ghost" onPress={() => navigation.popToTop()} />
         </View>
       }
@@ -2762,6 +4027,148 @@ function MemberTransactionsScreen({ navigation }) {
   );
 }
 
+function RecurringGivingsScreen({ navigation }) {
+  const { spacing, palette, typography } = useTheme();
+  const { profile, token, logout } = useContext(AuthContext);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [items, setItems] = useState([]);
+  const [cancelingId, setCancelingId] = useState("");
+
+  const load = useCallback(async () => {
+    if (!token) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (!profile?.churchId) {
+      navigation.replace("JoinChurch");
+      return;
+    }
+    try {
+      setLoading(true);
+      setError("");
+      const res = await listRecurringGivings({ limit: 50 });
+      setItems(res?.recurringGivings || []);
+    } catch (e) {
+      const message = e?.message || "Could not load recurring plans";
+      if (String(message).toLowerCase().includes("unauthorized")) {
+        await logout();
+        navigation.replace("Login");
+        return;
+      }
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [logout, navigation, profile?.churchId, token]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onCancel = (row) => {
+    const recurringId = String(row?.id || "").trim();
+    if (!recurringId) return;
+    Alert.alert("Cancel recurring plan?", "Future automatic charges will stop for this plan.", [
+      { text: "Keep plan", style: "cancel" },
+      {
+        text: "Cancel plan",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setCancelingId(recurringId);
+            setError("");
+            await cancelRecurringGiving(recurringId);
+            await load();
+          } catch (e) {
+            setError(e?.message || "Could not cancel recurring plan");
+          } finally {
+            setCancelingId("");
+          }
+        },
+      },
+    ]);
+  };
+
+  return (
+    <Screen
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <PrimaryButton label={loading ? "Refreshing..." : "Refresh"} onPress={load} disabled={loading || !!cancelingId} />
+          <PrimaryButton label="Back home" variant="ghost" onPress={() => navigation.popToTop()} />
+        </View>
+      }
+    >
+      <BrandHeader />
+      <SectionTitle
+        title="Recurring plans"
+        subtitle="Manage automatic PayFast donations."
+        churchName={profile?.churchName}
+      />
+      {loading ? <LoadingCards count={3} /> : null}
+      {!loading && items.length ? (
+        <View style={{ gap: spacing.sm }}>
+          {items.map((row) => {
+            const status = String(row?.status || "").toUpperCase();
+            const cycles = Number(row?.cycles || 0);
+            const cyclesCompleted = Number(row?.cyclesCompleted || 0);
+            const canCancel = status === "ACTIVE" || status === "PENDING_SETUP" || status === "PAUSED";
+            const nextChargeDate = row?.nextBillingDate || row?.billingDate;
+            const cycleLabel = cycles > 0 ? `${cyclesCompleted}/${cycles} cycles` : `${cyclesCompleted} cycles`;
+
+            return (
+              <Card key={row.id} style={{ gap: spacing.xs }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.md }}>
+                  <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2, flex: 1 }}>
+                    {row?.fundName || row?.fundCode || "Fund"}
+                  </Text>
+                  <StatusChip label={status || "UNKNOWN"} active={isRecurringStatusActive(status)} />
+                </View>
+                <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                  {recurringFrequencyLabel(row?.frequency)} • Start: {row?.billingDate ? String(row.billingDate).slice(0, 10) : "-"}
+                </Text>
+                <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                  Next charge: {nextChargeDate ? String(nextChargeDate).slice(0, 10) : "-"} • {cycleLabel}
+                </Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <View>
+                    <Text style={{ color: palette.muted, fontSize: typography.small }}>Donation</Text>
+                    <Text style={{ color: palette.text, fontWeight: "700" }}>{money(row?.donationAmount || 0)}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={{ color: palette.muted, fontSize: typography.small }}>Total charged</Text>
+                    <Text style={{ color: palette.text, fontWeight: "800" }}>{money(row?.grossAmount || 0)}</Text>
+                  </View>
+                </View>
+                {row?.notes ? <Text style={{ color: palette.muted, fontSize: typography.small }}>{row.notes}</Text> : null}
+                {canCancel ? (
+                  <PrimaryButton
+                    label={cancelingId === row.id ? "Cancelling..." : "Cancel plan"}
+                    variant="ghost"
+                    onPress={() => onCancel(row)}
+                    disabled={!!cancelingId}
+                    style={{ alignSelf: "flex-start", minWidth: 160 }}
+                  />
+                ) : null}
+              </Card>
+            );
+          })}
+        </View>
+      ) : null}
+      {!loading && !items.length ? (
+        <EmptyStateCard
+          icon="🔁"
+          title="No recurring plans yet"
+          subtitle="Create your first recurring plan from the Confirm payment screen."
+          actionLabel="Back to giving"
+          onAction={() => navigation.navigate("Give")}
+        />
+      ) : null}
+      <ErrorBanner message={error} />
+    </Screen>
+  );
+}
+
 function NotificationsScreen({ navigation }) {
   const { spacing, palette, typography, radius } = useTheme();
   const { token, logout, notificationsEnabled, notificationsSettingsLoading } = useContext(AuthContext);
@@ -2769,6 +4176,7 @@ function NotificationsScreen({ navigation }) {
   const [error, setError] = useState("");
   const [items, setItems] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [openedNotification, setOpenedNotification] = useState(null);
 
   const load = useCallback(async () => {
     if (notificationsSettingsLoading) {
@@ -2836,7 +4244,12 @@ function NotificationsScreen({ navigation }) {
       }
       const title = n?.title || "Alert";
       const body = n?.body || "";
-      Alert.alert(title, body || " ");
+      setOpenedNotification({
+        id: n?.id || null,
+        title,
+        body: body || " ",
+        createdAt: n?.createdAt || null,
+      });
     } catch (e) {
       setError(e?.message || "Could not open alert");
     }
@@ -2920,6 +4333,30 @@ function NotificationsScreen({ navigation }) {
       {!loading && notificationsEnabled && !items?.length ? <EmptyStateCard icon="🔔" title="No alerts yet" subtitle="When something happens, you’ll see it here." actionLabel="Refresh" onAction={load} /> : null}
 
       <ErrorBanner message={error} />
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={!!openedNotification}
+        onRequestClose={() => setOpenedNotification(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Card style={{ width: "100%", maxWidth: 520, gap: spacing.md }}>
+            <View style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+                {openedNotification?.title || "Alert"}
+              </Text>
+              {openedNotification?.createdAt ? (
+                <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                  {new Date(openedNotification.createdAt).toLocaleString()}
+                </Text>
+              ) : null}
+            </View>
+            <Text style={{ color: palette.text, lineHeight: 22 }}>{openedNotification?.body || " "}</Text>
+            <PrimaryButton label="Close" onPress={() => setOpenedNotification(null)} />
+          </Card>
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -2945,7 +4382,7 @@ function ProfileScreen({ navigation }) {
   const [notificationsSaving, setNotificationsSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const isAdmin = isAdminRole(profile?.role);
+  const isAdmin = isStaffRole(profile?.role);
 
   useEffect(() => {
     if (!profile) navigation.replace("Welcome");
@@ -3297,6 +4734,7 @@ function AdminChurchScreen({ navigation }) {
             onPress: () => navigation.navigate("Notifications"),
           },
           { label: "Funds", onPress: () => navigation.replace("AdminFunds") },
+          { label: "Check-ins", onPress: () => navigation.replace("AdminCheckIns") },
           { label: "Transactions", onPress: () => navigation.replace("AdminTransactions") },
         ]}
       />
@@ -3450,6 +4888,7 @@ function AdminFundsScreen({ navigation }) {
             highlight: !!unreadCount,
             onPress: () => navigation.navigate("Notifications"),
           },
+          { label: "Check-ins", onPress: () => navigation.navigate("AdminCheckIns") },
           { label: "Church settings", onPress: () => navigation.navigate("AdminChurch") },
           { label: "Profile", onPress: () => navigation.navigate("Profile") },
         ]}
@@ -3515,6 +4954,731 @@ function AdminFundsScreen({ navigation }) {
           ) : null}
         </ScrollView>
       )}
+      <ErrorBanner message={error} />
+    </Screen>
+  );
+}
+
+function AdminCheckInsScreen({ navigation }) {
+  const { spacing, palette, typography, radius } = useTheme();
+  const { profile } = useContext(AuthContext);
+  const roleKey = normalizeStaffRole(profile?.role);
+  const canAccessStaffPortal = isStaffRole(profile?.role);
+  const canMemberCheckIn = isStaffMemberCheckInRole(profile?.role);
+  const canMemberLive = canMemberCheckIn || roleKey === "finance";
+  const canChildrenCheckIn = isStaffChildrenCheckInRole(profile?.role);
+  const [services, setServices] = useState([]);
+  const [selectedServiceId, setSelectedServiceId] = useState("");
+  const [activeMode, setActiveMode] = useState(canChildrenCheckIn && !canMemberCheckIn ? "children" : "members");
+  const [memberRef, setMemberRef] = useState("");
+  const [notes, setNotes] = useState("");
+  const [liveRows, setLiveRows] = useState([]);
+  const [summary, setSummary] = useState({ total: 0, tapCount: 0, qrCount: 0, usherCount: 0, lastCheckInAt: null });
+  const [childrenParentRef, setChildrenParentRef] = useState("");
+  const [childrenHousehold, setChildrenHousehold] = useState([]);
+  const [selectedHouseholdChildId, setSelectedHouseholdChildId] = useState("");
+  const [walkInChildName, setWalkInChildName] = useState("");
+  const [walkInGuardianName, setWalkInGuardianName] = useState("");
+  const [walkInGuardianPhone, setWalkInGuardianPhone] = useState("");
+  const [childrenMethod, setChildrenMethod] = useState(roleKey === "teacher" ? "TEACHER" : "USHER");
+  const [childrenNotes, setChildrenNotes] = useState("");
+  const [childrenStatusFilter, setChildrenStatusFilter] = useState("open");
+  const [childrenRows, setChildrenRows] = useState([]);
+  const [childrenSummary, setChildrenSummary] = useState({
+    total: 0,
+    checkedInCount: 0,
+    checkedOutCount: 0,
+    lastCheckInAt: null,
+    lastPickupAt: null,
+  });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [childrenSubmitting, setChildrenSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const recentMemberCheckInSubmissionsRef = useRef(new Map());
+  const recentChildCheckInSubmissionsRef = useRef(new Map());
+
+  useEffect(() => {
+    if (canChildrenCheckIn && !canMemberCheckIn) setActiveMode("children");
+    if (!canChildrenCheckIn && !canMemberLive) setActiveMode("members");
+    setChildrenMethod(roleKey === "teacher" ? "TEACHER" : "USHER");
+  }, [canChildrenCheckIn, canMemberCheckIn, canMemberLive, roleKey]);
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const res = await getUnreadNotificationCount();
+      setUnreadCount(Number(res?.count || 0));
+    } catch (_err) {
+      // non-fatal
+    }
+  }, []);
+
+  const loadLiveCheckIns = useCallback(
+    async (serviceId) => {
+      const finalServiceId = String(serviceId || "").trim();
+      if (!finalServiceId) {
+        setLiveRows([]);
+        setSummary({ total: 0, tapCount: 0, qrCount: 0, usherCount: 0, lastCheckInAt: null });
+        return;
+      }
+      const res = await listAdminChurchLifeLiveCheckIns({ serviceId: finalServiceId, limit: 150 });
+      setLiveRows(Array.isArray(res?.rows) ? res.rows : []);
+      setSummary({
+        total: Number(res?.summary?.total || 0),
+        tapCount: Number(res?.summary?.tapCount || 0),
+        qrCount: Number(res?.summary?.qrCount || 0),
+        usherCount: Number(res?.summary?.usherCount || 0),
+        lastCheckInAt: res?.summary?.lastCheckInAt || null,
+      });
+    },
+    []
+  );
+
+  const loadChildrenCheckIns = useCallback(
+    async (serviceId, status = childrenStatusFilter) => {
+      const finalServiceId = String(serviceId || "").trim();
+      if (!finalServiceId) {
+        setChildrenRows([]);
+        setChildrenSummary({
+          total: 0,
+          checkedInCount: 0,
+          checkedOutCount: 0,
+          lastCheckInAt: null,
+          lastPickupAt: null,
+        });
+        return;
+      }
+      const res = await listAdminChurchLifeChildrenCheckIns({
+        serviceId: finalServiceId,
+        status: status || "open",
+        limit: 180,
+      });
+      setChildrenRows(Array.isArray(res?.checkIns) ? res.checkIns : []);
+      setChildrenSummary({
+        total: Number(res?.summary?.total || 0),
+        checkedInCount: Number(res?.summary?.checkedInCount || 0),
+        checkedOutCount: Number(res?.summary?.checkedOutCount || 0),
+        lastCheckInAt: res?.summary?.lastCheckInAt || null,
+        lastPickupAt: res?.summary?.lastPickupAt || null,
+      });
+    },
+    [childrenStatusFilter]
+  );
+
+  const loadBundle = useCallback(async () => {
+    if (!canAccessStaffPortal) return;
+    try {
+      setLoading(true);
+      setError("");
+      const servicesRes = await listAdminChurchLifeServices({ limit: 120 });
+      const rows = Array.isArray(servicesRes?.services) ? servicesRes.services : [];
+      setServices(rows);
+
+      const keepCurrent = rows.some((service) => String(service?.id || "") === String(selectedServiceId || ""));
+      const fallbackServiceId = String(rows[0]?.id || "");
+      const nextServiceId = keepCurrent ? String(selectedServiceId || "") : fallbackServiceId;
+      setSelectedServiceId(nextServiceId);
+      const tasks = [];
+      if (canMemberLive) tasks.push(loadLiveCheckIns(nextServiceId));
+      else {
+        setLiveRows([]);
+        setSummary({ total: 0, tapCount: 0, qrCount: 0, usherCount: 0, lastCheckInAt: null });
+      }
+      if (canChildrenCheckIn) tasks.push(loadChildrenCheckIns(nextServiceId, childrenStatusFilter));
+      else {
+        setChildrenRows([]);
+        setChildrenSummary({
+          total: 0,
+          checkedInCount: 0,
+          checkedOutCount: 0,
+          lastCheckInAt: null,
+          lastPickupAt: null,
+        });
+      }
+      if (tasks.length) await Promise.all(tasks);
+    } catch (e) {
+      setError(e?.message || "Could not load check-ins");
+      setLiveRows([]);
+      setSummary({ total: 0, tapCount: 0, qrCount: 0, usherCount: 0, lastCheckInAt: null });
+      setChildrenRows([]);
+      setChildrenSummary({
+        total: 0,
+        checkedInCount: 0,
+        checkedOutCount: 0,
+        lastCheckInAt: null,
+        lastPickupAt: null,
+      });
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [canAccessStaffPortal, canChildrenCheckIn, canMemberLive, childrenStatusFilter, loadChildrenCheckIns, loadLiveCheckIns, selectedServiceId]);
+
+  useEffect(() => {
+    if (!profile) {
+      navigation.replace("Welcome");
+      return;
+    }
+    if (!canAccessStaffPortal) {
+      navigation.replace("Give");
+      return;
+    }
+    if (!profile?.churchId) {
+      navigation.replace(isAdminRole(profile?.role) ? "AdminChurch" : "JoinChurch");
+      return;
+    }
+    loadBundle();
+    refreshUnreadCount();
+    const unsubscribe = navigation.addListener("focus", () => {
+      loadBundle();
+      refreshUnreadCount();
+    });
+    return unsubscribe;
+  }, [canAccessStaffPortal, loadBundle, navigation, profile, refreshUnreadCount]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadBundle();
+  }, [loadBundle]);
+
+  useEffect(() => {
+    if (!selectedServiceId || loading) return;
+    const tasks = [];
+    if (canMemberLive) {
+      tasks.push(loadLiveCheckIns(selectedServiceId).catch((e) => setError(e?.message || "Could not load live check-ins")));
+    }
+    if (canChildrenCheckIn) {
+      tasks.push(
+        loadChildrenCheckIns(selectedServiceId, childrenStatusFilter).catch((e) =>
+          setError(e?.message || "Could not load children check-ins")
+        )
+      );
+    }
+    if (tasks.length) void Promise.all(tasks);
+  }, [canChildrenCheckIn, canMemberLive, childrenStatusFilter, selectedServiceId, loading, loadChildrenCheckIns, loadLiveCheckIns]);
+
+  const onCheckIn = async () => {
+    let throttleKey = "";
+    let submittedAt = 0;
+    try {
+      setError("");
+      setFeedback("");
+      if (!canMemberCheckIn) throw new Error("Your role cannot perform member check-ins.");
+      const serviceId = String(selectedServiceId || "").trim();
+      const member = String(memberRef || "").trim();
+      if (!serviceId) throw new Error("Select a service first.");
+      if (!member) throw new Error("Member reference is required.");
+      throttleKey = `${serviceId}:${member.toLowerCase()}`;
+      submittedAt = Date.now();
+      const previous = Number(recentMemberCheckInSubmissionsRef.current.get(throttleKey) || 0);
+      if (previous && submittedAt - previous < CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS) {
+        throw new Error("Duplicate submission blocked. Wait a moment before retrying.");
+      }
+      recentMemberCheckInSubmissionsRef.current.set(throttleKey, submittedAt);
+      setSubmitting(true);
+      const res = await createAdminChurchLifeUsherCheckIn({
+        serviceId,
+        memberRef: member,
+        notes: String(notes || "").trim() || undefined,
+      });
+      const memberLabel = res?.checkIn?.memberName || res?.checkIn?.memberId || member;
+      const actionLabel = res?.idempotent ? "was already checked in (existing record reused)" : "checked in successfully";
+      setFeedback(`${memberLabel} ${actionLabel}.`);
+      setMemberRef("");
+      setNotes("");
+      await loadLiveCheckIns(serviceId);
+    } catch (e) {
+      if (throttleKey) {
+        recentMemberCheckInSubmissionsRef.current.delete(throttleKey);
+      }
+      setError(e?.message || "Could not check in member");
+    } finally {
+      const cutoff = (submittedAt || Date.now()) - CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS * 6;
+      for (const [key, timestamp] of recentMemberCheckInSubmissionsRef.current.entries()) {
+        if (Number(timestamp || 0) < cutoff) {
+          recentMemberCheckInSubmissionsRef.current.delete(key);
+        }
+      }
+      setSubmitting(false);
+    }
+  };
+
+  const onFindChildrenHousehold = async () => {
+    try {
+      setError("");
+      setFeedback("");
+      if (!canChildrenCheckIn) throw new Error("Your role cannot access children's household data.");
+      const ref = String(childrenParentRef || "").trim();
+      if (!ref) throw new Error("Parent reference is required.");
+      const res = await getAdminChurchLifeChildrenHousehold({ parentRef: ref, limit: 120 });
+      const rows = Array.isArray(res?.children) ? res.children : [];
+      setChildrenHousehold(rows);
+      const firstActive = rows.find((row) => row?.active !== false) || rows[0] || null;
+      setSelectedHouseholdChildId(String(firstActive?.id || ""));
+      const parentLabel = res?.parent?.fullName || res?.parent?.memberId || ref;
+      setFeedback(`Loaded ${rows.length} child profile(s) for ${parentLabel}.`);
+    } catch (e) {
+      setChildrenHousehold([]);
+      setSelectedHouseholdChildId("");
+      setError(e?.message || "Could not load parent household");
+    }
+  };
+
+  const onChildCheckIn = async () => {
+    let throttleKey = "";
+    let submittedAt = 0;
+    try {
+      setError("");
+      setFeedback("");
+      if (!canChildrenCheckIn) throw new Error("Your role cannot perform children check-ins.");
+      const serviceId = String(selectedServiceId || "").trim();
+      const householdChildId = String(selectedHouseholdChildId || "").trim();
+      const childName = String(walkInChildName || "").trim();
+      const parentName = String(walkInGuardianName || "").trim();
+      const parentPhone = String(walkInGuardianPhone || "").trim();
+      if (!serviceId) throw new Error("Select a service first.");
+      if (!householdChildId && !childName) {
+        throw new Error("Select a household child or enter a walk-in child name.");
+      }
+      const childRef = householdChildId || childName.toLowerCase();
+      throttleKey = `${serviceId}:${childRef}`;
+      submittedAt = Date.now();
+      const previous = Number(recentChildCheckInSubmissionsRef.current.get(throttleKey) || 0);
+      if (previous && submittedAt - previous < CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS) {
+        throw new Error("Duplicate child check-in blocked. Wait a moment before retrying.");
+      }
+      recentChildCheckInSubmissionsRef.current.set(throttleKey, submittedAt);
+      setChildrenSubmitting(true);
+      const res = await createAdminChurchLifeChildCheckIn({
+        serviceId,
+        householdChildId: householdChildId || undefined,
+        childName: !householdChildId ? childName : undefined,
+        parentName: !householdChildId && parentName ? parentName : undefined,
+        parentPhone: !householdChildId && parentPhone ? parentPhone : undefined,
+        checkInMethod: childrenMethod,
+        checkInNotes: String(childrenNotes || "").trim() || undefined,
+      });
+      const childLabel = res?.checkIn?.childName || res?.checkIn?.childMemberId || "Child";
+      setChildrenNotes("");
+      if (!householdChildId) {
+        setWalkInChildName("");
+        setWalkInGuardianName("");
+        setWalkInGuardianPhone("");
+      }
+      setFeedback(`${childLabel} checked in successfully.`);
+      const tasks = [loadChildrenCheckIns(serviceId, childrenStatusFilter)];
+      if (canMemberLive) tasks.push(loadLiveCheckIns(serviceId));
+      await Promise.all(tasks);
+    } catch (e) {
+      if (throttleKey) {
+        recentChildCheckInSubmissionsRef.current.delete(throttleKey);
+      }
+      setError(e?.message || "Could not check in child");
+    } finally {
+      const cutoff = (submittedAt || Date.now()) - CHURCH_LIFE_CHECKIN_SUBMIT_THROTTLE_MS * 6;
+      for (const [key, timestamp] of recentChildCheckInSubmissionsRef.current.entries()) {
+        if (Number(timestamp || 0) < cutoff) {
+          recentChildCheckInSubmissionsRef.current.delete(key);
+        }
+      }
+      setChildrenSubmitting(false);
+    }
+  };
+
+  const onChildPickup = async (checkInId, childLabel) => {
+    try {
+      setError("");
+      setFeedback("");
+      if (!canChildrenCheckIn) throw new Error("Your role cannot process children pickup.");
+      const id = String(checkInId || "").trim();
+      if (!id) throw new Error("Child check-in record is missing.");
+      setChildrenSubmitting(true);
+      await pickupAdminChurchLifeChildCheckIn(id, {
+        checkoutMethod: roleKey === "teacher" ? "TEACHER" : "USHER",
+      });
+      setFeedback(`${childLabel || "Child"} checked out successfully.`);
+      await loadChildrenCheckIns(selectedServiceId, childrenStatusFilter);
+    } catch (e) {
+      setError(e?.message || "Could not complete child pickup");
+    } finally {
+      setChildrenSubmitting(false);
+    }
+  };
+
+  const selectedService = services.find((service) => String(service?.id || "") === String(selectedServiceId || "")) || null;
+  const roleBadge = roleKey === "teacher" ? "Teacher Workspace" : "Staff Workspace";
+  const modeOptions = [
+    ...(canMemberLive ? [{ value: "members", label: canMemberCheckIn ? "Member check-ins" : "Live attendance" }] : []),
+    ...(canChildrenCheckIn ? [{ value: "children", label: "Children's Church" }] : []),
+  ];
+
+  return (
+    <Screen
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <PrimaryButton
+            label={refreshing ? "Refreshing..." : "Refresh"}
+            onPress={onRefresh}
+            disabled={refreshing || submitting || childrenSubmitting}
+            variant="secondary"
+          />
+          <PrimaryButton
+            label={isAdminRole(profile?.role) ? "Church settings" : "Profile"}
+            variant="ghost"
+            onPress={() => navigation.navigate(isAdminRole(profile?.role) ? "AdminChurch" : "Profile")}
+          />
+        </View>
+      }
+    >
+      <BrandHeader />
+      <TopHeroHeader
+        tone="admin"
+        badge={roleBadge}
+        title="Check-ins"
+        subtitle="Check in members, manage Children's Church, and complete pickup."
+        churchName={profile?.churchName}
+        actions={[
+          {
+            label: unreadCount ? `Alerts (${unreadCount})` : "Alerts",
+            highlight: !!unreadCount,
+            onPress: () => navigation.navigate("Notifications"),
+          },
+          ...(isAdminRole(profile?.role) ? [{ label: "Transactions", onPress: () => navigation.navigate("AdminTransactions") }] : []),
+          { label: "Profile", onPress: () => navigation.navigate("Profile") },
+        ]}
+      />
+      <AdminTabBar navigation={navigation} activeTab="checkins" />
+
+      {modeOptions.length > 1 ? (
+        <Card style={{ gap: spacing.md }}>
+          <SectionTitle title="Select check-in flow" subtitle="Switch between member attendance and Children's Church." />
+          <ChoicePillRow options={modeOptions} value={activeMode} onChange={(next) => setActiveMode(String(next || "members"))} />
+        </Card>
+      ) : null}
+
+      <Card style={{ gap: spacing.md }}>
+        <SectionTitle title="Select service" subtitle="Check-ins are tied to one service." />
+        {services.length ? (
+          <>
+            <ChoicePillRow
+              options={services.map((service) => ({
+                value: service.id,
+                label: `${service.serviceName || "Service"} • ${formatDateLabel(service.serviceDate || service.startsAt)}`,
+              }))}
+              value={selectedServiceId}
+              onChange={(next) => setSelectedServiceId(String(next || ""))}
+              mapLabel={(item) => item.label}
+            />
+            {selectedService ? (
+              <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                Active service: {formatServiceLabel(selectedService)}
+              </Text>
+            ) : null}
+          </>
+        ) : (
+          <EmptyStateCard icon="⛪" title="No services found" subtitle="Create/publish services first in CRM Operations." />
+        )}
+      </Card>
+
+      {activeMode === "members" ? (
+        <>
+          {canMemberCheckIn ? (
+            <Card style={{ gap: spacing.md }}>
+              <SectionTitle title="Usher check-in" subtitle="Use member ID, phone, email, or member UUID." />
+              <TextField
+                label="Member reference"
+                value={memberRef}
+                onChangeText={setMemberRef}
+                placeholder="TGCC003757-00011 or 0658760444"
+                autoCapitalize="none"
+              />
+              <TextField
+                label="Notes (optional)"
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Optional usher note"
+              />
+              <PrimaryButton
+                label={submitting ? "Checking in..." : "Check in member"}
+                onPress={onCheckIn}
+                disabled={submitting || !selectedServiceId || !String(memberRef || "").trim()}
+              />
+            </Card>
+          ) : null}
+
+          {canMemberLive ? (
+            <Card style={{ gap: spacing.md }}>
+              <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Live attendance</Text>
+              <View style={{ flexDirection: "row", gap: spacing.sm }}>
+                <View
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: palette.border,
+                    borderRadius: radius.md,
+                    backgroundColor: palette.focus,
+                    padding: spacing.sm,
+                    gap: 4,
+                  }}
+                >
+                  <Text style={{ color: palette.muted, fontSize: typography.small }}>Total</Text>
+                  <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>{summary.total}</Text>
+                </View>
+                <View
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: palette.border,
+                    borderRadius: radius.md,
+                    backgroundColor: palette.focus,
+                    padding: spacing.sm,
+                    gap: 4,
+                  }}
+                >
+                  <Text style={{ color: palette.muted, fontSize: typography.small }}>Usher</Text>
+                  <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>{summary.usherCount}</Text>
+                </View>
+                <View
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: palette.border,
+                    borderRadius: radius.md,
+                    backgroundColor: palette.focus,
+                    padding: spacing.sm,
+                    gap: 4,
+                  }}
+                >
+                  <Text style={{ color: palette.muted, fontSize: typography.small }}>Tap/QR</Text>
+                  <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+                    {summary.tapCount + summary.qrCount}
+                  </Text>
+                </View>
+              </View>
+              <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                Last check-in: {summary.lastCheckInAt ? formatDateTimeLabel(summary.lastCheckInAt) : "-"}
+              </Text>
+            </Card>
+          ) : null}
+        </>
+      ) : null}
+
+      {activeMode === "children" ? (
+        <>
+          <Card style={{ gap: spacing.md }}>
+            <SectionTitle
+              title="Children check-in"
+              subtitle="Use household lookup or add a walk-in child when no parent profile is linked."
+            />
+            <TextField
+              label="Parent reference"
+              value={childrenParentRef}
+              onChangeText={setChildrenParentRef}
+              placeholder="TGCC003757-00001 or 0658760444"
+              autoCapitalize="none"
+            />
+            <PrimaryButton
+              label="Find household"
+              variant="secondary"
+              onPress={onFindChildrenHousehold}
+              disabled={childrenSubmitting || !String(childrenParentRef || "").trim()}
+            />
+            <TextField
+              label="Walk-in child name (no parent profile)"
+              value={walkInChildName}
+              onChangeText={setWalkInChildName}
+              placeholder="e.g. Sipho Dlamini"
+            />
+            <View style={{ flexDirection: "row", gap: spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <TextField
+                  label="Guardian name (optional)"
+                  value={walkInGuardianName}
+                  onChangeText={setWalkInGuardianName}
+                  placeholder="Optional"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <TextField
+                  label="Guardian phone (optional)"
+                  value={walkInGuardianPhone}
+                  onChangeText={setWalkInGuardianPhone}
+                  placeholder="Optional"
+                  keyboardType="phone-pad"
+                />
+              </View>
+            </View>
+            {childrenHousehold.length ? (
+              <ChoicePillRow
+                options={childrenHousehold.map((child) => ({
+                  value: child.id,
+                  label: `${child.childName || child.childMemberId || "Child"}${
+                    child.childAgeGroup ? ` • ${String(child.childAgeGroup).toUpperCase()}` : ""
+                  }`,
+                }))}
+                value={selectedHouseholdChildId}
+                onChange={(next) => setSelectedHouseholdChildId(String(next || ""))}
+              />
+            ) : (
+              <Body muted>No household loaded. Use walk-in child fields to continue.</Body>
+            )}
+            <ChoicePillRow
+              options={[
+                { value: "TEACHER", label: "Teacher" },
+                { value: "USHER", label: "Usher" },
+                { value: "QR", label: "QR" },
+                { value: "KIOSK", label: "Kiosk" },
+                { value: "MANUAL", label: "Manual" },
+              ]}
+              value={childrenMethod}
+              onChange={(next) => setChildrenMethod(String(next || "TEACHER"))}
+            />
+            <TextField
+              label="Notes (optional)"
+              value={childrenNotes}
+              onChangeText={setChildrenNotes}
+              placeholder="Optional note"
+            />
+            <PrimaryButton
+              label={childrenSubmitting ? "Checking in..." : "Check in child"}
+              onPress={onChildCheckIn}
+              disabled={
+                childrenSubmitting ||
+                !selectedServiceId ||
+                (!selectedHouseholdChildId && !String(walkInChildName || "").trim())
+              }
+            />
+          </Card>
+
+          <Card style={{ gap: spacing.md }}>
+            <View style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>Children attendance</Text>
+              <ChoicePillRow
+                options={[
+                  { value: "open", label: "Checked in" },
+                  { value: "checked_out", label: "Checked out" },
+                  { value: "all", label: "All" },
+                ]}
+                value={childrenStatusFilter}
+                onChange={(next) => setChildrenStatusFilter(String(next || "open"))}
+              />
+            </View>
+            <View style={{ flexDirection: "row", gap: spacing.sm }}>
+              <View
+                style={{
+                  flex: 1,
+                  borderWidth: 1,
+                  borderColor: palette.border,
+                  borderRadius: radius.md,
+                  backgroundColor: palette.focus,
+                  padding: spacing.sm,
+                  gap: 4,
+                }}
+              >
+                <Text style={{ color: palette.muted, fontSize: typography.small }}>Checked in</Text>
+                <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+                  {childrenSummary.checkedInCount}
+                </Text>
+              </View>
+              <View
+                style={{
+                  flex: 1,
+                  borderWidth: 1,
+                  borderColor: palette.border,
+                  borderRadius: radius.md,
+                  backgroundColor: palette.focus,
+                  padding: spacing.sm,
+                  gap: 4,
+                }}
+              >
+                <Text style={{ color: palette.muted, fontSize: typography.small }}>Picked up</Text>
+                <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+                  {childrenSummary.checkedOutCount}
+                </Text>
+              </View>
+            </View>
+            <Text style={{ color: palette.muted, fontSize: typography.small }}>
+              Last check-in: {childrenSummary.lastCheckInAt ? formatDateTimeLabel(childrenSummary.lastCheckInAt) : "-"}
+            </Text>
+            {childrenRows.length ? (
+              <View style={{ gap: spacing.sm }}>
+                {childrenRows.map((row) => {
+                  const childLabel = row?.childName || row?.childMemberId || "Child";
+                  const parentLabel = row?.parentName || row?.parentMemberId || "No parent linked";
+                  const checkedOut = String(row?.status || "").toUpperCase() === "CHECKED_OUT";
+                  const serviceLabel = row?.serviceName
+                    ? `${row.serviceName} • ${formatDateLabel(row?.serviceDate || row?.serviceStartsAt)}`
+                    : formatDateLabel(row?.serviceDate || row?.serviceStartsAt);
+                  return (
+                    <Card key={String(row?.id)} style={{ gap: spacing.xs }} padding={spacing.md}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm }}>
+                        <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h3 }}>{childLabel}</Text>
+                        <StatusChip label={checkedOut ? "PICKED UP" : "CHECKED IN"} active={!checkedOut} />
+                      </View>
+                      <Text style={{ color: palette.muted, fontSize: typography.small }}>{serviceLabel}</Text>
+                      <Text style={{ color: palette.muted, fontSize: typography.small }}>Parent: {parentLabel}</Text>
+                      <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                        Checked in: {formatDateTimeLabel(row?.checkedInAt)}
+                      </Text>
+                      {checkedOut ? (
+                        <Text style={{ color: palette.primary, fontSize: typography.small, fontWeight: "700" }}>
+                          Picked up: {formatDateTimeLabel(row?.checkedOutAt)}
+                        </Text>
+                      ) : (
+                        <PrimaryButton
+                          label={childrenSubmitting ? "Saving..." : "Check out child"}
+                          variant="secondary"
+                          onPress={() => onChildPickup(row?.id, childLabel)}
+                          disabled={childrenSubmitting || !row?.id}
+                        />
+                      )}
+                    </Card>
+                  );
+                })}
+              </View>
+            ) : (
+              <EmptyStateCard
+                icon="🧒"
+                title="No children check-ins yet"
+                subtitle="Children checked in for this service will appear here."
+              />
+            )}
+          </Card>
+        </>
+      ) : null}
+
+      {feedback ? (
+        <Card style={{ borderColor: palette.primary, backgroundColor: palette.focus }}>
+          <Text style={{ color: palette.primary, fontWeight: "700" }}>{feedback}</Text>
+        </Card>
+      ) : null}
+
+      {loading ? (
+        <LoadingCards count={2} />
+      ) : activeMode === "members" && canMemberLive && liveRows.length ? (
+        <View style={{ gap: spacing.sm }}>
+          {liveRows.map((row) => (
+            <Card key={row.id} style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontWeight: "700", fontSize: typography.h2 }}>
+                {row?.memberName || row?.memberId || "Member"}
+              </Text>
+              <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                {row?.memberId || "No member ID"} • {String(row?.method || "USHER").toUpperCase()}
+              </Text>
+              <Text style={{ color: palette.muted, fontSize: typography.small }}>
+                Checked in: {formatDateTimeLabel(row?.checkedInAt)}
+              </Text>
+              {row?.notes ? <Text style={{ color: palette.muted, fontSize: typography.small }}>{row.notes}</Text> : null}
+            </Card>
+          ))}
+        </View>
+      ) : activeMode === "members" && canMemberLive ? (
+        <EmptyStateCard icon="✅" title="No check-ins yet" subtitle="Once you check in members, they appear here in real time." />
+      ) : null}
+
       <ErrorBanner message={error} />
     </Screen>
   );
@@ -3909,6 +6073,7 @@ function AdminTransactionsScreen({ navigation }) {
             highlight: !!unreadCount,
             onPress: () => navigation.navigate("Notifications"),
           },
+          { label: "Check-ins", onPress: () => navigation.navigate("AdminCheckIns") },
           { label: "Church settings", onPress: () => navigation.navigate("AdminChurch") },
           { label: "Profile", onPress: () => navigation.navigate("Profile") },
         ]}
@@ -4128,7 +6293,7 @@ const styles = StyleSheet.create({
 });
 
 function RootNavigator() {
-  const { palette } = useTheme();
+  const { palette, spacing, typography } = useTheme();
   const { token, profile, booting, logout } = useContext(AuthContext);
   const navigationRef = useRef(null);
   const pendingGiveLinkRef = useRef(null);
@@ -4139,7 +6304,8 @@ function RootNavigator() {
   const autoLogoutInProgressRef = useRef(false);
   const appStateRef = useRef(AppState.currentState || "active");
   const inactivityWatchdogRef = useRef(null);
-  const isPrivilegedSession = isAdminRole(profile?.role);
+  const [inactivityMessage, setInactivityMessage] = useState(null);
+  const isPrivilegedSession = isStaffRole(profile?.role);
   const IDLE_TIMEOUT_MINUTES = isPrivilegedSession ? 15 : 10;
   const IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * 60 * 1000;
   const IDLE_WARNING_BEFORE_MS = 60 * 1000;
@@ -4161,17 +6327,15 @@ function RootNavigator() {
   );
 
   const initialRoute = token
-    ? isAdminRole(profile?.role)
-      ? profile?.churchId
-        ? "AdminFunds"
-        : "AdminChurch"
+    ? isStaffRole(profile?.role)
+      ? resolveStaffHomeRoute(profile?.role, profile?.churchId)
       : profile?.churchId
         ? "Give"
         : "JoinChurch"
     : "Welcome";
 
   const navKey = token
-    ? isAdminRole(profile?.role)
+    ? isStaffRole(profile?.role)
       ? "admin"
       : profile?.churchId
         ? "give"
@@ -4191,21 +6355,31 @@ function RootNavigator() {
       return true;
     }
 
-    if (isAdminRole(profile?.role)) {
+    if (isStaffRole(profile?.role)) {
       pendingGiveLinkRef.current = null;
-      navigationRef.current.navigate(profile?.churchId ? "AdminFunds" : "AdminChurch");
+      navigationRef.current.navigate(resolveStaffHomeRoute(profile?.role, profile?.churchId));
       return true;
     }
 
-    if (joinCode && !profile?.churchId) {
-      // Store so we can prefill after the member joins the church.
-      pendingGiveLinkRef.current = { joinCode, fundCode: fundCode || null, amount: amount || null };
-      navigationRef.current.navigate("JoinChurch", { joinCode, mode: "join" });
+    if (joinCode) {
+      pendingGiveLinkRef.current = null;
+      navigationRef.current.navigate("ExternalGiving", {
+        joinCode: joinCode || undefined,
+        fundCode: fundCode || undefined,
+        amount: amount || undefined,
+      });
+      return true;
+    }
+
+    if (!profile?.churchId) {
+      pendingGiveLinkRef.current = null;
+      navigationRef.current.navigate("JoinChurch", { mode: "join" });
       return true;
     }
 
     pendingGiveLinkRef.current = null;
     navigationRef.current.navigate("Give", {
+      joinCode: joinCode || undefined,
       fundCode: fundCode || undefined,
       amount: amount || undefined,
     });
@@ -4239,7 +6413,7 @@ function RootNavigator() {
       const isCancel = path.endsWith("/cancel") || path === "/cancel";
 
       if (isCancel) {
-        navigationRef.current.navigate(isAdminRole(profile?.role) ? "AdminFunds" : "Give");
+        navigationRef.current.navigate(isStaffRole(profile?.role) ? resolveStaffHomeRoute(profile?.role, profile?.churchId) : "Give");
         return;
       }
 
@@ -4327,7 +6501,11 @@ function RootNavigator() {
     clearInactivityWarningTimer();
     try {
       await logout();
-      Alert.alert("Session expired", `You were logged out after ${IDLE_TIMEOUT_MINUTES} minutes of inactivity.`);
+      setInactivityMessage({
+        type: "expired",
+        title: "Session expired",
+        body: `You were logged out after ${IDLE_TIMEOUT_MINUTES} minutes of inactivity.`,
+      });
     } catch (_err) {
       // no-op
     } finally {
@@ -4345,30 +6523,11 @@ function RootNavigator() {
         if (!token) return;
         if (appStateRef.current !== "active") return;
         if (autoLogoutInProgressRef.current) return;
-        Alert.alert(
-          "Still there?",
-          "For your security, we’ll sign you out soon due to inactivity.",
-          [
-            {
-              text: "Stay signed in",
-              onPress: () => {
-                lastActivityRef.current = Date.now();
-                scheduleInactivityTimer();
-              },
-            },
-            {
-              text: "Log out",
-              style: "destructive",
-              onPress: async () => {
-                try {
-                  await logout();
-                } finally {
-                  // no-op
-                }
-              },
-            },
-          ]
-        );
+        setInactivityMessage({
+          type: "warning",
+          title: "Still there?",
+          body: "For your security, we’ll sign you out soon due to inactivity.",
+        });
       }, IDLE_WARNING_MS);
     }
 
@@ -4387,6 +6546,7 @@ function RootNavigator() {
     if (!token) {
       backgroundAtRef.current = null;
       appStateRef.current = AppState.currentState || "active";
+      setInactivityMessage(null);
       clearInactivityTimer();
       clearInactivityWarningTimer();
       clearInactivityWatchdog();
@@ -4452,20 +6612,68 @@ function RootNavigator() {
           <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} />
           <Stack.Screen name="JoinChurch" component={JoinChurchScreen} />
           <Stack.Screen name="Give" component={GiveScreen} />
+          <Stack.Screen name="ExternalGiving" component={ExternalGivingScreen} />
+          <Stack.Screen name="ChurchLife" component={ChurchLifeScreen} />
           <Stack.Screen name="Confirm" component={ConfirmScreen} />
           <Stack.Screen name="GivingLink" component={GivingLinkScreen} />
           <Stack.Screen name="Pending" component={PendingScreen} />
           <Stack.Screen name="Success" component={SuccessScreen} />
           <Stack.Screen name="CashReceipt" component={CashReceiptScreen} />
           <Stack.Screen name="MemberTransactions" component={MemberTransactionsScreen} />
+          <Stack.Screen name="RecurringGivings" component={RecurringGivingsScreen} />
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="Profile" component={ProfileScreen} />
           <Stack.Screen name="AdminChurch" component={AdminChurchScreen} />
           <Stack.Screen name="AdminFunds" component={AdminFundsScreen} />
+          <Stack.Screen name="AdminCheckIns" component={AdminCheckInsScreen} />
           <Stack.Screen name="AdminQr" component={AdminQrScreen} />
           <Stack.Screen name="AdminTransactions" component={AdminTransactionsScreen} />
         </Stack.Navigator>
       </NavigationContainer>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={!!inactivityMessage}
+        onRequestClose={() => setInactivityMessage(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Card style={{ width: "100%", maxWidth: 520, gap: spacing.md }}>
+            <View style={{ gap: spacing.xs }}>
+              <Text style={{ color: palette.text, fontWeight: "800", fontSize: typography.h2 }}>
+                {inactivityMessage?.title || "Alert"}
+              </Text>
+              <Text style={{ color: palette.muted, lineHeight: 22 }}>{inactivityMessage?.body || " "}</Text>
+            </View>
+            {inactivityMessage?.type === "warning" ? (
+              <View style={{ gap: spacing.sm }}>
+                <PrimaryButton
+                  label="Stay signed in"
+                  onPress={() => {
+                    setInactivityMessage(null);
+                    lastActivityRef.current = Date.now();
+                    scheduleInactivityTimer();
+                  }}
+                />
+                <PrimaryButton
+                  label="Log out"
+                  variant="ghost"
+                  onPress={async () => {
+                    setInactivityMessage(null);
+                    try {
+                      await logout();
+                    } catch (_err) {
+                      // no-op
+                    }
+                  }}
+                />
+              </View>
+            ) : (
+              <PrimaryButton label="OK" onPress={() => setInactivityMessage(null)} />
+            )}
+          </Card>
+        </View>
+      </Modal>
     </View>
   );
 }
