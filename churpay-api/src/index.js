@@ -8,7 +8,10 @@ import superRoutes from "./routes.super.js";
 import publicRoutes from "./routes.public.js";
 import authRoutes from "./routes.auth.js";
 import notificationRoutes from "./routes.notifications.js";
-import { runNotificationJobs } from "./notification-jobs.js";
+import { runNotificationJobs, runNotificationOutboxJobs } from "./notification-jobs.js";
+import { runChurchGrowthJobs } from "./church-growth-jobs.js";
+import { runSubscriptionReconcileJobs } from "./subscription-jobs.js";
+import { assertPaymentSchemaReady } from "./payments/payment-drift-guard.js";
 import { db } from "./db.js";
 
 process.on("unhandledRejection", (e) => console.error("UNHANDLED REJECTION", e));
@@ -100,6 +103,7 @@ app.use(express.json({ limit: jsonBodyLimit }));
 // Do not pre-parse PayFast ITN as urlencoded; that route captures raw body for signature.
 app.use((req, res, next) => {
   if (req.originalUrl.startsWith("/webhooks/payfast/itn")) return next();
+  if (req.originalUrl.startsWith("/webhooks/payfast/subscription")) return next();
   return express.urlencoded({ extended: false })(req, res, next);
 });
 
@@ -315,7 +319,81 @@ function startNotificationJobsLoop() {
   setInterval(run, intervalMs).unref();
 }
 
-startNotificationJobsLoop();
+function startNotificationOutboxLoop() {
+  const enabled = parseBool(process.env.NOTIFICATION_OUTBOX_ENABLED, true);
+  if (!enabled) return;
+
+  const intervalMs = parseIntEnv("NOTIFICATION_OUTBOX_INTERVAL_MS", 10 * 1000);
+  const run = async () => {
+    try {
+      const result = await runNotificationOutboxJobs();
+      if (!result?.processed) return;
+      console.log("[jobs] notification outbox ran", {
+        processed: Number(result?.processed || 0),
+        sent: Number(result?.sent || 0),
+        failed: Number(result?.failed || 0),
+        retried: Number(result?.retried || 0),
+      });
+    } catch (err) {
+      console.error("[jobs] notification outbox failed", err?.message || err);
+    }
+  };
+
+  run();
+  setInterval(run, intervalMs).unref();
+}
+
+function startChurchGrowthJobsLoop() {
+  const enabled = parseBool(process.env.CHURCH_GROWTH_JOBS_ENABLED, true);
+  if (!enabled) return;
+
+  const intervalMs = parseIntEnv("CHURCH_GROWTH_JOBS_INTERVAL_MS", 15 * 60 * 1000);
+  const run = async () => {
+    try {
+      const result = await runChurchGrowthJobs();
+      if (result?.skipped) return;
+      const processedChurches = Number(result?.processedChurches || 0);
+      const totalFollowupsCreated = Number(result?.totalFollowupsCreated || 0);
+      const volunteerReviewTransitions = Number(result?.volunteerTermReviews?.transitionedTerms || 0);
+      if (!processedChurches && !totalFollowupsCreated && !volunteerReviewTransitions) return;
+      console.log("[jobs] church growth ran", {
+        processedChurches,
+        totalFollowupsCreated,
+        volunteerReviewTransitions,
+      });
+    } catch (err) {
+      console.error("[jobs] church growth failed", err?.message || err);
+    }
+  };
+
+  run();
+  setInterval(run, intervalMs).unref();
+}
+
+function startSubscriptionJobsLoop() {
+  const enabled = parseBool(process.env.SUBSCRIPTION_JOBS_ENABLED, true);
+  if (!enabled) return;
+
+  const intervalMs = parseIntEnv("SUBSCRIPTION_JOBS_INTERVAL_MS", 15 * 60 * 1000);
+  const limit = parseIntEnv("SUBSCRIPTION_JOBS_LIMIT", 1000);
+
+  const run = async () => {
+    try {
+      const result = await runSubscriptionReconcileJobs({ limit });
+      if (result?.skipped) return;
+      const transitioned = Number(result?.transitioned || 0);
+      const processed = Number(result?.processed || 0);
+      if (!processed && !transitioned) return;
+      console.log("[jobs] subscription reconcile ran", { processed, transitioned });
+    } catch (err) {
+      console.error("[jobs] subscription reconcile failed", err?.message || err);
+    }
+  };
+
+  run();
+  setInterval(run, intervalMs).unref();
+}
+
 const demoModeEnabled = parseBool(process.env.DEMO_MODE, false);
 if (demoModeEnabled) {
   // Demo-only open transactions routes intentionally mounted before protected payments router.
@@ -408,6 +486,19 @@ if (superRoutesEnabled) {
 app.use("/webhooks", webhooks);
 const PORT = process.env.PORT || 3001;
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Churpay API running on port ${PORT}`);
+async function boot() {
+  await assertPaymentSchemaReady();
+  startNotificationJobsLoop();
+  startNotificationOutboxLoop();
+  startChurchGrowthJobsLoop();
+  startSubscriptionJobsLoop();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Churpay API running on port ${PORT}`);
+  });
+}
+
+boot().catch((err) => {
+  console.error(err?.code === "MIGRATION_DRIFT" ? err.message : "[bootstrap] failed", err?.stack || err);
+  process.exit(1);
 });
