@@ -6,6 +6,8 @@ import { db } from "./db.js";
 import { ensureUniqueJoinCode } from "./join-code.js";
 import { sendEmail } from "./email-delivery.js";
 import { createVerificationChallenge } from "./email-verification.js";
+import { connectChurchPaymentProviderCredentials, validatePaymentProviderConnection } from "./payments/provider-admin-service.js";
+import { decryptSecret, encryptSecret, hasSecretEncryptionKey, maskSecret } from "./secrets-crypto.js";
 import {
   issueLoginTwoFactorChallenge,
   superTwoFactorEnabled,
@@ -15,6 +17,12 @@ import {
 const router = express.Router();
 
 const MAX_ONBOARDING_DOC_BYTES = 10 * 1024 * 1024;
+const CHURCH_OPERATIONS_STATUS_DEFAULT = "INACTIVE";
+const CHURCH_OPERATIONS_STATUS_VALUES = new Set(["INACTIVE", "PENDING", "ACTIVE", "PAST_DUE", "CANCELLED"]);
+const CHURCH_OPERATIONS_MANUAL_STATUS_VALUES = new Set(["PAST_DUE", "CANCELLED"]);
+const CHURCH_OPERATIONS_PLAN_DEFAULT = "churpay_growth_monthly_499";
+const CHURCH_OPERATIONS_PRICE_CENTS_DEFAULT = 49900;
+const CHURCH_OPERATIONS_CURRENCY_DEFAULT = "ZAR";
 const allowedOnboardingMimeTypes = new Set([
   "application/pdf",
   "image/jpeg",
@@ -379,6 +387,35 @@ async function hasTable(tableName) {
     [normalize(tableName)]
   );
   return !!row.ok;
+}
+
+function normalizeChurchOperationsStatus(value) {
+  const key = normalize(value).toUpperCase();
+  if (CHURCH_OPERATIONS_STATUS_VALUES.has(key)) return key;
+  return CHURCH_OPERATIONS_STATUS_DEFAULT;
+}
+
+function normalizeChurchOperationsSubscriptionRow(row) {
+  const rawPrice = Number.parseInt(String(row?.priceCents ?? CHURCH_OPERATIONS_PRICE_CENTS_DEFAULT), 10);
+  const priceCents =
+    Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : CHURCH_OPERATIONS_PRICE_CENTS_DEFAULT;
+  const currency =
+    normalize(row?.currency).toUpperCase() || CHURCH_OPERATIONS_CURRENCY_DEFAULT;
+  const rawPlan = normalize(row?.plan) || CHURCH_OPERATIONS_PLAN_DEFAULT;
+  const plan = rawPlan === "church_operations_monthly_499" ? CHURCH_OPERATIONS_PLAN_DEFAULT : rawPlan;
+  const note = normalize(row?.note);
+
+  return {
+    status: normalizeChurchOperationsStatus(row?.status),
+    plan,
+    priceCents,
+    currency,
+    requestedAt: row?.requestedAt || null,
+    startedAt: row?.startedAt || null,
+    currentPeriodEnd: row?.currentPeriodEnd || null,
+    cancelledAt: row?.cancelledAt || null,
+    note: note || null,
+  };
 }
 
 async function safeCount(sql, params = []) {
@@ -1175,6 +1212,18 @@ router.get("/churches/:churchId", requireSuperAdmin, async (req, res) => {
     const hasActive = await hasColumn("churches", "active");
     const hasPortalSettings = await hasColumn("churches", "admin_portal_settings").catch(() => false);
     const hasChurchBankAccounts = await hasTable("church_bank_accounts");
+    const hasOpsSubStatus = await hasColumn("churches", "operations_subscription_status").catch(() => false);
+    const hasOpsSubPlan = await hasColumn("churches", "operations_subscription_plan").catch(() => false);
+    const hasOpsSubPrice = await hasColumn("churches", "operations_subscription_price_cents").catch(() => false);
+    const hasOpsSubCurrency = await hasColumn("churches", "operations_subscription_currency").catch(() => false);
+    const hasOpsSubRequestedAt = await hasColumn("churches", "operations_subscription_requested_at").catch(() => false);
+    const hasOpsSubStartedAt = await hasColumn("churches", "operations_subscription_started_at").catch(() => false);
+    const hasOpsSubCurrentPeriodEnd = await hasColumn(
+      "churches",
+      "operations_subscription_current_period_end"
+    ).catch(() => false);
+    const hasOpsSubCancelledAt = await hasColumn("churches", "operations_subscription_cancelled_at").catch(() => false);
+    const hasOpsSubNote = await hasColumn("churches", "operations_subscription_note").catch(() => false);
 
     const church = await db.oneOrNone(
       `
@@ -1184,6 +1233,19 @@ router.get("/churches/:churchId", requireSuperAdmin, async (req, res) => {
         c.join_code as "joinCode",
         ${hasActive ? "coalesce(c.active, true)" : "true"} as active,
         ${hasPortalSettings ? "coalesce(c.admin_portal_settings, '{}'::jsonb)" : "'{}'::jsonb"} as "adminPortalSettings",
+        ${hasOpsSubStatus ? "coalesce(c.operations_subscription_status, 'INACTIVE')" : "'INACTIVE'"} as "operationsSubscriptionStatus",
+        ${hasOpsSubPlan ? "c.operations_subscription_plan" : "null::text"} as "operationsSubscriptionPlan",
+        ${hasOpsSubPrice ? "coalesce(c.operations_subscription_price_cents, 49900)" : "49900"}::int as "operationsSubscriptionPriceCents",
+        ${hasOpsSubCurrency ? "coalesce(c.operations_subscription_currency, 'ZAR')" : "'ZAR'"} as "operationsSubscriptionCurrency",
+        ${hasOpsSubRequestedAt ? "c.operations_subscription_requested_at" : "null::timestamptz"} as "operationsSubscriptionRequestedAt",
+        ${hasOpsSubStartedAt ? "c.operations_subscription_started_at" : "null::timestamptz"} as "operationsSubscriptionStartedAt",
+        ${
+          hasOpsSubCurrentPeriodEnd
+            ? "c.operations_subscription_current_period_end"
+            : "null::timestamptz"
+        } as "operationsSubscriptionCurrentPeriodEnd",
+        ${hasOpsSubCancelledAt ? "c.operations_subscription_cancelled_at" : "null::timestamptz"} as "operationsSubscriptionCancelledAt",
+        ${hasOpsSubNote ? "c.operations_subscription_note" : "null::text"} as "operationsSubscriptionNote",
         c.created_at as "createdAt"
       from churches c
       where c.id = $1
@@ -1191,6 +1253,18 @@ router.get("/churches/:churchId", requireSuperAdmin, async (req, res) => {
       [churchId]
     );
     if (!church) return res.status(404).json({ error: "Church not found" });
+
+    const churchOperationsSubscription = normalizeChurchOperationsSubscriptionRow({
+      status: church.operationsSubscriptionStatus,
+      plan: church.operationsSubscriptionPlan,
+      priceCents: church.operationsSubscriptionPriceCents,
+      currency: church.operationsSubscriptionCurrency,
+      requestedAt: church.operationsSubscriptionRequestedAt,
+      startedAt: church.operationsSubscriptionStartedAt,
+      currentPeriodEnd: church.operationsSubscriptionCurrentPeriodEnd,
+      cancelledAt: church.operationsSubscriptionCancelledAt,
+      note: church.operationsSubscriptionNote,
+    });
 
     const funds = await db.manyOrNone(
       `
@@ -1257,7 +1331,7 @@ router.get("/churches/:churchId", requireSuperAdmin, async (req, res) => {
         m.role,
         m.created_at as "createdAt"
       from members m
-      where m.church_id = $1 and lower(m.role) in ('admin', 'accountant')
+      where m.church_id = $1 and lower(m.role) in ('admin', 'accountant', 'finance', 'pastor', 'volunteer', 'usher', 'teacher')
       order by m.created_at desc
       `,
       [churchId]
@@ -1284,7 +1358,7 @@ router.get("/churches/:churchId", requireSuperAdmin, async (req, res) => {
         )
       : [];
 
-    res.json({ church, funds, transactions, admins, bankAccounts });
+    res.json({ church, churchOperationsSubscription, funds, transactions, admins, bankAccounts });
   } catch (err) {
     console.error("[super/church] detail error", err?.message || err, err?.stack);
     res.status(500).json({ error: "Internal server error" });
@@ -1426,6 +1500,76 @@ router.patch("/churches/:churchId/admin-portal-settings", requireSuperAdmin, asy
   }
 });
 
+router.patch("/churches/:churchId/operations-subscription", requireSuperAdmin, async (req, res) => {
+  try {
+    const churchId = normalize(req.params.churchId);
+    if (!isUuid(churchId)) return res.status(400).json({ error: "Invalid churchId" });
+
+    const forbiddenFields = [
+      "plan",
+      "priceCents",
+      "currency",
+      "requestedAt",
+      "startedAt",
+      "currentPeriodEnd",
+      "cancelledAt",
+    ];
+    const attemptedForbiddenField = forbiddenFields.find((key) => typeof req.body?.[key] !== "undefined");
+    if (attemptedForbiddenField) {
+      return res.status(400).json({
+        error: "Manual plan, price, currency, and date edits are disabled. Super can only pause or deactivate.",
+      });
+    }
+
+    const status = normalize(req.body?.status).toUpperCase();
+    if (!status) {
+      return res.status(400).json({ error: "status is required (PAST_DUE or CANCELLED)." });
+    }
+    if (!CHURCH_OPERATIONS_MANUAL_STATUS_VALUES.has(status)) {
+      return res.status(400).json({ error: "Super can only set status to PAST_DUE or CANCELLED." });
+    }
+
+    const note = normalize(req.body?.note).slice(0, 500) || null;
+    const row = await db.oneOrNone(
+      `
+      update churches
+      set
+        operations_subscription_status = $2,
+        operations_subscription_cancelled_at = case
+          when $2 = 'CANCELLED' then coalesce(operations_subscription_cancelled_at, now())
+          else null
+        end,
+        operations_subscription_note = case
+          when $3::text is null then operations_subscription_note
+          else $3::text
+        end
+      where id = $1
+      returning
+        coalesce(operations_subscription_status, 'INACTIVE') as status,
+        operations_subscription_plan as plan,
+        coalesce(operations_subscription_price_cents, 49900)::int as "priceCents",
+        coalesce(operations_subscription_currency, 'ZAR') as currency,
+        operations_subscription_requested_at as "requestedAt",
+        operations_subscription_started_at as "startedAt",
+        operations_subscription_current_period_end as "currentPeriodEnd",
+        operations_subscription_cancelled_at as "cancelledAt",
+        operations_subscription_note as note
+      `,
+      [churchId, status, note]
+    );
+
+    if (!row) return res.status(404).json({ error: "Church not found" });
+    const subscription = normalizeChurchOperationsSubscriptionRow(row);
+    return res.json({ ok: true, churchId, subscription });
+  } catch (err) {
+    if (err?.code === "42703") {
+      return res.status(503).json({ error: "ChurPay Growth subscription is not available yet. Run migrations and retry." });
+    }
+    console.error("[super/churches/operations-subscription] error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.get("/church-onboarding", requireSuperAdmin, async (req, res) => {
   try {
     const status = normalize(req.query.status).toLowerCase();
@@ -1438,6 +1582,10 @@ router.get("/church-onboarding", requireSuperAdmin, async (req, res) => {
     let idx = 1;
     const hasOnboardingEmailVerification = await hasColumn("church_onboarding_requests", "admin_email_verified");
     const hasOnboardingBankAccounts = await hasTable("church_onboarding_bank_accounts");
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
 
     if (status && ["pending", "approved", "rejected"].includes(status)) {
       where.push(`r.verification_status = $${idx}`);
@@ -1490,6 +1638,15 @@ router.get("/church-onboarding", requireSuperAdmin, async (req, res) => {
         null::text as "primaryBankName",
         null::text as "primaryAccountLast4",`
         }
+        ${
+          hasOnboardingPayfastActivation
+            ? `coalesce(r.payfast_connect_requested, false) as "payfastConnectRequested",
+        r.payfast_connect_status as "payfastConnectStatus",
+        r.payfast_connected_at as "payfastConnectedAt",`
+            : `false as "payfastConnectRequested",
+        null::text as "payfastConnectStatus",
+        null::timestamptz as "payfastConnectedAt",`
+        }
         r.created_at as "createdAt",
         r.updated_at as "updatedAt"
       from church_onboarding_requests r
@@ -1521,6 +1678,10 @@ router.get("/church-onboarding/:requestId", requireSuperAdmin, async (req, res) 
     if (!requestId) return res.status(400).json({ error: "requestId is required" });
     const hasOnboardingEmailVerification = await hasColumn("church_onboarding_requests", "admin_email_verified");
     const hasOnboardingBankAccounts = await hasTable("church_onboarding_bank_accounts");
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
 
     const row = await db.oneOrNone(
       `
@@ -1546,7 +1707,42 @@ router.get("/church-onboarding/:requestId", requireSuperAdmin, async (req, res) 
         octet_length(r.cipc_document) as "cipcBytes",
         r.bank_confirmation_filename as "bankConfirmationFilename",
         r.bank_confirmation_mime as "bankConfirmationMime",
-        octet_length(r.bank_confirmation_document) as "bankConfirmationBytes"
+        octet_length(r.bank_confirmation_document) as "bankConfirmationBytes",
+        ${
+          hasOnboardingPayfastActivation
+            ? 'coalesce(r.payfast_connect_requested, false) as "payfastConnectRequested",'
+            : 'false as "payfastConnectRequested",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_connect_status as "payfastConnectStatus",'
+            : 'null::text as "payfastConnectStatus",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_connect_error as "payfastConnectError",'
+            : 'null::text as "payfastConnectError",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_connected_at as "payfastConnectedAt",'
+            : 'null::timestamptz as "payfastConnectedAt",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_merchant_id as "payfastMerchantId",'
+            : 'null::text as "payfastMerchantId",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_merchant_key as "payfastMerchantKeyEncrypted",'
+            : 'null::text as "payfastMerchantKeyEncrypted",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'r.payfast_passphrase as "payfastPassphraseEncrypted"'
+            : 'null::text as "payfastPassphraseEncrypted"'
+        }
       from church_onboarding_requests r
       where r.id = $1
       `,
@@ -1575,8 +1771,18 @@ router.get("/church-onboarding/:requestId", requireSuperAdmin, async (req, res) 
           [requestId]
         )
       : [];
+    const request = {
+      ...row,
+      payfastConnectRequested: !!row.payfastConnectRequested,
+      payfastMerchantIdMasked: row.payfastMerchantId ? maskSecret(row.payfastMerchantId, { prefix: 3, suffix: 2 }) : "",
+      hasPayfastMerchantKey: !!normalize(row.payfastMerchantKeyEncrypted),
+      hasPayfastPassphrase: !!normalize(row.payfastPassphraseEncrypted),
+      bankAccounts,
+    };
+    delete request.payfastMerchantKeyEncrypted;
+    delete request.payfastPassphraseEncrypted;
 
-    return res.json({ request: { ...row, bankAccounts } });
+    return res.json({ request });
   } catch (err) {
     console.error("[super/church-onboarding] detail error", err?.message || err, err?.stack);
     return res.status(500).json({ error: "Internal server error" });
@@ -1672,11 +1878,84 @@ router.patch("/church-onboarding/:requestId", requireSuperAdmin, async (req, res
       () => false
     );
     const hasOnboardingBankAccounts = await hasTable("church_onboarding_bank_accounts");
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
 
     const rawBankAccounts = req.body?.bankAccounts;
     const shouldUpdateBankAccounts = Array.isArray(rawBankAccounts);
+    const hasPayfastPayload =
+      typeof req.body?.activatePayments !== "undefined" ||
+      typeof req.body?.payfastConnectRequested !== "undefined" ||
+      typeof req.body?.payfastMerchantId !== "undefined" ||
+      typeof req.body?.payfastMerchantKey !== "undefined" ||
+      typeof req.body?.payfastPassphrase !== "undefined";
 
     const result = await db.tx(async (t) => {
+      const selectRequestSql = `
+        select
+          r.id,
+          r.church_name as "churchName",
+          r.requested_join_code as "requestedJoinCode",
+          r.admin_full_name as "adminFullName",
+          r.admin_phone as "adminPhone",
+          r.admin_email as "adminEmail",
+          ${hasOnboardingEmailVerification ? 'coalesce(r.admin_email_verified, false) as "adminEmailVerified",' : 'true as "adminEmailVerified",'}
+          ${hasOnboardingEmailVerification ? 'r.admin_email_verified_at as "adminEmailVerifiedAt",' : 'null::timestamptz as "adminEmailVerifiedAt",'}
+          r.verification_status as "verificationStatus",
+          r.verification_note as "verificationNote",
+          r.verified_by as "verifiedBy",
+          r.verified_at as "verifiedAt",
+          r.approved_church_id as "approvedChurchId",
+          r.approved_admin_member_id as "approvedAdminMemberId",
+          r.created_at as "createdAt",
+          r.updated_at as "updatedAt",
+          r.cipc_filename as "cipcFilename",
+          r.cipc_mime as "cipcMime",
+          octet_length(r.cipc_document) as "cipcBytes",
+          r.bank_confirmation_filename as "bankConfirmationFilename",
+          r.bank_confirmation_mime as "bankConfirmationMime",
+          octet_length(r.bank_confirmation_document) as "bankConfirmationBytes",
+          ${
+            hasOnboardingPayfastActivation
+              ? 'coalesce(r.payfast_connect_requested, false) as "payfastConnectRequested",'
+              : 'false as "payfastConnectRequested",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_connect_status as "payfastConnectStatus",'
+              : 'null::text as "payfastConnectStatus",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_connect_error as "payfastConnectError",'
+              : 'null::text as "payfastConnectError",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_connected_at as "payfastConnectedAt",'
+              : 'null::timestamptz as "payfastConnectedAt",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_merchant_id as "payfastMerchantId",'
+              : 'null::text as "payfastMerchantId",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_merchant_key as "payfastMerchantKeyEncrypted",'
+              : 'null::text as "payfastMerchantKeyEncrypted",'
+          }
+          ${
+            hasOnboardingPayfastActivation
+              ? 'r.payfast_passphrase as "payfastPassphraseEncrypted"'
+              : 'null::text as "payfastPassphraseEncrypted"'
+          }
+        from church_onboarding_requests r
+        where r.id = $1
+      `;
+
       const current = await t.oneOrNone(
         `
         select
@@ -1686,7 +1965,12 @@ router.patch("/church-onboarding/:requestId", requireSuperAdmin, async (req, res
           admin_full_name,
           admin_phone,
           admin_email,
-          ${hasOnboardingEmailVerification ? "admin_email_verified" : "null::boolean as admin_email_verified"}
+          ${hasOnboardingEmailVerification ? "admin_email_verified," : "null::boolean as admin_email_verified,"}
+          ${
+            hasOnboardingPayfastActivation
+              ? "coalesce(payfast_connect_requested, false) as payfast_connect_requested, payfast_merchant_id, payfast_merchant_key, payfast_passphrase"
+              : "false as payfast_connect_requested, null::text as payfast_merchant_id, null::text as payfast_merchant_key, null::text as payfast_passphrase"
+          }
         from church_onboarding_requests
         where id = $1
         for update
@@ -1755,63 +2039,97 @@ router.patch("/church-onboarding/:requestId", requireSuperAdmin, async (req, res
             ${updates.join(",\n            ")},
             updated_at = now()
           where id = $1
-          returning
-            id,
-            church_name as "churchName",
-            requested_join_code as "requestedJoinCode",
-            admin_full_name as "adminFullName",
-            admin_phone as "adminPhone",
-            admin_email as "adminEmail",
-            ${hasOnboardingEmailVerification ? 'coalesce(admin_email_verified, false) as "adminEmailVerified",' : 'true as "adminEmailVerified",'}
-            ${hasOnboardingEmailVerification ? 'admin_email_verified_at as "adminEmailVerifiedAt",' : 'null::timestamptz as "adminEmailVerifiedAt",'}
-            verification_status as "verificationStatus",
-            verification_note as "verificationNote",
-            verified_by as "verifiedBy",
-            verified_at as "verifiedAt",
-            approved_church_id as "approvedChurchId",
-            approved_admin_member_id as "approvedAdminMemberId",
-            created_at as "createdAt",
-            updated_at as "updatedAt",
-            cipc_filename as "cipcFilename",
-            cipc_mime as "cipcMime",
-            octet_length(cipc_document) as "cipcBytes",
-            bank_confirmation_filename as "bankConfirmationFilename",
-            bank_confirmation_mime as "bankConfirmationMime",
-            octet_length(bank_confirmation_document) as "bankConfirmationBytes"
+          returning id
           `,
           [requestId, ...params]
         );
+        updatedRow = await t.one(selectRequestSql, [requestId]);
       } else {
-        updatedRow = await t.one(
-          `
-          select
-            r.id,
-            r.church_name as "churchName",
-            r.requested_join_code as "requestedJoinCode",
-            r.admin_full_name as "adminFullName",
-            r.admin_phone as "adminPhone",
-            r.admin_email as "adminEmail",
-            ${hasOnboardingEmailVerification ? 'coalesce(r.admin_email_verified, false) as "adminEmailVerified",' : 'true as "adminEmailVerified",'}
-            ${hasOnboardingEmailVerification ? 'r.admin_email_verified_at as "adminEmailVerifiedAt",' : 'null::timestamptz as "adminEmailVerifiedAt",'}
-            r.verification_status as "verificationStatus",
-            r.verification_note as "verificationNote",
-            r.verified_by as "verifiedBy",
-            r.verified_at as "verifiedAt",
-            r.approved_church_id as "approvedChurchId",
-            r.approved_admin_member_id as "approvedAdminMemberId",
-            r.created_at as "createdAt",
-            r.updated_at as "updatedAt",
-            r.cipc_filename as "cipcFilename",
-            r.cipc_mime as "cipcMime",
-            octet_length(r.cipc_document) as "cipcBytes",
-            r.bank_confirmation_filename as "bankConfirmationFilename",
-            r.bank_confirmation_mime as "bankConfirmationMime",
-            octet_length(r.bank_confirmation_document) as "bankConfirmationBytes"
-          from church_onboarding_requests r
-          where r.id = $1
-          `,
-          [requestId]
-        );
+        updatedRow = await t.one(selectRequestSql, [requestId]);
+      }
+
+      if (hasPayfastPayload) {
+        if (!hasOnboardingPayfastActivation) {
+          throw new Error("PayFast onboarding activation upgrade in progress. Run migrations and retry.");
+        }
+
+        const requestedRaw =
+          typeof req.body?.payfastConnectRequested !== "undefined"
+            ? req.body.payfastConnectRequested
+            : req.body?.activatePayments;
+        const nextRequested =
+          typeof requestedRaw === "undefined" ? !!current.payfast_connect_requested : isTruthy(requestedRaw);
+
+        const merchantIdProvided = typeof req.body?.payfastMerchantId !== "undefined";
+        const merchantKeyProvided = typeof req.body?.payfastMerchantKey !== "undefined";
+        const passphraseProvided = typeof req.body?.payfastPassphrase !== "undefined";
+
+        const nextMerchantId = merchantIdProvided
+          ? normalize(req.body?.payfastMerchantId)
+          : normalize(current.payfast_merchant_id);
+
+        let nextMerchantKeyEncrypted = merchantKeyProvided ? "" : normalize(current.payfast_merchant_key);
+        if (merchantKeyProvided) {
+          const plainMerchantKey = normalize(req.body?.payfastMerchantKey);
+          if (plainMerchantKey) {
+            if (!hasSecretEncryptionKey()) {
+              throw new Error("PAYFAST_CREDENTIAL_ENCRYPTION_KEY is missing on server");
+            }
+            nextMerchantKeyEncrypted = encryptSecret(plainMerchantKey);
+          }
+        }
+
+        let nextPassphraseEncrypted = passphraseProvided ? "" : normalize(current.payfast_passphrase);
+        if (passphraseProvided) {
+          const plainPassphrase = normalize(req.body?.payfastPassphrase);
+          if (plainPassphrase) {
+            if (!hasSecretEncryptionKey()) {
+              throw new Error("PAYFAST_CREDENTIAL_ENCRYPTION_KEY is missing on server");
+            }
+            nextPassphraseEncrypted = encryptSecret(plainPassphrase);
+          }
+        }
+
+        if (!nextRequested) {
+          await t.none(
+            `
+            update church_onboarding_requests
+            set
+              payfast_connect_requested = false,
+              payfast_merchant_id = null,
+              payfast_merchant_key = null,
+              payfast_passphrase = null,
+              payfast_connect_status = null,
+              payfast_connect_error = null,
+              payfast_connected_at = null,
+              updated_at = now()
+            where id = $1
+            `,
+            [requestId]
+          );
+        } else {
+          if (!nextMerchantId || !nextMerchantKeyEncrypted) {
+            throw new Error("payfastMerchantId and payfastMerchantKey are required when Activate Payments is enabled");
+          }
+          await t.none(
+            `
+            update church_onboarding_requests
+            set
+              payfast_connect_requested = true,
+              payfast_merchant_id = $2,
+              payfast_merchant_key = $3,
+              payfast_passphrase = nullif($4, ''),
+              payfast_connect_status = 'pending',
+              payfast_connect_error = null,
+              payfast_connected_at = null,
+              updated_at = now()
+            where id = $1
+            `,
+            [requestId, nextMerchantId, nextMerchantKeyEncrypted, nextPassphraseEncrypted]
+          );
+        }
+
+        updatedRow = await t.one(selectRequestSql, [requestId]);
       }
 
       if (shouldUpdateBankAccounts) {
@@ -1894,7 +2212,20 @@ router.patch("/church-onboarding/:requestId", requireSuperAdmin, async (req, res
           )
         : [];
 
-      return { request: { ...updatedRow, bankAccounts } };
+      const request = {
+        ...updatedRow,
+        payfastConnectRequested: !!updatedRow.payfastConnectRequested,
+        payfastMerchantIdMasked: updatedRow.payfastMerchantId
+          ? maskSecret(updatedRow.payfastMerchantId, { prefix: 3, suffix: 2 })
+          : "",
+        hasPayfastMerchantKey: !!normalize(updatedRow.payfastMerchantKeyEncrypted),
+        hasPayfastPassphrase: !!normalize(updatedRow.payfastPassphraseEncrypted),
+        bankAccounts,
+      };
+      delete request.payfastMerchantKeyEncrypted;
+      delete request.payfastPassphraseEncrypted;
+
+      return { request };
     });
 
     if (result?.notFound) return res.status(404).json({ error: "Onboarding request not found" });
@@ -1903,6 +2234,12 @@ router.patch("/church-onboarding/:requestId", requireSuperAdmin, async (req, res
     const message = String(err?.message || "");
     if (message.toLowerCase().includes("required") || message.toLowerCase().includes("must")) {
       return res.status(400).json({ error: message });
+    }
+    if (message.includes("upgrade in progress")) {
+      return res.status(503).json({ error: message });
+    }
+    if (message.includes("PAYFAST_CREDENTIAL_ENCRYPTION_KEY")) {
+      return res.status(500).json({ error: "Server misconfigured: PAYFAST_CREDENTIAL_ENCRYPTION_KEY missing" });
     }
     console.error("[super/church-onboarding] patch error", err?.message || err, err?.stack);
     return res.status(500).json({ error: "Internal server error" });
@@ -1931,6 +2268,10 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
     const hasChurchCookie = await hasColumn("churches", "cookie_consent_version").catch(() => false);
     const hasOnboardingBankAccounts = await hasTable("church_onboarding_bank_accounts");
     const hasChurchBankAccounts = await hasTable("church_bank_accounts");
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
 
     const result = await db.tx(async (t) => {
       const request = await t.oneOrNone(
@@ -1950,6 +2291,11 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
               ? "r.cookie_consent_at, r.cookie_consent_version,"
               : "null::timestamptz as cookie_consent_at, null::int as cookie_consent_version,"
           }
+          ${
+            hasOnboardingPayfastActivation
+              ? "coalesce(r.payfast_connect_requested, false) as payfast_connect_requested, r.payfast_merchant_id, r.payfast_merchant_key, r.payfast_passphrase,"
+              : "false as payfast_connect_requested, null::text as payfast_merchant_id, null::text as payfast_merchant_key, null::text as payfast_passphrase,"
+          }
           r.verification_status,
           r.approved_church_id,
           r.approved_admin_member_id
@@ -1967,6 +2313,77 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
 
       const churchName = overrideChurchName || normalize(request.church_name);
       if (!churchName) throw new Error("Church name is required to approve");
+
+      let payfastActivation = null;
+      if (hasOnboardingPayfastActivation && request.payfast_connect_requested) {
+        const merchantId = normalize(request.payfast_merchant_id);
+        let merchantKey = "";
+        let passphrase = "";
+        try {
+          merchantKey = normalize(decryptSecret(request.payfast_merchant_key));
+          passphrase = normalize(decryptSecret(request.payfast_passphrase));
+        } catch (_err) {
+          const failedMessage =
+            "PayFast credentials could not be decrypted. Confirm PAYFAST_CREDENTIAL_ENCRYPTION_KEY and retry.";
+          await t.none(
+            `
+            update church_onboarding_requests
+            set
+              payfast_connect_status = 'failed',
+              payfast_connect_error = $2,
+              payfast_connected_at = null,
+              updated_at = now()
+            where id = $1
+            `,
+            [requestId, failedMessage]
+          );
+          return { payfastFailed: true, payfastError: failedMessage };
+        }
+
+        if (!merchantId || !merchantKey) {
+          const failedMessage =
+            "PayFast activation is enabled but credentials are incomplete. Update merchant details and retry approval.";
+          await t.none(
+            `
+            update church_onboarding_requests
+            set
+              payfast_connect_status = 'failed',
+              payfast_connect_error = $2,
+              payfast_connected_at = null,
+              updated_at = now()
+            where id = $1
+            `,
+            [requestId, failedMessage]
+          );
+          return { payfastFailed: true, payfastError: failedMessage };
+        }
+
+        const validation = await validatePaymentProviderConnection({
+          merchantId,
+          merchantKey,
+          passphrase,
+          mode: process.env.PAYFAST_MODE,
+        });
+
+        if (!validation?.ok) {
+          const failedMessage = String(validation?.error || "Invalid Merchant Credentials").slice(0, 1000);
+          await t.none(
+            `
+            update church_onboarding_requests
+            set
+              payfast_connect_status = 'failed',
+              payfast_connect_error = $2,
+              payfast_connected_at = null,
+              updated_at = now()
+            where id = $1
+            `,
+            [requestId, failedMessage]
+          );
+          return { payfastFailed: true, payfastError: failedMessage };
+        }
+
+        payfastActivation = { merchantId, merchantKey, passphrase };
+      }
 
       let churchId = request.approved_church_id || null;
       let church = null;
@@ -2079,6 +2496,27 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
         }
       }
 
+      if (payfastActivation) {
+        await connectChurchPaymentProviderCredentials({
+          churchId,
+          merchantId: payfastActivation.merchantId,
+          merchantKey: payfastActivation.merchantKey,
+          passphrase: payfastActivation.passphrase,
+        });
+        await t.none(
+          `
+          update church_onboarding_requests
+          set
+            payfast_connect_status = 'connected',
+            payfast_connect_error = null,
+            payfast_connected_at = now(),
+            updated_at = now()
+          where id = $1
+          `,
+          [requestId]
+        );
+      }
+
       const adminResult = await createOrPromoteAdminMember(t, {
         churchId,
         fullName: adminFullName,
@@ -2127,11 +2565,19 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
           adminEmail: adminEmail || null,
           adminFullName: adminFullName || null,
           requestedJoinCode: request.requested_join_code || null,
+          payfastActivationRequested: !!request.payfast_connect_requested,
+          payfastConnected: !!payfastActivation,
         },
       };
     });
 
     if (result?.notFound) return res.status(404).json({ error: "Onboarding request not found" });
+    if (result?.payfastFailed) {
+      return res.status(409).json({
+        error: result.payfastError || "PayFast activation failed. Update credentials and retry approval.",
+        code: "PAYFAST_CONNECT_FAILED",
+      });
+    }
     if (result?.verificationPending) {
       return res.status(409).json({ error: "Admin email must be verified before onboarding approval" });
     }
@@ -2156,6 +2602,9 @@ router.post("/church-onboarding/:requestId/approve", requireSuperAdmin, async (r
 
     return res.json({ ...result, email });
   } catch (err) {
+    if (String(err?.code || "") === "PAYFAST_CREDENTIAL_ENCRYPTION_KEY_MISSING") {
+      return res.status(500).json({ error: "Server misconfigured: PAYFAST_CREDENTIAL_ENCRYPTION_KEY missing" });
+    }
     if (String(err?.message || "").toLowerCase().includes("required")) {
       return res.status(400).json({ error: err.message });
     }
@@ -3342,8 +3791,11 @@ router.patch("/members/:memberId", requireSuperAdmin, async (req, res) => {
         }
       }
 
-      if (!nextChurchId && ["admin", "accountant"].includes(String(current.role || "").toLowerCase())) {
-        return res.status(400).json({ error: "Admin/accountant must belong to a church" });
+      if (
+        !nextChurchId &&
+        ["admin", "accountant", "finance", "pastor", "volunteer", "usher", "teacher"].includes(String(current.role || "").toLowerCase())
+      ) {
+        return res.status(400).json({ error: "Staff roles must belong to a church" });
       }
       if (nextChurchId) {
         updates.push(`church_id = $${idx++}`);
@@ -3510,9 +3962,11 @@ router.patch("/members/:memberId/role", requireSuperAdmin, async (req, res) => {
     const role = String(req.body?.role || "")
       .trim()
       .toLowerCase();
-    const allowedRoles = new Set(["member", "admin", "accountant"]);
+    const allowedRoles = new Set(["member", "admin", "accountant", "finance", "pastor", "volunteer", "usher", "teacher"]);
     if (!allowedRoles.has(role)) {
-      return res.status(400).json({ error: "Role must be one of: member, admin, accountant" });
+      return res
+        .status(400)
+        .json({ error: "Role must be one of: member, admin, accountant, finance, pastor, volunteer, usher, teacher" });
     }
 
     const current = await db.oneOrNone(
@@ -3528,7 +3982,7 @@ router.patch("/members/:memberId/role", requireSuperAdmin, async (req, res) => {
     if (String(current.role || "").toLowerCase() === "super") {
       return res.status(403).json({ error: "Super accounts cannot be changed here." });
     }
-    if ((role === "admin" || role === "accountant") && !current.churchId) {
+    if (["admin", "accountant", "finance", "pastor", "volunteer", "usher", "teacher"].includes(role) && !current.churchId) {
       return res.status(400).json({ error: "Assign member to a church before staff role changes." });
     }
 
