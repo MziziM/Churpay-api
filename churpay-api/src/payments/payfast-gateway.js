@@ -1,10 +1,55 @@
+import crypto from "node:crypto";
 import { db } from "../db.js";
 import { buildPayfastRedirect } from "../payfast.js";
 import { normalizePayfastMode, resolveChurchPayfastCredentials } from "../payfast-church.js";
 import { PaymentGateway, makeGatewayError, normalizeGatewayStatus } from "./payment-gateway.js";
 
+const CHURPAY_GROWTH_SUBSCRIPTION_SOURCE = "CHURPAY_GROWTH_SUBSCRIPTION";
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function normalize(value) {
   return String(value || "").trim();
+}
+
+function toCurrencyNumber(value) {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return Number.isFinite(rounded) ? Number(rounded.toFixed(2)) : 0;
+}
+
+function extractPayfastToken(params) {
+  const candidates = [params?.token, params?.subscription_id, params?.subscriptionId, params?.subscription_token];
+  for (const value of candidates) {
+    const token = normalize(value);
+    if (token) return token;
+  }
+  return "";
+}
+
+function isGrowthSubscriptionSource(value) {
+  return normalize(value).toUpperCase() === CHURPAY_GROWTH_SUBSCRIPTION_SOURCE;
+}
+
+function parseOccurredAt(params) {
+  const raw = normalize(params?.payment_date || params?.paymentDate || params?.timestamp || "");
+  if (!raw) return new Date().toISOString();
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const ms = Date.parse(normalized);
+  if (!Number.isFinite(ms)) return new Date().toISOString();
+  return new Date(ms).toISOString();
+}
+
+function mapWebhookStatus(rawStatus) {
+  const status = normalize(rawStatus).toUpperCase();
+  if (status === "COMPLETE") return { status: "paid", type: "PAYMENT_COMPLETED" };
+  if (status === "FAILED") return { status: "failed", type: "PAYMENT_FAILED" };
+  if (status === "CANCELLED") return { status: "cancelled", type: "PAYMENT_CANCELLED" };
+  return { status: "pending", type: "PAYMENT_UPDATED" };
+}
+
+function makeWebhookError(message, { code = "PAYFAST_WEBHOOK_INVALID", statusCode = 400 } = {}) {
+  const err = makeGatewayError(message, { code, statusCode });
+  err.publicMessage = message;
+  return err;
 }
 
 function readGlobalPayfastCredentials() {
@@ -178,10 +223,144 @@ export class PayFastGateway extends PaymentGateway {
   }
 
   async handleWebhook(_input = {}) {
-    throw makeGatewayError("PayFast webhook normalization is not wired yet", {
-      code: "PAYFAST_WEBHOOK_NOT_IMPLEMENTED",
-      statusCode: 501,
+    const input = _input || {};
+    const debug = String(process.env.PAYFAST_DEBUG || "").toLowerCase() === "1";
+    const rawBody =
+      typeof input.rawBody === "string"
+        ? input.rawBody
+        : Buffer.isBuffer(input.rawBody)
+        ? input.rawBody.toString("utf8")
+        : Buffer.isBuffer(input.body)
+        ? input.body.toString("utf8")
+        : typeof input.body === "string"
+        ? input.body
+        : "";
+
+    const params = Object.fromEntries(new URLSearchParams(rawBody));
+    const receivedSig = normalize(params.signature);
+    if (!receivedSig) {
+      throw makeWebhookError("missing signature", { code: "PAYFAST_SIGNATURE_MISSING", statusCode: 400 });
+    }
+
+    const rawMPaymentId = normalize(params.m_payment_id);
+    const payfastToken = extractPayfastToken(params);
+    const recurringIdFromCustom = normalize(params.custom_str3);
+    if (!rawMPaymentId && !payfastToken && !UUID_REGEX.test(recurringIdFromCustom)) {
+      throw makeWebhookError("missing m_payment_id", { code: "PAYFAST_M_PAYMENT_ID_MISSING", statusCode: 400 });
+    }
+
+    const mPaymentId = rawMPaymentId;
+    const pfPaymentId = normalize(params.pf_payment_id) || null;
+    let intent = rawMPaymentId
+      ? await db.oneOrNone("select * from payment_intents where m_payment_id=$1 limit 1", [rawMPaymentId])
+      : null;
+    let recurring = null;
+
+    if (!intent && (payfastToken || UUID_REGEX.test(recurringIdFromCustom))) {
+      recurring =
+        (payfastToken
+          ? await db.oneOrNone(
+              `
+              select *
+              from recurring_givings
+              where payfast_token=$1
+              limit 1
+              `,
+              [payfastToken]
+            )
+          : null) ||
+        (UUID_REGEX.test(recurringIdFromCustom)
+          ? await db.oneOrNone("select * from recurring_givings where id=$1 limit 1", [recurringIdFromCustom])
+          : null);
+    }
+
+    const growthMarker = normalize(params.custom_str4).toUpperCase();
+    const isGrowthSubscription =
+      growthMarker === CHURPAY_GROWTH_SUBSCRIPTION_SOURCE || isGrowthSubscriptionSource(intent?.source);
+    const churchIdFromParam = normalize(params.custom_str1);
+    const churchIdForValidation = normalize(intent?.church_id || recurring?.church_id || churchIdFromParam);
+    if (!churchIdForValidation) {
+      throw makeWebhookError("missing church context", { code: "PAYFAST_CHURCH_CONTEXT_MISSING", statusCode: 400 });
+    }
+
+    const creds = await this.resolveCredentials({
+      churchId: churchIdForValidation,
+      preferGlobal: isGrowthSubscription,
+      allowGlobalFallback: true,
     });
+    if (!hasRequiredCredentials(creds)) {
+      throw makeWebhookError("invalid merchant context", {
+        code: "PAYFAST_MERCHANT_CONTEXT_INVALID",
+        statusCode: 400,
+      });
+    }
+
+    const merchantIdFromItn = normalize(params.merchant_id);
+    if (merchantIdFromItn && merchantIdFromItn !== normalize(creds.merchantId)) {
+      throw makeWebhookError("invalid merchant", { code: "PAYFAST_MERCHANT_ID_MISMATCH", statusCode: 400 });
+    }
+    const merchantKeyFromItn = normalize(params.merchant_key);
+    if (merchantKeyFromItn && merchantKeyFromItn !== normalize(creds.merchantKey)) {
+      throw makeWebhookError("invalid merchant", { code: "PAYFAST_MERCHANT_KEY_MISMATCH", statusCode: 400 });
+    }
+
+    const passphrase = normalize(creds.passphrase);
+    const parts = rawBody.split("&").filter(Boolean);
+    const unsignedParts = parts.filter((part) => !part.startsWith("signature="));
+    let sigBase = unsignedParts.join("&");
+    if (passphrase) {
+      sigBase += `&passphrase=${encodeURIComponent(passphrase).replace(/%20/g, "+")}`;
+    }
+    const computedSig = crypto.createHash("md5").update(sigBase).digest("hex");
+    if (computedSig.toLowerCase() !== receivedSig.toLowerCase()) {
+      if (debug) {
+        this.logger.warn?.("[payfast-gateway] signature mismatch", {
+          submitted: receivedSig,
+          computed: computedSig,
+          m_payment_id: rawMPaymentId || null,
+        });
+      }
+      throw makeWebhookError("invalid signature", { code: "PAYFAST_SIGNATURE_INVALID", statusCode: 400 });
+    }
+
+    const normalized = mapWebhookStatus(params.payment_status);
+    const providerEventId =
+      pfPaymentId ||
+      [normalize(rawMPaymentId || recurringIdFromCustom), normalize(params.payment_status), normalize(params.payment_date)]
+        .filter(Boolean)
+        .join(":") ||
+      null;
+
+    const amountRaw = params.amount_gross ?? params.amount ?? null;
+    const amount = amountRaw == null ? null : toCurrencyNumber(amountRaw);
+    const currency = normalize(params.currency || "ZAR").toUpperCase() || "ZAR";
+    const source = normalize(intent?.source || (isGrowthSubscription ? CHURPAY_GROWTH_SUBSCRIPTION_SOURCE : "")).toUpperCase() || null;
+
+    return {
+      provider: this.provider,
+      providerEventId,
+      type: normalized.type,
+      intentId: intent?.id || null,
+      providerRef: pfPaymentId || null,
+      providerIntentRef: rawMPaymentId || null,
+      status: normalized.status,
+      amount,
+      currency,
+      churchId: churchIdForValidation,
+      source,
+      metadata: {
+        rawParams: params,
+        mPaymentId: rawMPaymentId || null,
+        payfastToken: payfastToken || null,
+        recurringIdFromCustom: recurringIdFromCustom || null,
+        intentSnapshot: intent || null,
+        recurringSnapshot: recurring || null,
+        credentialSource: creds.source || "church",
+        growthMarker: growthMarker || null,
+      },
+      occurredAt: parseOccurredAt(params),
+      payload: params,
+    };
   }
 
   async refund(_input = {}) {
