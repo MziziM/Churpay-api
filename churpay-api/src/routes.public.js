@@ -1958,7 +1958,7 @@ router.post("/giving-links/:token/pay", async (req, res) => {
         channel, provider, provider_payment_id, m_payment_id, item_name,
         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
         source, giving_link_id, on_behalf_of_member_id,
-        service_date, notes,
+        service_date, notes, provider_intent_ref, metadata,
         created_at, updated_at
       ) values (
         $1,$2,$3,'ZAR','PENDING',
@@ -1967,7 +1967,7 @@ router.post("/giving-links/:token/pay", async (req, res) => {
         'web','payfast',null,$9,$10,
         $11,$12,$13,$14,$15,$16,
         'SHARE_LINK',$17,$18,
-        $19,$20,
+        $19,$20,$9,$21::jsonb,
         now(),now()
       ) returning id`,
       [
@@ -1991,6 +1991,13 @@ router.post("/giving-links/:token/pay", async (req, res) => {
         link.requesterMemberId,
         serviceDate,
         notes,
+        JSON.stringify({
+          source: "SHARE_LINK",
+          churchId: link.churchId,
+          fundId: link.fundId,
+          givingLinkId: link.id,
+          onBehalfOfMemberId: link.requesterMemberId || null,
+        }),
       ]
     );
 
@@ -2120,7 +2127,7 @@ router.post("/give/payment-intents", async (req, res) => {
         payer_name, payer_phone, payer_email, payer_type,
         channel, provider, provider_payment_id, m_payment_id, item_name,
         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
-        source,
+        source, provider_intent_ref, metadata,
         created_at, updated_at
       ) values (
         $1,$2,$3,'ZAR','PENDING',
@@ -2128,7 +2135,7 @@ router.post("/give/payment-intents", async (req, res) => {
         $6,$7,$8,'visitor',
         $9,'payfast',null,$10,$11,
         $12,$13,$14,$15,$16,$17,
-        'PUBLIC_GIVE',
+        'PUBLIC_GIVE',$10,$18::jsonb,
         now(),now()
       ) returning id`,
       [
@@ -2149,6 +2156,12 @@ router.post("/give/payment-intents", async (req, res) => {
         pricing.amountGross,
         pricing.superadminCutAmount,
         pricing.superadminCutPct,
+        JSON.stringify({
+          source: "PUBLIC_GIVE",
+          churchId: church.id,
+          fundId: fund.id,
+          joinCode,
+        }),
       ]
     );
 

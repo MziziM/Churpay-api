@@ -4821,13 +4821,13 @@ async function createGrowthSubscriptionCheckout({ churchId, member, subscription
     `
     insert into payment_intents (
       church_id, amount, currency, status, provider, channel,
-      m_payment_id, item_name,
+      m_payment_id, provider_intent_ref, metadata, item_name,
       payer_name, payer_phone, payer_email, payer_type,
       platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
       source, notes, service_date
     ) values (
       $1, $2, $3, 'PENDING', 'payfast', 'admin_portal',
-      $4, $5,
+      $4, $4, $11::jsonb, $5,
       $6, $7, $8, 'admin',
       0, 0, 0, $2, 0, 0,
       $9, $10, now()::date
@@ -4845,6 +4845,11 @@ async function createGrowthSubscriptionCheckout({ churchId, member, subscription
       member?.email || null,
       CHURPAY_GROWTH_SUBSCRIPTION_SOURCE,
       `ChurPay Growth subscription checkout (${planConfig.code})`,
+      JSON.stringify({
+        type: CHURPAY_GROWTH_SUBSCRIPTION_SOURCE,
+        planCode: planConfig.code,
+        churchId,
+      }),
     ]
   );
 
@@ -5472,13 +5477,13 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
          payer_name, payer_phone, payer_email, payer_type,
          item_name, m_payment_id,
          platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
-         source, save_card_requested)
+         source, save_card_requested, provider_intent_ref, metadata)
       values ($1,$2,$3,'PENDING','payfast',
               $4,$5,
               $6,$7,$8,'member',
               $9,$10,
               $11,$12,$13,$14,$15,$16,
-              $17,$18)
+              $17,$18,$10,$19::jsonb)
       returning *
     `,
       [
@@ -5500,6 +5505,13 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
         pricing.superadminCutPct,
         wantsUseSavedCard ? "SAVED_CARD" : "DIRECT_APP",
         wantsSaveCard,
+        JSON.stringify({
+          source: wantsUseSavedCard ? "SAVED_CARD" : "DIRECT_APP",
+          fundId,
+          churchId,
+          saveCardRequested: wantsSaveCard,
+          useSavedCard: wantsUseSavedCard,
+        }),
       ]
     );
 
@@ -5644,7 +5656,7 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
         payer_name, payer_phone, payer_email, payer_type,
         channel, provider, provider_payment_id, m_payment_id, item_name,
         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
-        source,
+        source, provider_intent_ref, metadata,
         created_at, updated_at
       ) values (
         $1,$2,$3,'ZAR','PENDING',
@@ -5652,7 +5664,7 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
         $6,$7,$8,'donor',
         $9,'payfast',null,$10,$11,
         $12,$13,$14,$15,$16,$17,
-        $18,
+        $18,$10,$19::jsonb,
         now(),now()
       ) returning id, m_payment_id as "mPaymentId", amount, amount_gross as "amountGross"
       `,
@@ -5675,6 +5687,12 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
         pricing.superadminCutAmount,
         pricing.superadminCutPct,
         EXTERNAL_GIVING_SOURCE,
+        JSON.stringify({
+          source: EXTERNAL_GIVING_SOURCE,
+          churchId: recipientChurch.id,
+          fundId: fund.id,
+          homeChurchId: member?.church_id || null,
+        }),
       ]
     );
 
@@ -6080,14 +6098,14 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
           member_name, member_phone, payer_name, payer_phone, payer_type,
           channel, provider, provider_payment_id, m_payment_id, item_name,
           platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
-          source, recurring_giving_id, recurring_cycle_no, service_date, notes,
+          source, recurring_giving_id, recurring_cycle_no, service_date, notes, provider_intent_ref, metadata,
           created_at, updated_at
         ) values (
           $1,$2,$3,'ZAR','PENDING',
           $4,$5,$6,$7,'member',
           $8,'payfast',null,$9,$10,
           $11,$12,$13,$14,$15,$16,
-          'RECURRING',$17,1,$18,$19,
+          'RECURRING',$17,1,$18,$19,$9,$20::jsonb,
           now(),now()
         ) returning id, m_payment_id as "mPaymentId", amount, amount_gross as "amountGross"
         `,
@@ -6111,6 +6129,13 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
           recurring.id,
           billingDate,
           notes,
+          JSON.stringify({
+            source: "RECURRING",
+            churchId,
+            fundId,
+            recurringGivingId: recurring.id,
+            billingDate,
+          }),
         ]
       );
 
@@ -6321,9 +6346,9 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
 
     const intent = await db.one(
       `insert into payment_intents (
-         church_id, fund_id, amount, status, member_name, member_phone, payer_name, payer_phone, payer_type, channel, provider, m_payment_id, item_name, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct
+         church_id, fund_id, amount, status, member_name, member_phone, payer_name, payer_phone, payer_type, channel, provider, m_payment_id, provider_intent_ref, item_name, platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct, source, metadata
        ) values (
-         $1, $2, $3, 'PENDING', $4, $5, $6, $7, 'member', $8, 'payfast', gen_random_uuid(), $9, $10, $11, $12, $13, $14, $15
+         $1, $2, $3, 'PENDING', $4, $5, $6, $7, 'member', $8, 'payfast', gen_random_uuid(), null, $9, $10, $11, $12, $13, $14, $15, 'DIRECT_APP', $16::jsonb
        ) returning id, amount, church_id, fund_id, m_payment_id, item_name, amount_gross, platform_fee_amount, superadmin_cut_amount`,
       [
         churchId,
@@ -6341,6 +6366,7 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
         pricing.amountGross,
         pricing.superadminCutAmount,
         pricing.superadminCutPct,
+        JSON.stringify({ source: "DIRECT_APP", churchId, fundId }),
       ]
     );
 
@@ -8713,6 +8739,7 @@ router.post("/church-life/events/:eventId/ticket-checkout", requireAuth, require
         channel,
         provider,
         m_payment_id,
+        provider_intent_ref,
         item_name,
         platform_fee_amount,
         platform_fee_pct,
@@ -8722,9 +8749,10 @@ router.post("/church-life/events/:eventId/ticket-checkout", requireAuth, require
         superadmin_cut_pct,
         source,
         notes,
-        service_date
+        service_date,
+        metadata
       ) values (
-        $1,$2,'ZAR','PENDING',$3,$4,$5,$6,$7,'member','member_app','payfast',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
+        $1,$2,'ZAR','PENDING',$3,$4,$5,$6,$7,'member','member_app','payfast',$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb
       )
       returning
         id,
@@ -8753,6 +8781,13 @@ router.post("/church-life/events/:eventId/ticket-checkout", requireAuth, require
         CHURCH_EVENT_TICKET_SOURCE,
         buildChurchEventTicketNote({ eventId, memberPk, quantity, unitPrice }),
         formatDateIsoLike(event?.startsAt) || formatDateIsoLike(new Date()),
+        JSON.stringify({
+          source: CHURCH_EVENT_TICKET_SOURCE,
+          eventId,
+          memberPk,
+          quantity,
+          unitPrice,
+        }),
       ]
     );
 
