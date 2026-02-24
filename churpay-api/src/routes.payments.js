@@ -1,6 +1,5 @@
 import express from "express";
 import bcrypt from "bcryptjs";
-import { buildPayfastRedirect } from "./payfast.js";
 import { db } from "./db.js";
 import { requireAuth, requireAdmin, requireStaff } from "./auth.js";
 import { handlePayfastItn, payfastItnRawParser } from "./routes.webhooks.js";
@@ -14,13 +13,13 @@ import {
   sendChurchInAppBroadcast,
 } from "./church-growth-jobs.js";
 import { upsertChurchDonor } from "./church-donors.js";
+import { PaymentGatewayFactory } from "./payments/index.js";
 import {
   connectChurchPayfastCredentials,
   disconnectChurchPayfastCredentials,
   getChurchPayfastStatus,
   normalizePayfastMode,
   recordChurchPayfastConnectAttempt,
-  resolveChurchPayfastCredentials,
   validatePayfastCredentialConnection,
 } from "./payfast-church.js";
 import {
@@ -59,6 +58,8 @@ const DEFAULT_CASH_RECORD_FEE_ENABLED = false;
 const DEFAULT_CASH_RECORD_FEE_RATE = 0.0075;
 const DEFAULT_RECURRING_GIVING_ENABLED = true;
 const CHURPAY_GROWTH_SUBSCRIPTION_SOURCE = "CHURPAY_GROWTH_SUBSCRIPTION";
+const CHURCH_EVENT_TICKET_SOURCE = "EVENT_TICKET";
+const CHURCH_EVENT_TICKET_MAX_QUANTITY = 20;
 const CHURCH_LIFE_ACCESS_REQUIRED_CODE = "CHURPAY_GROWTH_ACTIVE_REQUIRED";
 const CHURCH_LIFE_CHECKIN_METHODS = new Set(["TAP", "QR", "USHER"]);
 const CHURCH_LIFE_CHILD_CHECKIN_METHODS = new Set(["TEACHER", "QR", "USHER", "KIOSK", "MANUAL"]);
@@ -79,13 +80,62 @@ const CHURCH_LIFE_PRAYER_VISIBILITIES = new Set(["RESTRICTED", "TEAM_ONLY", "CHU
 const CHURCH_LIFE_PRAYER_TEAMS = new Set(["PRAYER_TEAM", "CARE_TEAM", "PASTORAL"]);
 const CHURCH_LIFE_PRAYER_ASSIGNMENT_ROLES = new Set(["PRAYER_TEAM", "CARE_TEAM", "PASTORAL", "PRAYER_TEAM_LEAD"]);
 const CHURCH_LIFE_EVENT_STATUSES = new Set(["DRAFT", "PUBLISHED", "CANCELLED"]);
+const CHURCH_EVENT_REGISTRATION_STATUSES = new Set(["REGISTERED", "CHECKED_IN", "CANCELLED"]);
+const CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES = ["REGISTERED", "CHECKED_IN"];
 const CHURCH_GROUP_TYPES = new Set(["MINISTRY", "SMALL_GROUP", "SERVE_TEAM", "CLASS", "OTHER"]);
 const CHURCH_GROUP_MEMBER_ROLES = new Set(["LEADER", "ASSISTANT", "MEMBER", "VOLUNTEER"]);
+const CHURCH_GROUP_MEETING_STATUSES = new Set(["SCHEDULED", "COMPLETED", "CANCELLED"]);
+const CHURCH_GROUP_ATTENDANCE_STATUSES = new Set(["PRESENT", "ABSENT", "LATE", "EXCUSED"]);
+const CHURCH_FAMILY_RELATIONSHIP_TYPES = new Set([
+  "SPOUSE",
+  "PARENT",
+  "CHILD",
+  "MOTHER",
+  "FATHER",
+  "SIBLING",
+  "BROTHER",
+  "SISTER",
+  "GUARDIAN",
+  "GRANDPARENT",
+  "GRANDCHILD",
+  "AUNT_UNCLE",
+  "NIECE_NEPHEW",
+  "COUSIN",
+  "IN_LAW",
+  "STEP_PARENT",
+  "STEP_CHILD",
+  "OTHER",
+]);
+const CHURCH_FAMILY_RECIPROCAL_TYPE = Object.freeze({
+  SPOUSE: "SPOUSE",
+  PARENT: "CHILD",
+  CHILD: "PARENT",
+  MOTHER: "CHILD",
+  FATHER: "CHILD",
+  SIBLING: "SIBLING",
+  BROTHER: "SIBLING",
+  SISTER: "SIBLING",
+  GUARDIAN: "CHILD",
+  GRANDPARENT: "GRANDCHILD",
+  GRANDCHILD: "GRANDPARENT",
+  AUNT_UNCLE: "NIECE_NEPHEW",
+  NIECE_NEPHEW: "AUNT_UNCLE",
+  COUSIN: "COUSIN",
+  IN_LAW: "IN_LAW",
+  STEP_PARENT: "STEP_CHILD",
+  STEP_CHILD: "STEP_PARENT",
+  OTHER: "OTHER",
+});
 const CHURCH_FOLLOWUP_TYPES = new Set(["VISITOR_CALL", "PRAYER", "COUNSELING", "CARE", "GENERAL"]);
 const CHURCH_FOLLOWUP_STATUSES = new Set(["OPEN", "IN_PROGRESS", "CLOSED", "CANCELLED"]);
 const CHURCH_FOLLOWUP_PRIORITIES = new Set(["LOW", "MEDIUM", "HIGH", "URGENT"]);
 const CHURCH_FOLLOWUP_TASK_STATUSES = new Set(["TODO", "IN_PROGRESS", "DONE", "CANCELLED"]);
 const CHURCH_BROADCAST_STATUSES = new Set(["DRAFT", "SENT", "PARTIAL", "FAILED"]);
+const VOLUNTEER_TERM_STATUSES = new Set(["ACTIVE", "REVIEW_DUE", "ENDED", "RENEWED"]);
+const VOLUNTEER_TERM_END_REASONS = new Set(["PROMOTED", "ENDED", "NON_RENEWED"]);
+const VOLUNTEER_SYSTEM_RATINGS = new Set(["NORMAL", "HIGH", "OVERLOAD", "HEALTHY", "NEEDS_ATTENTION", "AT_RISK"]);
+const MINISTRY_SCHEDULE_STATUSES = new Set(["DRAFT", "PUBLISHED", "CLOSED"]);
+const MINISTRY_SCHEDULE_ASSIGNMENT_STATUSES = new Set(["ASSIGNED", "CONFIRMED", "DECLINED", "NO_SHOW", "SERVED"]);
 const CHURCH_LIFE_AUDIT_ACTIONS = new Set([
   "PROFILE_CREATED",
   "PROFILE_UPDATED",
@@ -95,8 +145,29 @@ const CHURCH_LIFE_AUDIT_ACTIONS = new Set([
   "ATTENDANCE_IMPORT_CSV",
   "PRAYER_ASSIGNED",
   "PRAYER_STATUS_CHANGED",
+  "VOLUNTEER_TERM_CREATED",
+  "VOLUNTEER_TERM_UPDATED",
+  "VOLUNTEER_TERM_ENDED",
+  "MINISTRY_CREATED",
+  "MINISTRY_UPDATED",
+  "MINISTRY_ROLE_CREATED",
+  "MINISTRY_ROLE_UPDATED",
+  "SCHEDULE_CREATED",
+  "SCHEDULE_UPDATED",
+  "SCHEDULE_ASSIGNMENT_UPDATED",
 ]);
-const CHURCH_LIFE_AUDIT_ENTITY_TYPES = new Set(["MEMBER_PROFILE", "ATTENDANCE_RECORD", "CHECKIN", "IMPORT_BATCH", "PRAYER_REQUEST"]);
+const CHURCH_LIFE_AUDIT_ENTITY_TYPES = new Set([
+  "MEMBER_PROFILE",
+  "ATTENDANCE_RECORD",
+  "CHECKIN",
+  "IMPORT_BATCH",
+  "PRAYER_REQUEST",
+  "VOLUNTEER_TERM",
+  "MINISTRY_SCHEDULE",
+  "MINISTRY_ASSIGNMENT",
+  "MINISTRY",
+  "MINISTRY_ROLE",
+]);
 const CHURCH_LIFE_PERMISSION_DENIED_CODE = "CHURCH_LIFE_PERMISSION_DENIED";
 const CHURCH_STAFF_ROLES = new Set([
   "super",
@@ -160,6 +231,10 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "broadcasts.write",
     "autofollowups.preview",
     "autofollowups.run",
+    "volunteers.read",
+    "volunteers.write",
+    "schedules.read",
+    "schedules.write",
   ],
   finance: [
     "ops.overview.read",
@@ -176,6 +251,7 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "audit.read",
     "broadcasts.read",
     "autofollowups.preview",
+    "schedules.read",
   ],
   prayer_team_lead: [
     "ops.overview.read",
@@ -183,6 +259,8 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "prayer.requests.read",
     "prayer.assignments.read",
     "prayer.assignments.write",
+    "volunteers.read",
+    "schedules.read",
   ],
   volunteer: [
     "ops.overview.read",
@@ -198,6 +276,8 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "followups.tasks.write",
     "followups.sensitive.read",
     "autofollowups.preview",
+    "volunteers.read",
+    "schedules.read",
   ],
   usher: [
     "services.read",
@@ -213,6 +293,7 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "followups.tasks.read",
     "followups.tasks.write",
     "followups.sensitive.read",
+    "schedules.read",
   ],
   teacher: [
     "ops.overview.read",
@@ -222,6 +303,7 @@ const CHURCH_LIFE_PERMISSIONS = Object.freeze({
     "children.checkins.write",
     "children.pickups.write",
     "children.contact.read",
+    "schedules.read",
   ],
 });
 const RECURRING_COMING_SOON_MESSAGE =
@@ -573,9 +655,17 @@ function parseNonNegativeWholeNumber(value, fieldName, { required = false } = {}
   return { value: Math.trunc(n) };
 }
 
+function parseUuidOrNull(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return UUID_REGEX.test(text) ? text : null;
+}
+
 function normalizeAttendanceRow(row) {
   return {
     id: row?.id || null,
+    serviceId: row?.serviceId || null,
+    serviceName: row?.serviceName || null,
     campusId: row?.campusId || null,
     campusName: row?.campusName || null,
     campusCode: row?.campusCode || null,
@@ -787,6 +877,19 @@ function normalizeChurchHouseholdRelationship(value) {
   return String(value || "CHILD")
     .trim()
     .slice(0, 60) || "CHILD";
+}
+
+function normalizeChurchFamilyRelationshipType(value, fallback = "OTHER") {
+  const safeFallback = CHURCH_FAMILY_RELATIONSHIP_TYPES.has(String(fallback || "").toUpperCase())
+    ? String(fallback || "").toUpperCase()
+    : "OTHER";
+  const key = normalizeUpperToken(value || safeFallback);
+  return CHURCH_FAMILY_RELATIONSHIP_TYPES.has(key) ? key : safeFallback;
+}
+
+function reciprocalChurchFamilyRelationshipType(relationshipType) {
+  const key = normalizeChurchFamilyRelationshipType(relationshipType, "OTHER");
+  return CHURCH_FAMILY_RECIPROCAL_TYPE[key] || "OTHER";
 }
 
 function guessCsvDelimiter(sampleText) {
@@ -2111,7 +2214,16 @@ async function findChurchMemberByReference(churchId, memberRef) {
   if (!ref) return null;
   return db.oneOrNone(
     `
-    select id, member_id, full_name, phone, email
+    select
+      id,
+      member_id,
+      member_id as "memberId",
+      full_name,
+      full_name as "fullName",
+      phone,
+      email,
+      role,
+      date_of_birth as "dateOfBirth"
     from members
     where church_id=$1
       and (
@@ -2124,6 +2236,48 @@ async function findChurchMemberByReference(churchId, memberRef) {
     `,
     [churchId, ref]
   );
+}
+
+async function resolveChurchHouseholdChildMemberLink({
+  churchId,
+  parentMemberPk,
+  childMemberPkInput,
+  childMemberRefInput,
+} = {}) {
+  const parentPk = String(parentMemberPk || "").trim();
+  const memberPkInput = String(childMemberPkInput || "").trim();
+  const memberRefInput = String(childMemberRefInput || "").trim();
+
+  let linkedByPk = null;
+  if (memberPkInput) {
+    if (!UUID_REGEX.test(memberPkInput)) {
+      return { error: "childMemberPk must be a valid UUID.", status: 400 };
+    }
+    if (memberPkInput === parentPk) {
+      return { error: "A member cannot be added as their own child.", status: 400 };
+    }
+    linkedByPk = await findMemberInChurchByUuid(churchId, memberPkInput);
+    if (!linkedByPk) return { error: "childMemberPk is not in this church.", status: 400 };
+  }
+
+  let linkedByRef = null;
+  if (memberRefInput) {
+    linkedByRef = await findChurchMemberByReference(churchId, memberRefInput);
+    if (!linkedByRef) return { error: "childMemberRef is not in this church.", status: 400 };
+    if (linkedByRef.id === parentPk) {
+      return { error: "A member cannot be added as their own child.", status: 400 };
+    }
+  }
+
+  if (linkedByPk && linkedByRef && String(linkedByPk.id) !== String(linkedByRef.id)) {
+    return { error: "childMemberPk and childMemberRef must reference the same member.", status: 400 };
+  }
+
+  const linkedChild = linkedByPk || linkedByRef || null;
+  return {
+    childMemberPk: linkedChild?.id || null,
+    linkedChild,
+  };
 }
 
 async function findChurchServiceById(churchId, serviceId, campusId = null) {
@@ -2183,6 +2337,78 @@ async function findLatestChurchService(churchId, campusId = null) {
   );
 }
 
+async function findChurchEventById(churchId, eventId, { tx = db } = {}) {
+  if (!churchId || !UUID_REGEX.test(String(eventId || "").trim())) return null;
+  return tx.oneOrNone(
+    `
+    select
+      e.id,
+      e.church_id as "churchId",
+      e.campus_id as "campusId",
+      cc.name as "campusName",
+      cc.code as "campusCode",
+      e.title,
+      e.description,
+      e.starts_at as "startsAt",
+      e.ends_at as "endsAt",
+      e.venue,
+      e.poster_url as "posterUrl",
+      e.poster_data_url as "posterDataUrl",
+      e.capacity,
+      e.is_ticketed as "isTicketed",
+      e.price,
+      e.status,
+      e.notify_on_publish as "notifyOnPublish",
+      e.published_at as "publishedAt",
+      e.created_at as "createdAt",
+      e.updated_at as "updatedAt"
+    from church_events e
+    left join church_campuses cc on cc.id = e.campus_id
+    where e.church_id = $1 and e.id = $2
+    limit 1
+    `,
+    [churchId, String(eventId || "").trim()]
+  );
+}
+
+async function countChurchEventActiveRegistrations(churchId, eventId, { tx = db } = {}) {
+  if (!churchId || !UUID_REGEX.test(String(eventId || "").trim())) return 0;
+  const row = await tx.one(
+    `
+    select count(*)::int as count
+    from church_event_registrations
+    where church_id = $1
+      and event_id = $2
+      and status = any($3::text[])
+    `,
+    [churchId, String(eventId || "").trim(), CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES]
+  );
+  return Number(row?.count || 0);
+}
+
+async function loadPaidChurchEventTicketIntent(churchId, paymentIntentId, { tx = db } = {}) {
+  const id = String(paymentIntentId || "").trim();
+  if (!churchId || !UUID_REGEX.test(id)) return null;
+  return tx.oneOrNone(
+    `
+    select
+      id,
+      church_id as "churchId",
+      status,
+      source,
+      notes,
+      amount,
+      amount_gross as "amountGross",
+      m_payment_id as "mPaymentId",
+      updated_at as "updatedAt"
+    from payment_intents
+    where id = $1 and church_id = $2
+    limit 1
+    `,
+    [id, churchId]
+  );
+}
+
 function normalizeChurchLifePrayerCategory(value) {
   const key = normalizeUpperToken(value);
   if (CHURCH_LIFE_PRAYER_CATEGORIES.has(key)) return key;
@@ -2220,6 +2446,49 @@ function normalizeChurchLifeEventStatus(value) {
   return "DRAFT";
 }
 
+function normalizeChurchEventRegistrationStatus(value, fallback = "REGISTERED") {
+  const key = normalizeUpperToken(value || fallback);
+  if (CHURCH_EVENT_REGISTRATION_STATUSES.has(key)) return key;
+  return fallback;
+}
+
+function buildChurchEventTicketNote({ eventId, memberPk, quantity = 1, unitPrice = null } = {}) {
+  return JSON.stringify({
+    type: CHURCH_EVENT_TICKET_SOURCE,
+    eventId: String(eventId || "").trim(),
+    memberPk: String(memberPk || "").trim(),
+    quantity: Math.max(1, Math.min(CHURCH_EVENT_TICKET_MAX_QUANTITY, parsePositiveInt(quantity, 1) || 1)),
+    unitPrice: unitPrice == null ? null : toCurrencyNumber(unitPrice),
+  });
+}
+
+function parseChurchEventTicketNote(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const source = String(parsed?.type || "").trim().toUpperCase();
+    const eventId = String(parsed?.eventId || "").trim();
+    const memberPk = String(parsed?.memberPk || "").trim();
+    const quantity = Math.max(
+      1,
+      Math.min(CHURCH_EVENT_TICKET_MAX_QUANTITY, parsePositiveInt(parsed?.quantity, 1) || 1)
+    );
+    const unitPrice = parsed?.unitPrice == null ? null : Number(parsed.unitPrice);
+    if (source !== CHURCH_EVENT_TICKET_SOURCE) return null;
+    if (!UUID_REGEX.test(eventId) || !UUID_REGEX.test(memberPk)) return null;
+    return {
+      source,
+      eventId,
+      memberPk,
+      quantity,
+      unitPrice: Number.isFinite(unitPrice) ? toCurrencyNumber(unitPrice) : null,
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
 function normalizeChurchGroupType(value) {
   const key = normalizeUpperToken(value);
   if (CHURCH_GROUP_TYPES.has(key)) return key;
@@ -2230,6 +2499,24 @@ function normalizeChurchGroupMemberRole(value) {
   const key = normalizeUpperToken(value);
   if (CHURCH_GROUP_MEMBER_ROLES.has(key)) return key;
   return "MEMBER";
+}
+
+function normalizeChurchGroupMeetingStatus(value, fallback = "SCHEDULED") {
+  const safeFallback = CHURCH_GROUP_MEETING_STATUSES.has(normalizeUpperToken(fallback))
+    ? normalizeUpperToken(fallback)
+    : "SCHEDULED";
+  const key = normalizeUpperToken(value || safeFallback);
+  if (CHURCH_GROUP_MEETING_STATUSES.has(key)) return key;
+  return safeFallback;
+}
+
+function normalizeChurchGroupAttendanceStatus(value, fallback = "PRESENT") {
+  const safeFallback = CHURCH_GROUP_ATTENDANCE_STATUSES.has(normalizeUpperToken(fallback))
+    ? normalizeUpperToken(fallback)
+    : "PRESENT";
+  const key = normalizeUpperToken(value || safeFallback);
+  if (CHURCH_GROUP_ATTENDANCE_STATUSES.has(key)) return key;
+  return safeFallback;
 }
 
 function normalizeChurchFollowupType(value) {
@@ -2437,6 +2724,7 @@ function normalizeChurchCheckinRow(row) {
     memberPk: row?.memberPk || null,
     memberId: row?.memberId || null,
     memberName: row?.memberName || null,
+    memberRole: row?.memberRole ? normalizeChurchStaffRole(row.memberRole) : null,
     method: normalizeUpperToken(row?.method || "TAP"),
     checkedInAt: row?.checkedInAt || null,
     notes: row?.notes || null,
@@ -2506,6 +2794,9 @@ function redactPrayerContent(row, access) {
 }
 
 function normalizeChurchEventRow(row) {
+  const capacityRaw = row?.capacity;
+  const capacity = capacityRaw == null ? null : Number(capacityRaw);
+  const registrationCount = Number(row?.registrationCount || row?.registrationsCount || 0);
   return {
     id: row?.id || null,
     churchId: row?.churchId || null,
@@ -2520,8 +2811,38 @@ function normalizeChurchEventRow(row) {
     posterUrl: row?.posterUrl || null,
     posterDataUrl: row?.posterDataUrl || null,
     status: normalizeChurchLifeEventStatus(row?.status),
+    capacity: Number.isFinite(capacity) && capacity > 0 ? Math.trunc(capacity) : null,
+    registrationsCount: registrationCount,
+    isFull: Number.isFinite(capacity) && capacity > 0 ? registrationCount >= Math.trunc(capacity) : false,
+    availableSpots:
+      Number.isFinite(capacity) && capacity > 0 ? Math.max(Math.trunc(capacity) - registrationCount, 0) : null,
+    isTicketed: row?.isTicketed === true,
+    price: row?.price == null ? null : Number(row?.price || 0),
+    myRegistrationId: row?.myRegistrationId || null,
+    myRegistrationStatus: row?.myRegistrationStatus
+      ? normalizeChurchEventRegistrationStatus(row.myRegistrationStatus, "REGISTERED")
+      : null,
+    myRegisteredAt: row?.myRegisteredAt || null,
     notifyOnPublish: row?.notifyOnPublish !== false,
     publishedAt: row?.publishedAt || null,
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeChurchEventRegistrationRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    eventId: row?.eventId || null,
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    memberName: row?.memberName || null,
+    memberPhone: row?.memberPhone || null,
+    memberEmail: row?.memberEmail || null,
+    status: normalizeChurchEventRegistrationStatus(row?.status),
+    checkedInAt: row?.checkedInAt || null,
+    canceledAt: row?.canceledAt || null,
     createdAt: row?.createdAt || null,
     updatedAt: row?.updatedAt || null,
   };
@@ -2597,6 +2918,112 @@ function normalizeChurchHouseholdChildRow(row) {
     active: row?.active !== false,
     createdAt: row?.createdAt || null,
     updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeChurchHouseholdMemberCandidateRow(row) {
+  const dateOfBirth = formatDateIsoLike(row?.dateOfBirth);
+  const age = calculateAgeFromDateOfBirth(dateOfBirth);
+  const ageGroup = resolveChurchMemberAgeGroup(dateOfBirth);
+  return {
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    fullName: row?.fullName || null,
+    phone: row?.phone || null,
+    email: row?.email || null,
+    role: String(row?.role || "member")
+      .trim()
+      .toLowerCase(),
+    dateOfBirth,
+    age,
+    ageGroup: CHURCH_MEMBER_AGE_GROUPS.has(ageGroup) ? ageGroup : "UNKNOWN",
+    householdName: row?.householdName || null,
+    householdRole: row?.householdRole || null,
+    addressLine1: row?.addressLine1 || null,
+    addressLine2: row?.addressLine2 || null,
+    suburb: row?.suburb || null,
+    city: row?.city || null,
+    province: row?.province || null,
+    postalCode: row?.postalCode || null,
+    country: row?.country || null,
+    alreadyLinked: row?.alreadyLinked === true,
+  };
+}
+
+function normalizeChurchFamilyRelationshipRow(row) {
+  const relatedDateOfBirth = formatDateIsoLike(row?.relatedDateOfBirth);
+  const relatedAge = calculateAgeFromDateOfBirth(relatedDateOfBirth);
+  const relatedAgeGroup = resolveChurchMemberAgeGroup(relatedDateOfBirth);
+  return {
+    id: row?.id || null,
+    pairKey: row?.pairKey || null,
+    churchId: row?.churchId || null,
+    memberPk: row?.memberPk || null,
+    relatedMemberPk: row?.relatedMemberPk || null,
+    relationshipType: normalizeChurchFamilyRelationshipType(row?.relationshipType, "OTHER"),
+    notes: row?.notes || null,
+    source: String(row?.source || "MANUAL")
+      .trim()
+      .toUpperCase(),
+    active: row?.active !== false,
+    relatedMember: {
+      memberPk: row?.relatedMemberPk || null,
+      memberId: row?.relatedMemberId || null,
+      fullName: row?.relatedMemberName || null,
+      phone: row?.relatedMemberPhone || null,
+      email: row?.relatedMemberEmail || null,
+      role: String(row?.relatedMemberRole || "member")
+        .trim()
+        .toLowerCase(),
+      dateOfBirth: relatedDateOfBirth,
+      age: relatedAge,
+      ageGroup: CHURCH_MEMBER_AGE_GROUPS.has(relatedAgeGroup) ? relatedAgeGroup : "UNKNOWN",
+      householdName: row?.relatedHouseholdName || null,
+      householdRole: row?.relatedHouseholdRole || null,
+      addressLine1: row?.relatedAddressLine1 || null,
+      addressLine2: row?.relatedAddressLine2 || null,
+      suburb: row?.relatedSuburb || null,
+      city: row?.relatedCity || null,
+      province: row?.relatedProvince || null,
+      postalCode: row?.relatedPostalCode || null,
+      country: row?.relatedCountry || null,
+    },
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeChurchFamilyCandidateRow(row) {
+  const dateOfBirth = formatDateIsoLike(row?.dateOfBirth);
+  const age = calculateAgeFromDateOfBirth(dateOfBirth);
+  const ageGroup = resolveChurchMemberAgeGroup(dateOfBirth);
+  const types = Array.isArray(row?.existingRelationshipTypes)
+    ? row.existingRelationshipTypes
+    : normalizeStringArray(row?.existingRelationshipTypes || [], { maxItems: 20, maxLen: 40 });
+  const normalizedTypes = types.map((value) => normalizeChurchFamilyRelationshipType(value, "OTHER"));
+  return {
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    fullName: row?.fullName || null,
+    phone: row?.phone || null,
+    email: row?.email || null,
+    role: String(row?.role || "member")
+      .trim()
+      .toLowerCase(),
+    dateOfBirth,
+    age,
+    ageGroup: CHURCH_MEMBER_AGE_GROUPS.has(ageGroup) ? ageGroup : "UNKNOWN",
+    householdName: row?.householdName || null,
+    householdRole: row?.householdRole || null,
+    addressLine1: row?.addressLine1 || null,
+    addressLine2: row?.addressLine2 || null,
+    suburb: row?.suburb || null,
+    city: row?.city || null,
+    province: row?.province || null,
+    postalCode: row?.postalCode || null,
+    country: row?.country || null,
+    alreadyRelated: normalizedTypes.length > 0,
+    existingRelationshipTypes: normalizedTypes,
   };
 }
 
@@ -2708,6 +3135,48 @@ function normalizeChurchGroupMemberRow(row) {
     joinedOn: formatDateIsoLike(row?.joinedOn),
     active: row?.active !== false,
     notes: row?.notes || null,
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeChurchGroupMeetingRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    groupId: row?.groupId || null,
+    meetingDate: formatDateIsoLike(row?.meetingDate),
+    startsAt: row?.startsAt || null,
+    endsAt: row?.endsAt || null,
+    location: row?.location || null,
+    notes: row?.notes || null,
+    status: normalizeChurchGroupMeetingStatus(row?.status),
+    attendanceCount: Number(row?.attendanceCount || 0),
+    presentCount: Number(row?.presentCount || 0),
+    lateCount: Number(row?.lateCount || 0),
+    absentCount: Number(row?.absentCount || 0),
+    excusedCount: Number(row?.excusedCount || 0),
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeChurchGroupAttendanceRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    groupId: row?.groupId || null,
+    meetingId: row?.meetingId || null,
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    fullName: row?.fullName || null,
+    phone: row?.phone || null,
+    email: row?.email || null,
+    role: normalizeChurchGroupMemberRole(row?.role),
+    status: row?.status ? normalizeChurchGroupAttendanceStatus(row.status) : null,
+    notes: row?.notes || null,
+    markedBy: row?.markedBy || null,
+    markedByName: row?.markedByName || null,
     createdAt: row?.createdAt || null,
     updatedAt: row?.updatedAt || null,
   };
@@ -2994,6 +3463,54 @@ async function findMemberInChurchByUuid(churchId, memberPk) {
     limit 1
     `,
     [churchId, memberPk]
+  );
+}
+
+async function findChurchGroupById(churchId, groupId, { tx = db } = {}) {
+  if (!UUID_REGEX.test(String(groupId || ""))) return null;
+  return tx.oneOrNone(
+    `
+    select
+      g.id,
+      g.church_id as "churchId",
+      g.name,
+      g.code,
+      g.group_type as "groupType",
+      g.description,
+      g.leader_member_pk as "leaderMemberPk",
+      leader.member_id as "leaderMemberId",
+      leader.full_name as "leaderName",
+      g.active,
+      g.created_at as "createdAt",
+      g.updated_at as "updatedAt"
+    from church_groups g
+    left join members leader on leader.id = g.leader_member_pk
+    where g.church_id = $1 and g.id = $2
+    limit 1
+    `,
+    [churchId, groupId]
+  );
+}
+
+async function findGroupMembership(churchId, groupId, memberPk, { tx = db, requireActive = true } = {}) {
+  if (!UUID_REGEX.test(String(groupId || "")) || !UUID_REGEX.test(String(memberPk || ""))) return null;
+  return tx.oneOrNone(
+    `
+    select
+      gm.id,
+      gm.group_id as "groupId",
+      gm.member_pk as "memberPk",
+      gm.member_role as role,
+      gm.joined_on as "joinedOn",
+      gm.active
+    from church_group_members gm
+    where gm.church_id = $1
+      and gm.group_id = $2
+      and gm.member_pk = $3
+      and ($4::boolean = false or gm.active = true)
+    limit 1
+    `,
+    [churchId, groupId, memberPk, requireActive]
   );
 }
 
@@ -3322,6 +3839,172 @@ function buildCashFeeBreakdown(amountRaw) {
   };
 }
 
+function normalizeMinistryScheduleStatus(value, fallback = "DRAFT") {
+  const status = normalizeUpperToken(value || fallback);
+  return MINISTRY_SCHEDULE_STATUSES.has(status) ? status : fallback;
+}
+
+function normalizeMinistryScheduleAssignmentStatus(value, fallback = "ASSIGNED") {
+  const status = normalizeUpperToken(value || fallback);
+  return MINISTRY_SCHEDULE_ASSIGNMENT_STATUSES.has(status) ? status : fallback;
+}
+
+function normalizeVolunteerTermStatus(value, fallback = "ACTIVE") {
+  const status = normalizeUpperToken(value || fallback);
+  return VOLUNTEER_TERM_STATUSES.has(status) ? status : fallback;
+}
+
+function normalizeVolunteerTermEndReason(value) {
+  const reason = normalizeUpperToken(value);
+  return VOLUNTEER_TERM_END_REASONS.has(reason) ? reason : null;
+}
+
+function normalizeVolunteerSystemRating(value) {
+  const rating = normalizeUpperToken(value);
+  return VOLUNTEER_SYSTEM_RATINGS.has(rating) ? rating : null;
+}
+
+function computeVolunteerLoadLevel(activeRoles) {
+  const count = Math.max(0, Number(activeRoles || 0));
+  if (count >= 4) return "OVERLOAD";
+  if (count === 3) return "HIGH";
+  return "NORMAL";
+}
+
+function normalizeResponsibilitiesTemplate(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 40);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/\r?\n|,/g)
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 40);
+  }
+  return [];
+}
+
+function normalizeMinistryRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    campusId: row?.campusId || null,
+    campusName: row?.campusName || null,
+    campusCode: row?.campusCode || null,
+    name: row?.name || null,
+    code: row?.code || null,
+    description: row?.description || null,
+    active: row?.active !== false,
+    roleCount: Number(row?.roleCount || 0),
+    activeVolunteerCount: Number(row?.activeVolunteerCount || 0),
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeMinistryRoleRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    ministryId: row?.ministryId || null,
+    ministryName: row?.ministryName || null,
+    roleName: row?.roleName || null,
+    defaultTermMonths: Number(row?.defaultTermMonths || 12),
+    responsibilitiesTemplate: Array.isArray(row?.responsibilitiesTemplate)
+      ? row.responsibilitiesTemplate
+      : normalizeResponsibilitiesTemplate(row?.responsibilitiesTemplate),
+    active: row?.active !== false,
+    activeTermsCount: Number(row?.activeTermsCount || 0),
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeVolunteerTermRow(row) {
+  const openStatuses = new Set(["ACTIVE", "REVIEW_DUE"]);
+  const activeRolesCount = Number(row?.activeRolesCount || 0);
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    memberName: row?.memberName || null,
+    memberRole: normalizeChurchStaffRole(row?.memberRole || "member"),
+    ministryId: row?.ministryId || null,
+    ministryName: row?.ministryName || null,
+    ministryRoleId: row?.ministryRoleId || null,
+    ministryRoleName: row?.ministryRoleName || null,
+    startDate: formatDateIsoLike(row?.startDate),
+    endDate: formatDateIsoLike(row?.endDate),
+    termLengthMonths: Number(row?.termLengthMonths || 0),
+    status: normalizeVolunteerTermStatus(row?.status),
+    endReason: normalizeVolunteerTermEndReason(row?.endReason),
+    attendanceRate: row?.attendanceRate == null ? null : Number(row.attendanceRate),
+    reliabilityRate: row?.reliabilityRate == null ? null : Number(row.reliabilityRate),
+    trainingCompleted: row?.trainingCompleted === true,
+    systemRating:
+      normalizeVolunteerSystemRating(row?.systemRating) || (openStatuses.has(normalizeVolunteerTermStatus(row?.status)) ? computeVolunteerLoadLevel(activeRolesCount) : null),
+    manualReviewScore: row?.manualReviewScore == null ? null : Number(row.manualReviewScore),
+    performanceNotes: row?.performanceNotes || null,
+    reviewedBy: row?.reviewedBy || null,
+    reviewedByName: row?.reviewedByName || null,
+    reviewedAt: row?.reviewedAt || null,
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+    activeRolesCount,
+    loadLevel: computeVolunteerLoadLevel(activeRolesCount),
+  };
+}
+
+function normalizeMinistryScheduleRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    campusId: row?.campusId || null,
+    campusName: row?.campusName || null,
+    campusCode: row?.campusCode || null,
+    ministryId: row?.ministryId || null,
+    ministryName: row?.ministryName || null,
+    serviceId: row?.serviceId || null,
+    serviceName: row?.serviceName || null,
+    scheduleDate: formatDateIsoLike(row?.scheduleDate),
+    title: row?.title || null,
+    notes: row?.notes || null,
+    status: normalizeMinistryScheduleStatus(row?.status),
+    assignmentCount: Number(row?.assignmentCount || 0),
+    confirmedCount: Number(row?.confirmedCount || 0),
+    servedCount: Number(row?.servedCount || 0),
+    noShowCount: Number(row?.noShowCount || 0),
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
+function normalizeMinistryScheduleAssignmentRow(row) {
+  return {
+    id: row?.id || null,
+    churchId: row?.churchId || null,
+    scheduleId: row?.scheduleId || null,
+    memberPk: row?.memberPk || null,
+    memberId: row?.memberId || null,
+    memberName: row?.memberName || null,
+    memberRole: normalizeChurchStaffRole(row?.memberRole || "member"),
+    ministryRoleId: row?.ministryRoleId || null,
+    ministryRoleName: row?.ministryRoleName || null,
+    status: normalizeMinistryScheduleAssignmentStatus(row?.status),
+    assignedBy: row?.assignedBy || null,
+    respondedAt: row?.respondedAt || null,
+    servedAt: row?.servedAt || null,
+    notes: row?.notes || null,
+    createdAt: row?.createdAt || null,
+    updatedAt: row?.updatedAt || null,
+  };
+}
+
 const UUID_REGEX = /^[0-9a-fA-F-]{36}$/;
 
 function csvEscape(value) {
@@ -3447,6 +4130,269 @@ function resolveChurchId(req, res, requestedChurchId) {
   }
 
   return requestedChurchId;
+}
+
+async function findChurchMinistryById(churchId, ministryId) {
+  if (!churchId || !UUID_REGEX.test(String(ministryId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      m.id,
+      m.church_id as "churchId",
+      m.campus_id as "campusId",
+      cc.name as "campusName",
+      cc.code as "campusCode",
+      m.name,
+      m.code,
+      m.description,
+      m.active,
+      m.created_at as "createdAt",
+      m.updated_at as "updatedAt"
+    from church_ministries m
+    left join church_campuses cc on cc.id = m.campus_id
+    where m.church_id=$1 and m.id=$2
+    limit 1
+    `,
+    [churchId, String(ministryId).trim()]
+  );
+}
+
+async function loadChurchMinistryWithStats(churchId, ministryId) {
+  if (!churchId || !UUID_REGEX.test(String(ministryId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      m.id,
+      m.church_id as "churchId",
+      m.campus_id as "campusId",
+      cc.name as "campusName",
+      cc.code as "campusCode",
+      m.name,
+      m.code,
+      m.description,
+      m.active,
+      m.created_at as "createdAt",
+      m.updated_at as "updatedAt",
+      coalesce(role_agg.count, 0)::int as "roleCount",
+      coalesce(term_agg.count, 0)::int as "activeVolunteerCount"
+    from church_ministries m
+    left join church_campuses cc on cc.id = m.campus_id
+    left join lateral (
+      select count(*)::int as count
+      from church_ministry_roles r
+      where r.church_id = m.church_id and r.ministry_id = m.id and r.active = true
+    ) role_agg on true
+    left join lateral (
+      select count(*)::int as count
+      from volunteer_role_terms t
+      where t.church_id = m.church_id and t.ministry_id = m.id and t.status in ('ACTIVE', 'REVIEW_DUE')
+    ) term_agg on true
+    where m.church_id = $1 and m.id = $2
+    limit 1
+    `,
+    [churchId, String(ministryId).trim()]
+  );
+}
+
+async function findChurchMinistryRoleById(churchId, ministryRoleId) {
+  if (!churchId || !UUID_REGEX.test(String(ministryRoleId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      r.id,
+      r.church_id as "churchId",
+      r.ministry_id as "ministryId",
+      m.name as "ministryName",
+      r.role_name as "roleName",
+      r.default_term_months as "defaultTermMonths",
+      r.responsibilities_template as "responsibilitiesTemplate",
+      r.active,
+      r.created_at as "createdAt",
+      r.updated_at as "updatedAt"
+    from church_ministry_roles r
+    join church_ministries m on m.id = r.ministry_id and m.church_id = r.church_id
+    where r.church_id=$1 and r.id=$2
+    limit 1
+    `,
+    [churchId, String(ministryRoleId).trim()]
+  );
+}
+
+async function loadChurchMinistryRoleWithStats(churchId, ministryRoleId) {
+  if (!churchId || !UUID_REGEX.test(String(ministryRoleId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      r.id,
+      r.church_id as "churchId",
+      r.ministry_id as "ministryId",
+      m.name as "ministryName",
+      r.role_name as "roleName",
+      r.default_term_months as "defaultTermMonths",
+      r.responsibilities_template as "responsibilitiesTemplate",
+      r.active,
+      r.created_at as "createdAt",
+      r.updated_at as "updatedAt",
+      coalesce(term_agg.count, 0)::int as "activeTermsCount"
+    from church_ministry_roles r
+    join church_ministries m on m.id = r.ministry_id and m.church_id = r.church_id
+    left join lateral (
+      select count(*)::int as count
+      from volunteer_role_terms t
+      where t.church_id = r.church_id
+        and t.ministry_role_id = r.id
+        and t.status in ('ACTIVE', 'REVIEW_DUE')
+    ) term_agg on true
+    where r.church_id = $1 and r.id = $2
+    limit 1
+    `,
+    [churchId, String(ministryRoleId).trim()]
+  );
+}
+
+async function findMinistryScheduleById(churchId, scheduleId) {
+  if (!churchId || !UUID_REGEX.test(String(scheduleId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      s.id,
+      s.church_id as "churchId",
+      s.campus_id as "campusId",
+      cc.name as "campusName",
+      cc.code as "campusCode",
+      s.ministry_id as "ministryId",
+      m.name as "ministryName",
+      s.service_id as "serviceId",
+      srv.service_name as "serviceName",
+      s.schedule_date as "scheduleDate",
+      s.title,
+      s.notes,
+      s.status,
+      s.created_at as "createdAt",
+      s.updated_at as "updatedAt"
+    from ministry_schedules s
+    join church_ministries m on m.id = s.ministry_id and m.church_id = s.church_id
+    left join church_services srv on srv.id = s.service_id and srv.church_id = s.church_id
+    left join church_campuses cc on cc.id = s.campus_id
+    where s.church_id=$1 and s.id=$2
+    limit 1
+    `,
+    [churchId, String(scheduleId).trim()]
+  );
+}
+
+async function loadVolunteerRoleTermById(churchId, termId, conn = db) {
+  if (!churchId || !UUID_REGEX.test(String(termId || "").trim())) return null;
+  return conn.oneOrNone(
+    `
+    select
+      t.id,
+      t.church_id as "churchId",
+      t.member_pk as "memberPk",
+      t.member_id as "memberId",
+      m.full_name as "memberName",
+      lower(coalesce(m.role, 'member')) as "memberRole",
+      t.ministry_id as "ministryId",
+      ministry.name as "ministryName",
+      t.ministry_role_id as "ministryRoleId",
+      role.role_name as "ministryRoleName",
+      t.start_date as "startDate",
+      t.end_date as "endDate",
+      t.term_length_months as "termLengthMonths",
+      t.status,
+      t.end_reason as "endReason",
+      t.attendance_rate as "attendanceRate",
+      t.reliability_rate as "reliabilityRate",
+      t.training_completed as "trainingCompleted",
+      t.system_rating as "systemRating",
+      t.manual_review_score as "manualReviewScore",
+      t.performance_notes as "performanceNotes",
+      t.reviewed_by as "reviewedBy",
+      reviewer.full_name as "reviewedByName",
+      t.reviewed_at as "reviewedAt",
+      t.created_at as "createdAt",
+      t.updated_at as "updatedAt",
+      coalesce(active_agg.count, 0)::int as "activeRolesCount"
+    from volunteer_role_terms t
+    join members m on m.id = t.member_pk and m.church_id = t.church_id
+    join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+    join church_ministry_roles role on role.id = t.ministry_role_id and role.church_id = t.church_id
+    left join members reviewer on reviewer.id = t.reviewed_by and reviewer.church_id = t.church_id
+    left join lateral (
+      select count(*)::int as count
+      from volunteer_role_terms active_terms
+      where active_terms.church_id = t.church_id
+        and active_terms.member_pk = t.member_pk
+        and active_terms.status in ('ACTIVE', 'REVIEW_DUE')
+    ) active_agg on true
+    where t.church_id=$1 and t.id=$2
+    limit 1
+    `,
+    [churchId, String(termId).trim()]
+  );
+}
+
+async function loadMinistryScheduleWithStats(churchId, scheduleId) {
+  if (!churchId || !UUID_REGEX.test(String(scheduleId || "").trim())) return null;
+  return db.oneOrNone(
+    `
+    select
+      s.id,
+      s.church_id as "churchId",
+      s.campus_id as "campusId",
+      cc.name as "campusName",
+      cc.code as "campusCode",
+      s.ministry_id as "ministryId",
+      m.name as "ministryName",
+      s.service_id as "serviceId",
+      srv.service_name as "serviceName",
+      s.schedule_date as "scheduleDate",
+      s.title,
+      s.notes,
+      s.status,
+      s.created_at as "createdAt",
+      s.updated_at as "updatedAt",
+      coalesce(assignment_agg.total, 0)::int as "assignmentCount",
+      coalesce(assignment_agg.confirmed, 0)::int as "confirmedCount",
+      coalesce(assignment_agg.served, 0)::int as "servedCount",
+      coalesce(assignment_agg.no_show, 0)::int as "noShowCount"
+    from ministry_schedules s
+    join church_ministries m on m.id = s.ministry_id and m.church_id = s.church_id
+    left join church_services srv on srv.id = s.service_id and srv.church_id = s.church_id
+    left join church_campuses cc on cc.id = s.campus_id
+    left join lateral (
+      select
+        count(*)::int as total,
+        count(*) filter (where a.status = 'CONFIRMED')::int as confirmed,
+        count(*) filter (where a.status = 'SERVED')::int as served,
+        count(*) filter (where a.status = 'NO_SHOW')::int as no_show
+      from ministry_schedule_assignments a
+      where a.schedule_id = s.id
+    ) assignment_agg on true
+    where s.church_id=$1 and s.id=$2
+    limit 1
+    `,
+    [churchId, String(scheduleId).trim()]
+  );
+}
+
+function buildVolunteerTermDefaultEndDate(startDate, termLengthMonths) {
+  const start = parseChurchLifeDate(startDate);
+  const months = Number(termLengthMonths);
+  if (!start || !Number.isFinite(months) || months < 1) return null;
+  const dt = new Date(`${start}T00:00:00.000Z`);
+  dt.setUTCMonth(dt.getUTCMonth() + Math.trunc(months));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+function parseBoundedDecimal(value, { min = 0, max = 100, decimals = 2 } = {}) {
+  if (value === null || typeof value === "undefined" || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric < min || numeric > max) return null;
+  const factor = Math.pow(10, decimals);
+  return Math.round(numeric * factor) / factor;
 }
 
 function normalizePhoneIdentity(value) {
@@ -3852,45 +4798,12 @@ function normalizeBaseUrl() {
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
-function readGlobalPayfastCredentials() {
-  return {
-    source: "global",
-    mode: normalizePayfastMode(process.env.PAYFAST_MODE),
-    merchantId: String(process.env.PAYFAST_MERCHANT_ID || "").trim(),
-    merchantKey: String(process.env.PAYFAST_MERCHANT_KEY || "").trim(),
-    passphrase: String(process.env.PAYFAST_PASSPHRASE || "").trim(),
-  };
-}
-
-async function resolveGrowthCheckoutCredentials(churchId) {
-  const globalCreds = readGlobalPayfastCredentials();
-  if (globalCreds.merchantId && globalCreds.merchantKey) return globalCreds;
-  const churchCreds = await resolveChurchPayfastCredentials(churchId);
-  if (!churchCreds?.merchantId || !churchCreds?.merchantKey) return null;
-  return {
-    source: churchCreds.source || "church",
-    mode: churchCreds.mode,
-    merchantId: churchCreds.merchantId,
-    merchantKey: churchCreds.merchantKey,
-    passphrase: churchCreds.passphrase || "",
-  };
-}
-
 async function createGrowthSubscriptionCheckout({ churchId, member, subscription }) {
   const planConfig = churchSubscriptionPlanConfig(subscription?.planCode);
   const amount = toCurrencyNumber(Number(subscription?.priceCents || planConfig.priceCents) / 100);
   if (!Number.isFinite(amount) || amount <= 0) {
     const err = new Error("Invalid ChurPay Growth subscription amount.");
     err.code = "INVALID_SUBSCRIPTION_AMOUNT";
-    throw err;
-  }
-
-  const payfastCreds = await resolveGrowthCheckoutCredentials(churchId);
-  if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-    const err = new Error(
-      "PayFast checkout is not configured. Set global PAYFAST_MERCHANT_ID/PAYFAST_MERCHANT_KEY and retry."
-    );
-    err.code = "PAYFAST_SUBSCRIPTION_NOT_CONFIGURED";
     throw err;
   }
 
@@ -3950,36 +4863,52 @@ async function createGrowthSubscriptionCheckout({ churchId, member, subscription
 
   const notifyUrl = `${baseUrl}/webhooks/payfast/itn`;
   const billingDate = new Date().toISOString().slice(0, 10);
+  let checkoutResult = null;
+  try {
+    const gateway = await PaymentGatewayFactory.get(churchId);
+    checkoutResult = await gateway.createIntent({
+      churchId,
+      amount: intent.amount,
+      currency: intent.currency || "ZAR",
+      source: CHURPAY_GROWTH_SUBSCRIPTION_SOURCE,
+      metadata: { planCode: planConfig.code, paymentIntentId: intent.id },
+      providerIntentRef: intent.m_payment_id,
+      itemName: intent.item_name,
+      returnUrl,
+      cancelUrl,
+      notifyUrl,
+      reference1: churchId,
+      reference2: planConfig.code,
+      reference3: intent.id,
+      reference4: CHURPAY_GROWTH_SUBSCRIPTION_SOURCE,
+      payerName: member?.full_name || "Church admin",
+      payerEmail: member?.email || undefined,
+      subscriptionType: 1,
+      billingDate,
+      recurringAmount: intent.amount,
+      frequency: Number(planConfig.payfastFrequency || 3),
+      cycles: RECURRING_DEFAULT_CYCLES,
+      preferGlobalCredentials: true,
+      allowGlobalFallback: true,
+    });
+  } catch (err) {
+    if (err?.code === "PAYFAST_NOT_CONNECTED") {
+      const mapped = new Error(
+        "PayFast checkout is not configured. Set global PAYFAST_MERCHANT_ID/PAYFAST_MERCHANT_KEY and retry."
+      );
+      mapped.code = "PAYFAST_SUBSCRIPTION_NOT_CONFIGURED";
+      throw mapped;
+    }
+    throw err;
+  }
 
-  const checkoutUrl = buildPayfastRedirect({
-    mode: payfastCreds.mode,
-    merchantId: payfastCreds.merchantId,
-    merchantKey: payfastCreds.merchantKey,
-    passphrase: payfastCreds.passphrase || "",
-    mPaymentId: intent.m_payment_id,
-    amount: intent.amount,
-    itemName: intent.item_name,
-    returnUrl,
-    cancelUrl,
-    notifyUrl,
-    customStr1: churchId,
-    customStr2: planConfig.code,
-    customStr3: intent.id,
-    customStr4: CHURPAY_GROWTH_SUBSCRIPTION_SOURCE,
-    nameFirst: member?.full_name || "Church admin",
-    emailAddress: member?.email || undefined,
-    subscriptionType: 1,
-    billingDate,
-    recurringAmount: intent.amount,
-    frequency: Number(planConfig.payfastFrequency || 3),
-    cycles: RECURRING_DEFAULT_CYCLES,
-  });
+  const checkoutUrl = checkoutResult.checkoutUrl;
 
   return {
     checkoutUrl,
     paymentIntentId: intent.id,
     mPaymentId: intent.m_payment_id,
-    credentialSource: payfastCreds.source || "unknown",
+    credentialSource: checkoutResult.credentialSource || "unknown",
   };
 }
 
@@ -4016,6 +4945,11 @@ function getPayfastCallbackUrls(paymentIntentId, mPaymentId = null) {
     cancelUrl,
     notifyUrl,
   };
+}
+
+async function createCheckoutWithGateway(churchId, payload) {
+  const gateway = await PaymentGatewayFactory.get(churchId);
+  return gateway.createIntent({ churchId, ...payload });
 }
 
 function renderPayfastBridgePage({ title, message, deepLink, fallbackUrl }) {
@@ -4571,36 +5505,36 @@ router.post("/payment-intents", requireAuth, async (req, res) => {
 
     const { returnUrl, cancelUrl, notifyUrl } = getPayfastCallbackUrls(intent.id, mPaymentId);
 
-    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(churchId, {
+        amount: intent.amount_gross || pricing.amountGross,
+        currency: intent.currency || "ZAR",
+        source: wantsUseSavedCard ? "SAVED_CARD" : "DIRECT_APP",
+        metadata: { paymentIntentId: intent.id, fundId, wantsSaveCard, wantsUseSavedCard },
+        providerIntentRef: mPaymentId,
+        itemName,
+        returnUrl,
+        cancelUrl,
+        notifyUrl,
+        reference1: churchId,
+        reference2: fundId,
+        payerName: member.full_name || undefined,
+        payerEmail: member.email || undefined,
+        subscriptionType: wantsSaveCard || wantsUseSavedCard ? 2 : undefined,
+        token: wantsUseSavedCard ? String(member.payfast_adhoc_token || "").trim() || undefined : undefined,
       });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        console.error("[payments] payfast credentials error", err?.message || err, err?.stack);
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
     }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
-    const checkoutUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId,
-      amount: intent.amount_gross || pricing.amountGross,
-      itemName,
-      returnUrl,
-      cancelUrl,
-      notifyUrl,
-      customStr1: churchId,
-      customStr2: fundId,
-      nameFirst: member.full_name || undefined,
-      emailAddress: member.email || undefined,
-      subscriptionType: wantsSaveCard || wantsUseSavedCard ? 2 : undefined,
-      token: wantsUseSavedCard ? String(member.payfast_adhoc_token || "").trim() || undefined : undefined,
-    });
+    const checkoutUrl = checkoutResult.checkoutUrl;
 
     res.json({
       paymentIntentId: intent.id,
@@ -4692,18 +5626,6 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
     if (!fund) return res.status(404).json({ error: "Fund not found" });
     if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
 
-    const payfastCreds = await resolveChurchPayfastCredentials(recipientChurch.id);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask their admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
-      });
-    }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
     const pricing = buildFeeBreakdown(amountRaw);
     const mPaymentId = makeMpaymentId();
     const itemNameRaw = `${recipientChurch.name} - ${fund.name}`;
@@ -4757,22 +5679,33 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
     );
 
     const callbacks = getPayfastCallbackUrls(intent.id, intent.mPaymentId || mPaymentId);
-    const checkoutUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId: intent.mPaymentId || mPaymentId,
-      amount: intent.amountGross || pricing.amountGross,
-      itemName,
-      returnUrl: callbacks.returnUrl,
-      cancelUrl: callbacks.cancelUrl,
-      notifyUrl: callbacks.notifyUrl,
-      customStr1: recipientChurch.id,
-      customStr2: fund.id,
-      nameFirst: member.full_name || undefined,
-      emailAddress: member.email || undefined,
-    });
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(recipientChurch.id, {
+        amount: intent.amountGross || pricing.amountGross,
+        currency: "ZAR",
+        source: EXTERNAL_GIVING_SOURCE,
+        metadata: { paymentIntentId: intent.id, fundId: fund.id, homeChurchId: member?.church_id || null },
+        providerIntentRef: intent.mPaymentId || mPaymentId,
+        itemName,
+        returnUrl: callbacks.returnUrl,
+        cancelUrl: callbacks.cancelUrl,
+        notifyUrl: callbacks.notifyUrl,
+        reference1: recipientChurch.id,
+        reference2: fund.id,
+        payerName: member.full_name || undefined,
+        payerEmail: member.email || undefined,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask their admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+    const checkoutUrl = checkoutResult.checkoutUrl;
 
     return res.status(201).json({
       data: {
@@ -4789,7 +5722,7 @@ router.post("/external-giving/payment-intents", requireAuth, async (req, res) =>
       meta: {
         source: EXTERNAL_GIVING_SOURCE,
         payerType: "donor",
-        provider: "payfast",
+        provider: checkoutResult.provider || "payfast",
         homeChurchId: member?.church_id || null,
       },
     });
@@ -5099,18 +6032,6 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Church not found" });
     }
 
-    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
-      });
-    }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
     const pricing = buildFeeBreakdown(amount);
     const mPaymentId = makeMpaymentId();
     const itemName = `${church.name} - ${fund.name} (Recurring)`;
@@ -5202,28 +6123,40 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
     });
 
     const callbacks = getPayfastCallbackUrls(created.intent.id, created.intent.mPaymentId || mPaymentId);
-    const checkoutUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId: created.intent.mPaymentId || mPaymentId,
-      amount: pricing.amountGross,
-      itemName,
-      returnUrl: callbacks.returnUrl,
-      cancelUrl: callbacks.cancelUrl,
-      notifyUrl: callbacks.notifyUrl,
-      customStr1: churchId,
-      customStr2: fundId,
-      customStr3: created.recurring.id,
-      nameFirst: member.full_name || undefined,
-      emailAddress: member.email || undefined,
-      subscriptionType: 1,
-      billingDate,
-      recurringAmount: pricing.amountGross,
-      frequency,
-      cycles,
-    });
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(churchId, {
+        amount: pricing.amountGross,
+        currency: "ZAR",
+        source: "RECURRING",
+        metadata: { paymentIntentId: created.intent.id, recurringGivingId: created.recurring.id, fundId },
+        providerIntentRef: created.intent.mPaymentId || mPaymentId,
+        itemName,
+        returnUrl: callbacks.returnUrl,
+        cancelUrl: callbacks.cancelUrl,
+        notifyUrl: callbacks.notifyUrl,
+        reference1: churchId,
+        reference2: fundId,
+        reference3: created.recurring.id,
+        payerName: member.full_name || undefined,
+        payerEmail: member.email || undefined,
+        subscriptionType: 1,
+        billingDate,
+        recurringAmount: pricing.amountGross,
+        frequency,
+        cycles,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        console.error("[recurring-givings] payfast credentials error", err?.message || err, err?.stack);
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+    const checkoutUrl = checkoutResult.checkoutUrl;
 
     return res.status(201).json({
       data: {
@@ -5239,8 +6172,8 @@ router.post("/recurring-givings", requireAuth, async (req, res) => {
         },
       },
       meta: {
-        provider: "payfast",
-        mode,
+        provider: checkoutResult.provider || "payfast",
+        mode: checkoutResult.mode || null,
       },
     });
   } catch (err) {
@@ -5411,39 +6344,36 @@ router.post("/payfast/initiate", requireAuth, async (req, res) => {
       ]
     );
 
-    const payfastCreds = await resolveChurchPayfastCredentials(churchId);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
-      });
-    }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
     const callbackUrls = getPayfastCallbackUrls(intent.id, intent.m_payment_id || intent.id);
     const returnUrl = callbackUrls.returnUrl || `${baseUrl}/give?success=true`;
     const cancelUrl = callbackUrls.cancelUrl || `${baseUrl}/give?cancelled=true`;
     const notifyUrl = callbackUrls.notifyUrl || `${baseUrl}/webhooks/payfast/itn`;
-
-    const paymentUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId: intent.m_payment_id || intent.id,
-      amount: intent.amount_gross || pricing.amountGross,
-      itemName: intent.item_name || fund.name,
-      returnUrl,
-      cancelUrl,
-      notifyUrl,
-      customStr1: churchId,
-      customStr2: fundId,
-      nameFirst: member.full_name,
-      emailAddress: undefined,
-    });
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(churchId, {
+        amount: intent.amount_gross || pricing.amountGross,
+        currency: "ZAR",
+        source: "DIRECT_APP",
+        metadata: { paymentIntentId: intent.id, fundId },
+        providerIntentRef: intent.m_payment_id || intent.id,
+        itemName: intent.item_name || fund.name,
+        returnUrl,
+        cancelUrl,
+        notifyUrl,
+        reference1: churchId,
+        reference2: fundId,
+        payerName: member.full_name,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+    const paymentUrl = checkoutResult.checkoutUrl;
 
     return res.json({
       paymentUrl,
@@ -6294,24 +7224,27 @@ router.get(
       const rows = await db.manyOrNone(
         `
         select
-          id,
-          campus_id as "campusId",
+          a.id,
+          a.service_id as "serviceId",
+          s.service_name as "serviceName",
+          a.campus_id as "campusId",
           cc.name as "campusName",
           cc.code as "campusCode",
-          service_date as "serviceDate",
-          total_attendance as "totalAttendance",
-          adults_count as "adultsCount",
-          youth_count as "youthCount",
-          children_count as "childrenCount",
-          first_time_guests as "firstTimeGuests",
-          notes,
-          created_at as "createdAt",
-          updated_at as "updatedAt"
+          a.service_date as "serviceDate",
+          a.total_attendance as "totalAttendance",
+          a.adults_count as "adultsCount",
+          a.youth_count as "youthCount",
+          a.children_count as "childrenCount",
+          a.first_time_guests as "firstTimeGuests",
+          a.notes,
+          a.created_at as "createdAt",
+          a.updated_at as "updatedAt"
         from church_attendance_records a
+        left join church_services s on s.id = a.service_id and s.church_id = a.church_id
         left join church_campuses cc on cc.id = a.campus_id
         where a.church_id = $1
           and ($2::uuid is null or a.campus_id = $2::uuid)
-        order by service_date desc, updated_at desc
+        order by a.service_date desc, a.updated_at desc
         limit $3
         `,
         [churchId, campusId, limit]
@@ -6346,108 +7279,244 @@ router.post(
     try {
       const churchId = requireChurch(req, res);
       if (!churchId) return;
-      let campusId = null;
+      let requestedCampusId = null;
       try {
-        campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
+        requestedCampusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
       } catch (campusErr) {
         return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
       }
 
-      const serviceDate = parseDateOnlyOrNull(req.body?.serviceDate);
-      if (!serviceDate) {
-        return res.status(400).json({ error: "serviceDate must be YYYY-MM-DD." });
+      const serviceId = String(req.body?.serviceId || "").trim();
+      let selectedService = null;
+      if (serviceId) {
+        if (!UUID_REGEX.test(serviceId)) {
+          return res.status(400).json({ error: "serviceId must be a UUID." });
+        }
+        selectedService = await findChurchServiceById(churchId, serviceId);
+        if (!selectedService) {
+          return res.status(400).json({ error: "serviceId is not in this church." });
+        }
+        const serviceCampusId = parseUuidOrNull(selectedService?.campusId);
+        if (requestedCampusId && serviceCampusId !== requestedCampusId) {
+          return res.status(400).json({ error: "serviceId does not belong to the selected campus." });
+        }
       }
 
-      const totalParsed = parseNonNegativeWholeNumber(req.body?.totalAttendance, "totalAttendance", { required: true });
+      const providedServiceDate = parseDateOnlyOrNull(req.body?.serviceDate);
+      const selectedServiceDate = selectedService ? formatDateIsoLike(selectedService.serviceDate) : "";
+      if (selectedServiceDate && providedServiceDate && selectedServiceDate !== providedServiceDate) {
+        return res.status(400).json({ error: "serviceDate must match the selected service date." });
+      }
+      const serviceDate = selectedServiceDate || providedServiceDate;
+      if (!serviceDate) {
+        return res.status(400).json({ error: "serviceDate must be YYYY-MM-DD (or provide serviceId)." });
+      }
+      const finalCampusId = requestedCampusId || parseUuidOrNull(selectedService?.campusId) || null;
+
+      const adultsRaw = req.body?.adultsCount;
+      const youthRaw = req.body?.youthCount;
+      const childrenRaw = req.body?.childrenCount;
+      const totalRaw = String(req.body?.totalAttendance ?? "").trim();
+      const totalParsed = parseNonNegativeWholeNumber(totalRaw, "totalAttendance");
       if (totalParsed.error) return res.status(400).json({ error: totalParsed.error });
-      const adultsParsed = parseNonNegativeWholeNumber(req.body?.adultsCount, "adultsCount");
+      const adultsParsed = parseNonNegativeWholeNumber(adultsRaw, "adultsCount");
       if (adultsParsed.error) return res.status(400).json({ error: adultsParsed.error });
-      const youthParsed = parseNonNegativeWholeNumber(req.body?.youthCount, "youthCount");
+      const youthParsed = parseNonNegativeWholeNumber(youthRaw, "youthCount");
       if (youthParsed.error) return res.status(400).json({ error: youthParsed.error });
-      const childrenParsed = parseNonNegativeWholeNumber(req.body?.childrenCount, "childrenCount");
+      const childrenParsed = parseNonNegativeWholeNumber(childrenRaw, "childrenCount");
       if (childrenParsed.error) return res.status(400).json({ error: childrenParsed.error });
       const guestsParsed = parseNonNegativeWholeNumber(req.body?.firstTimeGuests, "firstTimeGuests");
       if (guestsParsed.error) return res.status(400).json({ error: guestsParsed.error });
 
-      const totalAttendance = totalParsed.value;
       const adultsCount = adultsParsed.value;
       const youthCount = youthParsed.value;
       const childrenCount = childrenParsed.value;
       const firstTimeGuests = guestsParsed.value;
-
-      if (adultsCount + youthCount + childrenCount > totalAttendance) {
-        return res.status(400).json({
-          error: "adultsCount + youthCount + childrenCount cannot exceed totalAttendance.",
-        });
-      }
+      const breakdownTotal = adultsCount + youthCount + childrenCount;
+      const hasBreakdownInput = [adultsRaw, youthRaw, childrenRaw].some((value) => String(value ?? "").trim() !== "");
+      const totalAttendance = hasBreakdownInput ? breakdownTotal : totalParsed.value;
 
       const notesRaw = typeof req.body?.notes === "string" ? req.body.notes : "";
       const notes = notesRaw.trim().slice(0, 1000) || null;
-      const actorId = req.user?.id || null;
+      const actorId = parseUuidOrNull(req.user?.id);
 
-      const row = await db.one(
-        `
-        insert into church_attendance_records (
-          church_id,
-          campus_id,
-          service_date,
-          total_attendance,
-          adults_count,
-          youth_count,
-          children_count,
-          first_time_guests,
-          notes,
-          created_by,
-          updated_by
-        )
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
-        on conflict (church_id, service_date)
-        do update set
-          campus_id = excluded.campus_id,
-          total_attendance = excluded.total_attendance,
-          adults_count = excluded.adults_count,
-          youth_count = excluded.youth_count,
-          children_count = excluded.children_count,
-          first_time_guests = excluded.first_time_guests,
-          notes = excluded.notes,
-          updated_by = excluded.updated_by,
-          updated_at = now()
-        returning
-          id,
-          campus_id as "campusId",
-          service_date as "serviceDate",
-          total_attendance as "totalAttendance",
-          adults_count as "adultsCount",
-          youth_count as "youthCount",
-          children_count as "childrenCount",
-          first_time_guests as "firstTimeGuests",
-          notes,
-          created_at as "createdAt",
-          updated_at as "updatedAt"
-        `,
-        [
-          churchId,
-          campusId,
-          serviceDate,
-          totalAttendance,
-          adultsCount,
-          youthCount,
-          childrenCount,
-          firstTimeGuests,
-          notes,
-          actorId,
-        ]
-      );
+      let row = null;
+      if (selectedService?.id) {
+        row = await db.one(
+          `
+          insert into church_attendance_records (
+            church_id,
+            service_id,
+            campus_id,
+            service_date,
+            total_attendance,
+            adults_count,
+            youth_count,
+            children_count,
+            first_time_guests,
+            notes,
+            created_by,
+            updated_by
+          )
+          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+          on conflict (church_id, service_id)
+          do update set
+            campus_id = excluded.campus_id,
+            service_date = excluded.service_date,
+            total_attendance = excluded.total_attendance,
+            adults_count = excluded.adults_count,
+            youth_count = excluded.youth_count,
+            children_count = excluded.children_count,
+            first_time_guests = excluded.first_time_guests,
+            notes = excluded.notes,
+            updated_by = excluded.updated_by,
+            updated_at = now()
+          returning
+            id,
+            service_id as "serviceId",
+            campus_id as "campusId",
+            service_date as "serviceDate",
+            total_attendance as "totalAttendance",
+            adults_count as "adultsCount",
+            youth_count as "youthCount",
+            children_count as "childrenCount",
+            first_time_guests as "firstTimeGuests",
+            notes,
+            created_at as "createdAt",
+            updated_at as "updatedAt"
+          `,
+          [
+            churchId,
+            selectedService.id,
+            finalCampusId,
+            serviceDate,
+            totalAttendance,
+            adultsCount,
+            youthCount,
+            childrenCount,
+            firstTimeGuests,
+            notes,
+            actorId,
+          ]
+        );
+      } else {
+        row = await db.oneOrNone(
+          `
+          with target as (
+            select id
+            from church_attendance_records
+            where church_id = $1
+              and service_id is null
+              and service_date = $2
+              and (
+                ($3::uuid is null and campus_id is null)
+                or campus_id = $3::uuid
+              )
+            order by updated_at desc
+            limit 1
+          )
+          update church_attendance_records a
+          set
+            campus_id = $3,
+            service_date = $2,
+            total_attendance = $4,
+            adults_count = $5,
+            youth_count = $6,
+            children_count = $7,
+            first_time_guests = $8,
+            notes = $9,
+            service_id = null,
+            updated_by = $10,
+            updated_at = now()
+          from target t
+          where a.id = t.id
+          returning
+            a.id,
+            a.service_id as "serviceId",
+            a.campus_id as "campusId",
+            a.service_date as "serviceDate",
+            a.total_attendance as "totalAttendance",
+            a.adults_count as "adultsCount",
+            a.youth_count as "youthCount",
+            a.children_count as "childrenCount",
+            a.first_time_guests as "firstTimeGuests",
+            a.notes,
+            a.created_at as "createdAt",
+            a.updated_at as "updatedAt"
+          `,
+          [
+            churchId,
+            serviceDate,
+            finalCampusId,
+            totalAttendance,
+            adultsCount,
+            youthCount,
+            childrenCount,
+            firstTimeGuests,
+            notes,
+            actorId,
+          ]
+        );
+
+        if (!row) {
+          row = await db.one(
+            `
+            insert into church_attendance_records (
+              church_id,
+              service_id,
+              campus_id,
+              service_date,
+              total_attendance,
+              adults_count,
+              youth_count,
+              children_count,
+              first_time_guests,
+              notes,
+              created_by,
+              updated_by
+            )
+            values ($1,null,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+            returning
+              id,
+              service_id as "serviceId",
+              campus_id as "campusId",
+              service_date as "serviceDate",
+              total_attendance as "totalAttendance",
+              adults_count as "adultsCount",
+              youth_count as "youthCount",
+              children_count as "childrenCount",
+              first_time_guests as "firstTimeGuests",
+              notes,
+              created_at as "createdAt",
+              updated_at as "updatedAt"
+            `,
+            [
+              churchId,
+              finalCampusId,
+              serviceDate,
+              totalAttendance,
+              adultsCount,
+              youthCount,
+              childrenCount,
+              firstTimeGuests,
+              notes,
+              actorId,
+            ]
+          );
+        }
+      }
 
       let campus = null;
       if (row?.campusId) {
         campus = await findChurchCampusById(churchId, row.campusId);
       }
-      const summary = await readChurchAttendanceSummary(churchId, campusId);
+      const summary = await readChurchAttendanceSummary(churchId, requestedCampusId);
       return res.status(201).json({
         ok: true,
         row: normalizeAttendanceRow({
           ...row,
+          serviceId: selectedService?.id || null,
+          serviceName: selectedService?.serviceName || null,
           campusName: campus?.name || null,
           campusCode: campus?.code || null,
         }),
@@ -7143,6 +8212,7 @@ router.get("/church-life/services", requireAuth, requireChurchGrowthActive, asyn
       return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
     }
     const memberPk = String(req.user?.id || "").trim();
+    const memberPkForJoin = UUID_REGEX.test(memberPk) ? memberPk : null;
     const limit = parseChurchLifeLimit(req.query?.limit, 20, 120);
     const fromDate = parseChurchLifeDate(req.query?.from) || formatDateIsoLike(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000));
 
@@ -7293,6 +8363,7 @@ router.post("/church-life/check-ins", requireAuth, requireChurchGrowthActive, as
           campusCode: service?.campusCode || null,
         }),
         memberName: member?.full_name || null,
+        memberRole: member?.role || req.user?.role || null,
       },
       service: {
         id: service.id,
@@ -7409,6 +8480,8 @@ router.get("/church-life/events", requireAuth, requireChurchGrowthActive, async 
   try {
     const churchId = requireChurch(req, res);
     if (!churchId) return;
+    const memberPk = String(req.user?.id || "").trim();
+    const memberPkForJoin = UUID_REGEX.test(memberPk) ? memberPk : null;
     let campusId = null;
     try {
       campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
@@ -7420,37 +8493,102 @@ router.get("/church-life/events", requireAuth, requireChurchGrowthActive, async 
       ? Math.max(0, Math.min(365, Math.trunc(Number(req.query.includePastDays))))
       : 30;
 
-    const rows = await db.manyOrNone(
-      `
-      select
-        e.id,
-        e.church_id as "churchId",
-        e.campus_id as "campusId",
-        cc.name as "campusName",
-        cc.code as "campusCode",
-        e.title,
-        e.description,
-        e.starts_at as "startsAt",
-        e.ends_at as "endsAt",
-        e.venue,
-        e.poster_url as "posterUrl",
-        e.poster_data_url as "posterDataUrl",
-        e.status,
-        e.notify_on_publish as "notifyOnPublish",
-        e.published_at as "publishedAt",
-        e.created_at as "createdAt",
-        e.updated_at as "updatedAt"
-      from church_events e
-      left join church_campuses cc on cc.id = e.campus_id
-      where e.church_id = $1
-        and e.status = 'PUBLISHED'
-        and e.starts_at >= now() - ($2::int * interval '1 day')
-        and ($4::uuid is null or e.campus_id = $4::uuid)
-      order by e.starts_at asc
-      limit $3
-      `,
-      [churchId, includePastDays, limit, campusId]
-    );
+    let rows = [];
+    try {
+      rows = await db.manyOrNone(
+        `
+        select
+          e.id,
+          e.church_id as "churchId",
+          e.campus_id as "campusId",
+          cc.name as "campusName",
+          cc.code as "campusCode",
+          e.title,
+          e.description,
+          e.starts_at as "startsAt",
+          e.ends_at as "endsAt",
+          e.venue,
+          e.poster_url as "posterUrl",
+          e.poster_data_url as "posterDataUrl",
+          e.capacity,
+          e.is_ticketed as "isTicketed",
+          e.price,
+          coalesce(reg.count, 0)::int as "registrationCount",
+          my.id as "myRegistrationId",
+          my.status as "myRegistrationStatus",
+          my.created_at as "myRegisteredAt",
+          e.status,
+          e.notify_on_publish as "notifyOnPublish",
+          e.published_at as "publishedAt",
+          e.created_at as "createdAt",
+          e.updated_at as "updatedAt"
+        from church_events e
+        left join church_campuses cc on cc.id = e.campus_id
+        left join lateral (
+          select count(*)::int as count
+          from church_event_registrations r
+          where r.event_id = e.id
+            and r.status = any($5::text[])
+        ) reg on true
+        left join church_event_registrations my
+          on my.event_id = e.id
+          and my.member_pk = $6::uuid
+        where e.church_id = $1
+          and e.status = 'PUBLISHED'
+          and e.starts_at >= (current_date - ($2::int * interval '1 day'))
+          and ($4::uuid is null or e.campus_id = $4::uuid)
+        order by e.starts_at asc
+        limit $3
+        `,
+        [churchId, includePastDays, limit, campusId, CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES, memberPkForJoin]
+      );
+    } catch (memberJoinErr) {
+      console.error("[church-life/events] member-join fallback", memberJoinErr?.message || memberJoinErr);
+      rows = await db.manyOrNone(
+        `
+        select
+          e.id,
+          e.church_id as "churchId",
+          e.campus_id as "campusId",
+          cc.name as "campusName",
+          cc.code as "campusCode",
+          e.title,
+          e.description,
+          e.starts_at as "startsAt",
+          e.ends_at as "endsAt",
+          e.venue,
+          e.poster_url as "posterUrl",
+          e.poster_data_url as "posterDataUrl",
+          e.capacity,
+          e.is_ticketed as "isTicketed",
+          e.price,
+          coalesce(reg.count, 0)::int as "registrationCount",
+          null::uuid as "myRegistrationId",
+          null::text as "myRegistrationStatus",
+          null::timestamptz as "myRegisteredAt",
+          e.status,
+          e.notify_on_publish as "notifyOnPublish",
+          e.published_at as "publishedAt",
+          e.created_at as "createdAt",
+          e.updated_at as "updatedAt"
+        from church_events e
+        left join church_campuses cc on cc.id = e.campus_id
+        left join lateral (
+          select count(*)::int as count
+          from church_event_registrations r
+          where r.event_id = e.id
+            and r.status = any($5::text[])
+        ) reg on true
+        where e.church_id = $1
+          and e.status = 'PUBLISHED'
+          and e.starts_at >= (current_date - ($2::int * interval '1 day'))
+          and ($4::uuid is null or e.campus_id = $4::uuid)
+        order by e.starts_at asc
+        limit $3
+        `,
+        [churchId, includePastDays, limit, campusId, CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES]
+      );
+    }
 
     return res.json({
       ok: true,
@@ -7462,6 +8600,1008 @@ router.get("/church-life/events", requireAuth, requireChurchGrowthActive, async 
       return res.status(503).json({ error: "Church Life events are not available yet. Run migrations and retry." });
     }
     console.error("[church-life/events] error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/church-life/events/:eventId/ticket-checkout", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const eventId = String(req.params?.eventId || "").trim();
+    if (!UUID_REGEX.test(eventId)) return res.status(400).json({ error: "Invalid eventId." });
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) return res.status(403).json({ error: "Your profile is not linked for ticket purchase." });
+    const member = await loadMember(memberPk);
+
+    const event = await findChurchEventById(churchId, eventId);
+    if (!event) return res.status(404).json({ error: "Event not found." });
+    if (normalizeChurchLifeEventStatus(event.status) !== "PUBLISHED") {
+      return res.status(400).json({ error: "This event is not open for tickets." });
+    }
+    const endsAtMs = Date.parse(String(event?.endsAt || ""));
+    if (Number.isFinite(endsAtMs) && endsAtMs < Date.now()) {
+      return res.status(400).json({ error: "This event has ended." });
+    }
+    const isTicketed = event?.isTicketed === true && Number(event?.price || 0) > 0;
+    if (!isTicketed) {
+      return res.status(400).json({ error: "This event does not require ticket payment. Use Register instead." });
+    }
+
+    const existing = await db.oneOrNone(
+      `
+      select
+        id,
+        church_id as "churchId",
+        event_id as "eventId",
+        member_pk as "memberPk",
+        member_id as "memberId",
+        status,
+        checked_in_at as "checkedInAt",
+        canceled_at as "canceledAt",
+        created_at as "createdAt",
+        updated_at as "updatedAt"
+      from church_event_registrations
+      where church_id = $1 and event_id = $2 and member_pk = $3
+      limit 1
+      `,
+      [churchId, eventId, memberPk]
+    );
+    const existingStatus = normalizeChurchEventRegistrationStatus(existing?.status || "", "");
+    const alreadyActive = CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES.includes(existingStatus);
+    const unitPrice = toCurrencyNumber(Number(event?.price || 0));
+    const quantity = Math.max(
+      1,
+      Math.min(CHURCH_EVENT_TICKET_MAX_QUANTITY, parsePositiveInt(req.body?.quantity, 1) || 1)
+    );
+
+    const registrationCount = await countChurchEventActiveRegistrations(churchId, eventId);
+    if (!alreadyActive) {
+      const capacity = event?.capacity == null ? null : Number(event.capacity);
+      if (Number.isFinite(capacity) && capacity > 0 && registrationCount >= capacity) {
+        return res.status(409).json({ error: "This event is full." });
+      }
+    }
+
+    if (alreadyActive) {
+      return res.json({
+        ok: true,
+        alreadyRegistered: true,
+        idempotent: true,
+        event: normalizeChurchEventRow({
+          ...event,
+          registrationCount,
+          myRegistrationId: existing?.id || null,
+          myRegistrationStatus: existing?.status || "REGISTERED",
+          myRegisteredAt: existing?.createdAt || null,
+        }),
+        registration: normalizeChurchEventRegistrationRow({
+          ...existing,
+          memberName: member?.full_name || null,
+          memberPhone: member?.phone || null,
+          memberEmail: member?.email || null,
+        }),
+      });
+    }
+
+    const amount = toCurrencyNumber(unitPrice * quantity);
+    if (!(Number.isFinite(amount) && amount > 0)) {
+      return res.status(400).json({ error: "Ticket amount is invalid." });
+    }
+    const pricing = buildFeeBreakdown(amount);
+    const mPaymentId = makeMpaymentId();
+    const itemName = `${String(event?.title || "Event ticket").trim() || "Event ticket"}${quantity > 1 ? ` x${quantity}` : ""}`
+      .normalize("NFKD")
+      .replace(/[^\x20-\x7E]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100);
+
+    const intent = await db.one(
+      `
+      insert into payment_intents (
+        church_id,
+        amount,
+        currency,
+        status,
+        member_name,
+        member_phone,
+        payer_name,
+        payer_phone,
+        payer_email,
+        payer_type,
+        channel,
+        provider,
+        m_payment_id,
+        item_name,
+        platform_fee_amount,
+        platform_fee_pct,
+        platform_fee_fixed,
+        amount_gross,
+        superadmin_cut_amount,
+        superadmin_cut_pct,
+        source,
+        notes,
+        service_date
+      ) values (
+        $1,$2,'ZAR','PENDING',$3,$4,$5,$6,$7,'member','member_app','payfast',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
+      )
+      returning
+        id,
+        m_payment_id as "mPaymentId",
+        amount,
+        amount_gross as "amountGross",
+        item_name as "itemName",
+        source
+      `,
+      [
+        churchId,
+        pricing.amount,
+        member?.full_name || null,
+        member?.phone || null,
+        member?.full_name || null,
+        member?.phone || null,
+        member?.email || null,
+        mPaymentId,
+        itemName || "Event ticket",
+        pricing.platformFeeAmount,
+        pricing.platformFeePct,
+        pricing.platformFeeFixed,
+        pricing.amountGross,
+        pricing.superadminCutAmount,
+        pricing.superadminCutPct,
+        CHURCH_EVENT_TICKET_SOURCE,
+        buildChurchEventTicketNote({ eventId, memberPk, quantity, unitPrice }),
+        formatDateIsoLike(event?.startsAt) || formatDateIsoLike(new Date()),
+      ]
+    );
+
+    const callbackUrls = getPayfastCallbackUrls(intent.id, intent.mPaymentId || intent.id);
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(churchId, {
+        amount: intent.amountGross || pricing.amountGross,
+        currency: "ZAR",
+        source: CHURCH_EVENT_TICKET_SOURCE,
+        metadata: { paymentIntentId: intent.id, eventId, memberPk, quantity, unitPrice },
+        providerIntentRef: intent.mPaymentId || intent.id,
+        itemName: intent.itemName || itemName || "Event ticket",
+        returnUrl: callbackUrls.returnUrl,
+        cancelUrl: callbackUrls.cancelUrl,
+        notifyUrl: callbackUrls.notifyUrl,
+        reference1: churchId,
+        reference2: eventId,
+        reference3: intent.id,
+        reference4: CHURCH_EVENT_TICKET_SOURCE,
+        payerName: member?.full_name || undefined,
+        payerEmail: member?.email || undefined,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        console.error("[church-life/events] ticket-checkout credentials error", err?.message || err, err?.stack);
+        return res.status(503).json({
+          error: "Ticket payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+
+    const checkoutUrl = checkoutResult.checkoutUrl;
+
+    return res.status(201).json({
+      ok: true,
+      checkoutUrl,
+      paymentUrl: checkoutUrl,
+      paymentIntentId: intent.id,
+      mPaymentId: intent.mPaymentId || null,
+      source: CHURCH_EVENT_TICKET_SOURCE,
+      event: normalizeChurchEventRow({
+        ...event,
+        registrationCount,
+      }),
+      pricing: {
+        unitPrice,
+        quantity,
+        ticketAmount: pricing.amount,
+        churpayFee: pricing.platformFeeAmount,
+        totalCharged: pricing.amountGross,
+      },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life event ticket checkout is not available yet. Run migrations and retry." });
+    }
+    if (err?.code === "23514" && String(err?.constraint || "") === "payment_intents_source_check") {
+      return res.status(503).json({
+        error: "Church Life event ticket checkout is not available yet. Run migrations and retry.",
+        code: "TICKET_CHECKOUT_REQUIRES_MIGRATION",
+      });
+    }
+    console.error("[church-life/events] ticket-checkout error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/church-life/events/:eventId/register", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const eventId = String(req.params?.eventId || "").trim();
+    if (!UUID_REGEX.test(eventId)) return res.status(400).json({ error: "Invalid eventId." });
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) return res.status(403).json({ error: "Your profile is not linked for event registration." });
+    const ticketPaymentIntentId = String(req.body?.ticketPaymentIntentId || "").trim();
+    const member = await loadMember(memberPk);
+
+    const outcome = await db.tx(async (t) => {
+      const event = await findChurchEventById(churchId, eventId, { tx: t });
+      if (!event) throw Object.assign(new Error("Event not found."), { statusCode: 404 });
+      if (normalizeChurchLifeEventStatus(event.status) !== "PUBLISHED") {
+        throw Object.assign(new Error("This event is not open for registration."), { statusCode: 400 });
+      }
+      const endsAtMs = Date.parse(String(event?.endsAt || ""));
+      if (Number.isFinite(endsAtMs) && endsAtMs < Date.now()) {
+        throw Object.assign(new Error("This event has ended."), { statusCode: 400 });
+      }
+
+      const existing = await t.oneOrNone(
+        `
+        select id, status
+        from church_event_registrations
+        where church_id = $1 and event_id = $2 and member_pk = $3
+        limit 1
+        for update
+        `,
+        [churchId, eventId, memberPk]
+      );
+      const existingStatus = normalizeChurchEventRegistrationStatus(existing?.status || "", "");
+      const alreadyActive = CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES.includes(existingStatus);
+      const isTicketedEvent = event?.isTicketed === true && Number(event?.price || 0) > 0;
+
+      if (!alreadyActive && isTicketedEvent) {
+        if (!UUID_REGEX.test(ticketPaymentIntentId)) {
+          throw Object.assign(
+            new Error("This event requires a paid ticket. Tap Buy ticket first, then retry registration."),
+            { statusCode: 402 }
+          );
+        }
+        const ticketIntent = await loadPaidChurchEventTicketIntent(churchId, ticketPaymentIntentId, { tx: t });
+        if (!ticketIntent) {
+          throw Object.assign(new Error("Ticket payment intent was not found for this church."), { statusCode: 404 });
+        }
+        if (String(ticketIntent?.status || "").trim().toUpperCase() !== "PAID") {
+          throw Object.assign(new Error("Ticket payment is not confirmed yet. Complete payment and retry."), { statusCode: 402 });
+        }
+        if (String(ticketIntent?.source || "").trim().toUpperCase() !== CHURCH_EVENT_TICKET_SOURCE) {
+          throw Object.assign(new Error("Ticket payment intent does not belong to event checkout."), { statusCode: 400 });
+        }
+        const ticketMeta = parseChurchEventTicketNote(ticketIntent?.notes);
+        if (!ticketMeta || ticketMeta.eventId !== eventId || ticketMeta.memberPk !== memberPk) {
+          throw Object.assign(new Error("Ticket payment does not match this member or event."), { statusCode: 403 });
+        }
+      }
+
+      if (!alreadyActive) {
+        const activeCount = await countChurchEventActiveRegistrations(churchId, eventId, { tx: t });
+        const capacity = event?.capacity == null ? null : Number(event.capacity);
+        if (Number.isFinite(capacity) && capacity > 0 && activeCount >= capacity) {
+          throw Object.assign(new Error("This event is full."), { statusCode: 409 });
+        }
+      }
+
+      const saved = await t.one(
+        `
+        insert into church_event_registrations (
+          church_id, event_id, member_pk, member_id, status, checked_in_at, canceled_at, created_by, updated_by
+        )
+        values ($1,$2,$3,$4,'REGISTERED',null,null,$5,$5)
+        on conflict (event_id, member_pk)
+        do update set
+          member_id = excluded.member_id,
+          status = 'REGISTERED',
+          canceled_at = null,
+          updated_by = excluded.updated_by,
+          updated_at = now()
+        returning
+          id,
+          church_id as "churchId",
+          event_id as "eventId",
+          member_pk as "memberPk",
+          member_id as "memberId",
+          status,
+          checked_in_at as "checkedInAt",
+          canceled_at as "canceledAt",
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        `,
+        [churchId, eventId, memberPk, member?.member_id || null, req.user?.id || null]
+      );
+      const registrationCount = await countChurchEventActiveRegistrations(churchId, eventId, { tx: t });
+      return { event, saved, registrationCount, idempotent: alreadyActive };
+    });
+
+    return res.status(outcome.idempotent ? 200 : 201).json({
+      ok: true,
+      idempotent: outcome.idempotent,
+      event: normalizeChurchEventRow({
+        ...outcome.event,
+        registrationCount: outcome.registrationCount,
+        myRegistrationId: outcome.saved.id,
+        myRegistrationStatus: outcome.saved.status,
+        myRegisteredAt: outcome.saved.createdAt,
+      }),
+      registration: normalizeChurchEventRegistrationRow({
+        ...outcome.saved,
+        memberName: member?.full_name || null,
+        memberPhone: member?.phone || null,
+        memberEmail: member?.email || null,
+      }),
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life event registration is not available yet. Run migrations and retry." });
+    }
+    const statusCode = Number(err?.statusCode || err?.status || 0);
+    if (statusCode >= 400 && statusCode < 500) {
+      return res.status(statusCode).json({ error: err?.message || "Could not register for event." });
+    }
+    console.error("[church-life/events] register error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/church-life/events/:eventId/cancel", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const eventId = String(req.params?.eventId || "").trim();
+    if (!UUID_REGEX.test(eventId)) return res.status(400).json({ error: "Invalid eventId." });
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) return res.status(403).json({ error: "Your profile is not linked for event registration." });
+    const member = await loadMember(memberPk);
+
+    const outcome = await db.tx(async (t) => {
+      const event = await findChurchEventById(churchId, eventId, { tx: t });
+      if (!event) throw Object.assign(new Error("Event not found."), { statusCode: 404 });
+
+      const existing = await t.oneOrNone(
+        `
+        select
+          id,
+          church_id as "churchId",
+          event_id as "eventId",
+          member_pk as "memberPk",
+          member_id as "memberId",
+          status,
+          checked_in_at as "checkedInAt",
+          canceled_at as "canceledAt",
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        from church_event_registrations
+        where church_id = $1 and event_id = $2 and member_pk = $3
+        limit 1
+        for update
+        `,
+        [churchId, eventId, memberPk]
+      );
+      if (!existing) throw Object.assign(new Error("You are not registered for this event."), { statusCode: 404 });
+
+      const currentStatus = normalizeChurchEventRegistrationStatus(existing?.status || "", "");
+      const alreadyCanceled = currentStatus === "CANCELLED";
+      let saved = existing;
+      if (!alreadyCanceled) {
+        saved = await t.one(
+          `
+          update church_event_registrations
+          set
+            status = 'CANCELLED',
+            canceled_at = coalesce(canceled_at, now()),
+            updated_by = $4,
+            updated_at = now()
+          where church_id = $1 and event_id = $2 and member_pk = $3
+          returning
+            id,
+            church_id as "churchId",
+            event_id as "eventId",
+            member_pk as "memberPk",
+            member_id as "memberId",
+            status,
+            checked_in_at as "checkedInAt",
+            canceled_at as "canceledAt",
+            created_at as "createdAt",
+            updated_at as "updatedAt"
+          `,
+          [churchId, eventId, memberPk, req.user?.id || null]
+        );
+      }
+      const registrationCount = await countChurchEventActiveRegistrations(churchId, eventId, { tx: t });
+      return { event, saved, registrationCount, idempotent: alreadyCanceled };
+    });
+
+    return res.json({
+      ok: true,
+      idempotent: outcome.idempotent,
+      event: normalizeChurchEventRow({
+        ...outcome.event,
+        registrationCount: outcome.registrationCount,
+        myRegistrationId: outcome.saved.id,
+        myRegistrationStatus: "CANCELLED",
+        myRegisteredAt: outcome.saved.createdAt,
+      }),
+      registration: normalizeChurchEventRegistrationRow({
+        ...outcome.saved,
+        memberName: member?.full_name || null,
+        memberPhone: member?.phone || null,
+        memberEmail: member?.email || null,
+      }),
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life event registration is not available yet. Run migrations and retry." });
+    }
+    const statusCode = Number(err?.statusCode || err?.status || 0);
+    if (statusCode >= 400 && statusCode < 500) {
+      return res.status(statusCode).json({ error: err?.message || "Could not cancel event registration." });
+    }
+    console.error("[church-life/events] cancel registration error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/groups", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(403).json({ error: "Your profile is not linked for group access." });
+    }
+    const includeInactive = toBoolean(req.query?.includeInactive) === true;
+    const limit = parseChurchLifeLimit(req.query?.limit, 40, 120);
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        g.id,
+        g.church_id as "churchId",
+        g.name,
+        g.code,
+        g.group_type as "groupType",
+        g.description,
+        g.leader_member_pk as "leaderMemberPk",
+        leader.member_id as "leaderMemberId",
+        leader.full_name as "leaderName",
+        g.active,
+        g.created_at as "createdAt",
+        g.updated_at as "updatedAt",
+        gm.member_role as "membershipRole",
+        gm.joined_on as "membershipJoinedOn",
+        gm.active as "membershipActive",
+        coalesce(group_members.count, 0)::int as "memberCount",
+        next_meeting.id as "nextMeetingId",
+        next_meeting.meeting_date as "nextMeetingDate",
+        next_meeting.starts_at as "nextMeetingStartsAt",
+        next_meeting.status as "nextMeetingStatus",
+        last_meeting.id as "lastMeetingId",
+        last_meeting.meeting_date as "lastMeetingDate",
+        last_meeting.status as "lastMeetingStatus",
+        coalesce(my_att.marked_count, 0)::int as "myAttendanceMarkedCount",
+        coalesce(my_att.present_like_count, 0)::int as "myAttendancePresentCount",
+        my_att.last_meeting_date as "myAttendanceLastMeetingDate",
+        my_last.last_status as "myAttendanceLastStatus"
+      from church_group_members gm
+      join church_groups g
+        on g.id = gm.group_id
+       and g.church_id = gm.church_id
+      left join members leader on leader.id = g.leader_member_pk
+      left join lateral (
+        select count(*)::int as count
+        from church_group_members members_count
+        where members_count.group_id = g.id and members_count.active = true
+      ) group_members on true
+      left join lateral (
+        select id, meeting_date, starts_at, status
+        from church_group_meetings cgms
+        where cgms.group_id = g.id
+          and cgms.status = 'SCHEDULED'
+          and cgms.meeting_date >= current_date
+        order by cgms.meeting_date asc, coalesce(cgms.starts_at, cgms.created_at) asc
+        limit 1
+      ) next_meeting on true
+      left join lateral (
+        select id, meeting_date, status
+        from church_group_meetings cgml
+        where cgml.group_id = g.id
+        order by cgml.meeting_date desc, coalesce(cgml.starts_at, cgml.created_at) desc
+        limit 1
+      ) last_meeting on true
+      left join lateral (
+        select
+          count(*)::int as marked_count,
+          count(*) filter (where cga.status in ('PRESENT', 'LATE'))::int as present_like_count,
+          max(cgm.meeting_date) as last_meeting_date
+        from church_group_attendance cga
+        join church_group_meetings cgm on cgm.id = cga.meeting_id
+        where cga.group_id = g.id and cga.member_pk = $2
+      ) my_att on true
+      left join lateral (
+        select cga_last.status as last_status
+        from church_group_attendance cga_last
+        join church_group_meetings cgm_last on cgm_last.id = cga_last.meeting_id
+        where cga_last.group_id = g.id and cga_last.member_pk = $2
+        order by cgm_last.meeting_date desc, cga_last.updated_at desc
+        limit 1
+      ) my_last on true
+      where gm.church_id = $1
+        and gm.member_pk = $2
+        and ($3::boolean = true or (gm.active = true and g.active = true))
+      order by g.active desc, g.name asc
+      limit $4
+      `,
+      [churchId, memberPk, includeInactive, limit]
+    );
+
+    return res.json({
+      ok: true,
+      groups: rows.map((row) => {
+        const marked = Number(row?.myAttendanceMarkedCount || 0);
+        const present = Number(row?.myAttendancePresentCount || 0);
+        const attendanceRate = marked > 0 ? Number(((present / marked) * 100).toFixed(2)) : null;
+        return {
+          ...normalizeChurchGroupRow(row),
+          membership: {
+            role: normalizeChurchGroupMemberRole(row?.membershipRole),
+            joinedOn: formatDateIsoLike(row?.membershipJoinedOn),
+            active: row?.membershipActive !== false,
+          },
+          nextMeeting: row?.nextMeetingId
+            ? {
+                id: row.nextMeetingId,
+                meetingDate: formatDateIsoLike(row?.nextMeetingDate),
+                startsAt: row?.nextMeetingStartsAt || null,
+                status: normalizeChurchGroupMeetingStatus(row?.nextMeetingStatus),
+              }
+            : null,
+          lastMeeting: row?.lastMeetingId
+            ? {
+                id: row.lastMeetingId,
+                meetingDate: formatDateIsoLike(row?.lastMeetingDate),
+                status: normalizeChurchGroupMeetingStatus(row?.lastMeetingStatus, "COMPLETED"),
+              }
+            : null,
+          myAttendance: {
+            markedCount: marked,
+            presentCount: present,
+            attendanceRate,
+            lastMeetingDate: formatDateIsoLike(row?.myAttendanceLastMeetingDate),
+            lastStatus: row?.myAttendanceLastStatus ? normalizeChurchGroupAttendanceStatus(row.myAttendanceLastStatus) : null,
+          },
+        };
+      }),
+      meta: { limit, includeInactive, returned: rows.length },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life groups are not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/groups] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/groups/:groupId/meetings", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const groupId = String(req.params?.groupId || "").trim();
+    if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId." });
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(403).json({ error: "Your profile is not linked for group access." });
+    }
+
+    const group = await findChurchGroupById(churchId, groupId);
+    if (!group) return res.status(404).json({ error: "Group not found." });
+    const membership = await findGroupMembership(churchId, groupId, memberPk, { requireActive: true });
+    if (!membership) return res.status(403).json({ error: "You are not assigned to this group." });
+
+    const statusRaw = String(req.query?.status || "").trim();
+    if (statusRaw && !CHURCH_GROUP_MEETING_STATUSES.has(normalizeUpperToken(statusRaw))) {
+      return res.status(400).json({ error: "status must be SCHEDULED, COMPLETED, or CANCELLED when provided." });
+    }
+    const status = statusRaw ? normalizeChurchGroupMeetingStatus(statusRaw) : null;
+    const includePastDays = Number.isFinite(Number(req.query?.includePastDays))
+      ? Math.max(0, Math.min(365, Math.trunc(Number(req.query.includePastDays))))
+      : 120;
+    const limit = parseChurchLifeLimit(req.query?.limit, 40, 120);
+
+    const rows = await db.manyOrNone(
+      `
+      select
+        gm.id,
+        gm.church_id as "churchId",
+        gm.group_id as "groupId",
+        gm.meeting_date as "meetingDate",
+        gm.starts_at as "startsAt",
+        gm.ends_at as "endsAt",
+        gm.location,
+        gm.notes,
+        gm.status,
+        gm.created_at as "createdAt",
+        gm.updated_at as "updatedAt",
+        coalesce(agg.total, 0)::int as "attendanceCount",
+        coalesce(agg.present_count, 0)::int as "presentCount",
+        coalesce(agg.late_count, 0)::int as "lateCount",
+        coalesce(agg.absent_count, 0)::int as "absentCount",
+        coalesce(agg.excused_count, 0)::int as "excusedCount",
+        mine.status as "myAttendanceStatus",
+        mine.updated_at as "myAttendanceMarkedAt"
+      from church_group_meetings gm
+      left join lateral (
+        select
+          count(*)::int as total,
+          count(*) filter (where status='PRESENT')::int as present_count,
+          count(*) filter (where status='LATE')::int as late_count,
+          count(*) filter (where status='ABSENT')::int as absent_count,
+          count(*) filter (where status='EXCUSED')::int as excused_count
+        from church_group_attendance cga
+        where cga.meeting_id = gm.id
+      ) agg on true
+      left join church_group_attendance mine
+        on mine.meeting_id = gm.id
+       and mine.member_pk = $3
+      where gm.church_id = $1
+        and gm.group_id = $2
+        and gm.meeting_date >= current_date - ($4::int * interval '1 day')
+        and ($5::text is null or gm.status = $5::text)
+      order by gm.meeting_date desc, coalesce(gm.starts_at, gm.created_at) desc
+      limit $6
+      `,
+      [churchId, groupId, memberPk, includePastDays, status, limit]
+    );
+
+    return res.json({
+      ok: true,
+      group: {
+        ...normalizeChurchGroupRow(group),
+        membership: {
+          role: normalizeChurchGroupMemberRole(membership?.role),
+          joinedOn: formatDateIsoLike(membership?.joinedOn),
+          active: membership?.active !== false,
+        },
+      },
+      meetings: rows.map((row) => ({
+        ...normalizeChurchGroupMeetingRow(row),
+        myAttendanceStatus: row?.myAttendanceStatus ? normalizeChurchGroupAttendanceStatus(row.myAttendanceStatus) : null,
+        myAttendanceMarkedAt: row?.myAttendanceMarkedAt || null,
+      })),
+      meta: { limit, includePastDays, status, returned: rows.length },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life group meetings are not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/groups] meetings list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/volunteer-terms", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(403).json({ error: "Your profile is not linked for volunteer terms." });
+    }
+
+    const limit = parseChurchLifeLimit(req.query?.limit, 80, 220);
+    const includeHistory = toBoolean(req.query?.includeHistory) === true;
+    const status = normalizeVolunteerTermStatus(req.query?.status, "");
+    const dueWithinDaysRaw = req.query?.dueWithinDays;
+    const dueWithinDays =
+      typeof dueWithinDaysRaw === "undefined" || dueWithinDaysRaw === null || dueWithinDaysRaw === ""
+        ? null
+        : parsePositiveInt(dueWithinDaysRaw, null);
+    if (dueWithinDaysRaw !== undefined && dueWithinDays === null) {
+      return res.status(400).json({ error: "dueWithinDays must be a positive integer." });
+    }
+    let campusId = null;
+    try {
+      campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+    } catch (campusErr) {
+      return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+    }
+
+    const where = ["t.church_id = $1", "t.member_pk = $2::uuid"];
+    const params = [churchId, memberPk];
+    let idx = 3;
+
+    if (!includeHistory) {
+      where.push(`t.status in ('ACTIVE','REVIEW_DUE','RENEWED')`);
+    }
+    if (status && VOLUNTEER_TERM_STATUSES.has(status)) {
+      where.push(`t.status = $${idx}`);
+      params.push(status);
+      idx += 1;
+    }
+    if (campusId) {
+      where.push(`ministry.campus_id = $${idx}::uuid`);
+      params.push(campusId);
+      idx += 1;
+    }
+    if (dueWithinDays !== null) {
+      where.push(`t.end_date is not null and t.end_date <= current_date + $${idx}::int`);
+      params.push(dueWithinDays);
+      idx += 1;
+    }
+
+    params.push(limit);
+    const rows = await db.manyOrNone(
+      `
+      select
+        t.id,
+        t.church_id as "churchId",
+        t.member_pk as "memberPk",
+        t.member_id as "memberId",
+        m.full_name as "memberName",
+        lower(coalesce(m.role, 'member')) as "memberRole",
+        t.ministry_id as "ministryId",
+        ministry.name as "ministryName",
+        t.ministry_role_id as "ministryRoleId",
+        role.role_name as "ministryRoleName",
+        t.start_date as "startDate",
+        t.end_date as "endDate",
+        t.term_length_months as "termLengthMonths",
+        t.status,
+        t.end_reason as "endReason",
+        t.attendance_rate as "attendanceRate",
+        t.reliability_rate as "reliabilityRate",
+        t.training_completed as "trainingCompleted",
+        t.system_rating as "systemRating",
+        t.manual_review_score as "manualReviewScore",
+        t.performance_notes as "performanceNotes",
+        t.reviewed_by as "reviewedBy",
+        reviewer.full_name as "reviewedByName",
+        t.reviewed_at as "reviewedAt",
+        t.created_at as "createdAt",
+        t.updated_at as "updatedAt",
+        coalesce(active_agg.count, 0)::int as "activeRolesCount"
+      from volunteer_role_terms t
+      join members m on m.id = t.member_pk and m.church_id = t.church_id
+      join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+      join church_ministry_roles role on role.id = t.ministry_role_id and role.church_id = t.church_id
+      left join members reviewer on reviewer.id = t.reviewed_by and reviewer.church_id = t.church_id
+      left join lateral (
+        select count(*)::int as count
+        from volunteer_role_terms active_terms
+        where active_terms.church_id = t.church_id
+          and active_terms.member_pk = t.member_pk
+          and active_terms.status in ('ACTIVE', 'REVIEW_DUE')
+      ) active_agg on true
+      where ${where.join(" and ")}
+      order by
+        case t.status
+          when 'REVIEW_DUE' then 0
+          when 'ACTIVE' then 1
+          when 'RENEWED' then 2
+          else 3
+        end asc,
+        coalesce(t.end_date, (current_date + 3650)) asc,
+        t.created_at desc
+      limit $${idx}
+      `,
+      params
+    );
+
+    const member = await loadMember(memberPk);
+    const roleLabels = Array.from(
+      new Set(
+        rows
+          .map((row) => String(row?.ministryRoleName || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    return res.json({
+      ok: true,
+      member: {
+        memberPk,
+        memberId: member?.member_id || null,
+        memberName: member?.full_name || req.user?.fullName || null,
+        roleLabels,
+      },
+      volunteerTerms: rows.map(normalizeVolunteerTermRow),
+      meta: {
+        limit,
+        status: status || null,
+        includeHistory,
+        dueWithinDays,
+        campusId: campusId || null,
+        returned: rows.length,
+      },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/volunteer-terms] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/volunteer-schedules", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(403).json({ error: "Your profile is not linked for volunteer schedules." });
+    }
+
+    const limit = parseChurchLifeLimit(req.query?.limit, 80, 240);
+    const scheduleStatus = normalizeMinistryScheduleStatus(req.query?.status, "");
+    const assignmentStatus = normalizeMinistryScheduleAssignmentStatus(req.query?.assignmentStatus, "");
+    const fromDate = req.query?.fromDate ? parseChurchLifeDate(req.query?.fromDate) : null;
+    const toDate = req.query?.toDate ? parseChurchLifeDate(req.query?.toDate) : null;
+    if (req.query?.fromDate && !fromDate) return res.status(400).json({ error: "fromDate must be YYYY-MM-DD." });
+    if (req.query?.toDate && !toDate) return res.status(400).json({ error: "toDate must be YYYY-MM-DD." });
+    const includePastDays = Number.isFinite(Number(req.query?.includePastDays))
+      ? Math.max(0, Math.min(365, Math.trunc(Number(req.query.includePastDays))))
+      : 14;
+    let campusId = null;
+    try {
+      campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+    } catch (campusErr) {
+      return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+    }
+
+    const where = ["a.church_id = $1", "a.member_pk = $2::uuid"];
+    const params = [churchId, memberPk];
+    let idx = 3;
+
+    if (scheduleStatus && MINISTRY_SCHEDULE_STATUSES.has(scheduleStatus)) {
+      where.push(`s.status = $${idx}`);
+      params.push(scheduleStatus);
+      idx += 1;
+    }
+    if (assignmentStatus && MINISTRY_SCHEDULE_ASSIGNMENT_STATUSES.has(assignmentStatus)) {
+      where.push(`a.status = $${idx}`);
+      params.push(assignmentStatus);
+      idx += 1;
+    }
+    if (campusId) {
+      where.push(`s.campus_id = $${idx}::uuid`);
+      params.push(campusId);
+      idx += 1;
+    }
+    if (fromDate) {
+      where.push(`s.schedule_date >= $${idx}::date`);
+      params.push(fromDate);
+      idx += 1;
+    } else {
+      where.push(`s.schedule_date >= current_date - $${idx}::int`);
+      params.push(includePastDays);
+      idx += 1;
+    }
+    if (toDate) {
+      where.push(`s.schedule_date <= $${idx}::date`);
+      params.push(toDate);
+      idx += 1;
+    }
+
+    params.push(limit);
+    const rows = await db.manyOrNone(
+      `
+      select
+        s.id,
+        s.church_id as "churchId",
+        s.campus_id as "campusId",
+        cc.name as "campusName",
+        cc.code as "campusCode",
+        s.ministry_id as "ministryId",
+        ministry.name as "ministryName",
+        s.service_id as "serviceId",
+        srv.service_name as "serviceName",
+        s.schedule_date as "scheduleDate",
+        s.title,
+        s.notes,
+        s.status,
+        s.created_at as "createdAt",
+        s.updated_at as "updatedAt",
+        coalesce(assignment_agg.total, 0)::int as "assignmentCount",
+        coalesce(assignment_agg.confirmed, 0)::int as "confirmedCount",
+        coalesce(assignment_agg.served, 0)::int as "servedCount",
+        coalesce(assignment_agg.no_show, 0)::int as "noShowCount",
+        a.id as "assignmentId",
+        a.member_pk as "memberPk",
+        a.member_id as "memberId",
+        m.full_name as "memberName",
+        lower(coalesce(m.role, 'member')) as "memberRole",
+        a.ministry_role_id as "ministryRoleId",
+        role.role_name as "ministryRoleName",
+        a.status as "assignmentStatus",
+        a.assigned_by as "assignedBy",
+        a.responded_at as "respondedAt",
+        a.served_at as "servedAt",
+        a.notes as "assignmentNotes",
+        a.created_at as "assignmentCreatedAt",
+        a.updated_at as "assignmentUpdatedAt"
+      from ministry_schedule_assignments a
+      join ministry_schedules s on s.id = a.schedule_id and s.church_id = a.church_id
+      join church_ministries ministry on ministry.id = s.ministry_id and ministry.church_id = s.church_id
+      join members m on m.id = a.member_pk and m.church_id = a.church_id
+      left join church_ministry_roles role on role.id = a.ministry_role_id and role.church_id = a.church_id
+      left join church_services srv on srv.id = s.service_id and srv.church_id = s.church_id
+      left join church_campuses cc on cc.id = s.campus_id
+      left join lateral (
+        select
+          count(*)::int as total,
+          count(*) filter (where status = 'CONFIRMED')::int as confirmed,
+          count(*) filter (where status = 'SERVED')::int as served,
+          count(*) filter (where status = 'NO_SHOW')::int as no_show
+        from ministry_schedule_assignments agg
+        where agg.schedule_id = s.id
+      ) assignment_agg on true
+      where ${where.join(" and ")}
+      order by s.schedule_date asc, s.created_at asc
+      limit $${idx}
+      `,
+      params
+    );
+
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const schedules = rows.map((row) => ({
+      ...normalizeMinistryScheduleRow(row),
+      assignment: normalizeMinistryScheduleAssignmentRow({
+        id: row?.assignmentId || null,
+        churchId: row?.churchId || null,
+        scheduleId: row?.id || null,
+        memberPk: row?.memberPk || null,
+        memberId: row?.memberId || null,
+        memberName: row?.memberName || null,
+        memberRole: row?.memberRole || null,
+        ministryRoleId: row?.ministryRoleId || null,
+        ministryRoleName: row?.ministryRoleName || null,
+        status: row?.assignmentStatus || null,
+        assignedBy: row?.assignedBy || null,
+        respondedAt: row?.respondedAt || null,
+        servedAt: row?.servedAt || null,
+        notes: row?.assignmentNotes || null,
+        createdAt: row?.assignmentCreatedAt || null,
+        updatedAt: row?.assignmentUpdatedAt || null,
+      }),
+    }));
+
+    const todaySchedules = schedules.filter((row) => String(row?.scheduleDate || "") === todayIso);
+    const upcomingSchedules = schedules.filter((row) => String(row?.scheduleDate || "") >= todayIso);
+
+    return res.json({
+      ok: true,
+      schedules,
+      summary: {
+        todayDate: todayIso,
+        totalAssigned: schedules.length,
+        todayCount: todaySchedules.length,
+        upcomingCount: upcomingSchedules.length,
+      },
+      meta: {
+        limit,
+        status: scheduleStatus || null,
+        assignmentStatus: assignmentStatus || null,
+        fromDate: fromDate || null,
+        toDate: toDate || null,
+        includePastDays,
+        campusId: campusId || null,
+        returned: schedules.length,
+      },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/volunteer-schedules] list error", err?.message || err, err?.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -8417,6 +10557,7 @@ router.post(
             campusCode: service?.campusCode || null,
           }),
           memberName: member.full_name || null,
+          memberRole: member.role || null,
         },
         service: {
           id: service.id,
@@ -8489,6 +10630,7 @@ router.get(
             c.checked_in_at as "checkedInAt",
             c.notes,
             m.full_name as "memberName",
+            lower(coalesce(m.role, 'member')) as "memberRole",
             m.phone as "memberPhone",
             m.email as "memberEmail",
             cc.name as "campusName",
@@ -8568,6 +10710,7 @@ router.post(
         `
         select
           id,
+          service_id as "serviceId",
           campus_id as "campusId",
           service_date as "serviceDate",
           total_attendance as "totalAttendance",
@@ -8579,14 +10722,10 @@ router.post(
           created_at as "createdAt",
           updated_at as "updatedAt"
         from church_attendance_records
-        where church_id=$1 and service_date=$2
-          and (
-            ($3::uuid is null and campus_id is null)
-            or campus_id = $3
-          )
+        where church_id=$1 and service_id=$2
         limit 1
         `,
-        [churchId, serviceDate, serviceCampusId]
+        [churchId, service.id]
       );
 
       const checkinSummary = await db.one(
@@ -8603,6 +10742,7 @@ router.post(
       );
 
       const totalAttendance = Number(checkinSummary?.total || 0);
+      const actorId = parseUuidOrNull(req.user?.id);
       const adultsParsed = parseNonNegativeWholeNumber(req.body?.adultsCount, "adultsCount");
       if (adultsParsed.error) return res.status(400).json({ error: adultsParsed.error });
       const youthParsed = parseNonNegativeWholeNumber(req.body?.youthCount, "youthCount");
@@ -8630,6 +10770,7 @@ router.post(
         `
         insert into church_attendance_records (
           church_id,
+          service_id,
           campus_id,
           service_date,
           total_attendance,
@@ -8641,10 +10782,11 @@ router.post(
           created_by,
           updated_by
         )
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
-        on conflict (church_id, service_date)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+        on conflict (church_id, service_id)
         do update set
           campus_id = excluded.campus_id,
+          service_date = excluded.service_date,
           total_attendance = excluded.total_attendance,
           adults_count = excluded.adults_count,
           youth_count = excluded.youth_count,
@@ -8655,6 +10797,7 @@ router.post(
           updated_at = now()
         returning
           id,
+          service_id as "serviceId",
           campus_id as "campusId",
           service_date as "serviceDate",
           total_attendance as "totalAttendance",
@@ -8668,6 +10811,7 @@ router.post(
         `,
         [
           churchId,
+          service.id,
           serviceCampusId,
           serviceDate,
           totalAttendance,
@@ -8676,14 +10820,14 @@ router.post(
           childrenCount,
           firstTimeGuests,
           notes,
-          req.user?.id || null,
+          actorId,
         ]
       );
 
       const summary = await readChurchAttendanceSummary(churchId, serviceCampusId);
       await writeChurchLifeAuditLog({
         churchId,
-        actorMemberId: req.user?.id || null,
+        actorMemberId: actorId,
         actorRole: req.user?.role || null,
         action: previousAttendance ? "ATTENDANCE_OVERRIDE" : "ATTENDANCE_AUTO_MARK",
         entityType: "ATTENDANCE_RECORD",
@@ -8703,7 +10847,13 @@ router.post(
       });
       return res.status(201).json({
         ok: true,
-        row: normalizeAttendanceRow(row),
+        row: normalizeAttendanceRow({
+          ...row,
+          serviceId: service.id,
+          serviceName: service.serviceName || null,
+          campusName: service.campusName || null,
+          campusCode: service.campusCode || null,
+        }),
         service: normalizeChurchServiceRow(service),
         checkInSummary: {
           total: totalAttendance,
@@ -8819,6 +10969,7 @@ router.post(
         imported.push({
           ...normalizeChurchCheckinRow(saved),
           memberName: member.full_name || null,
+          memberRole: member.role || null,
           sourceMemberRef: memberRef,
           lineNumber: row.lineNumber,
         });
@@ -9313,6 +11464,10 @@ router.get(
           e.venue,
           e.poster_url as "posterUrl",
           e.poster_data_url as "posterDataUrl",
+          e.capacity,
+          e.is_ticketed as "isTicketed",
+          e.price,
+          coalesce(reg.count, 0)::int as "registrationCount",
           e.status,
           e.notify_on_publish as "notifyOnPublish",
           e.published_at as "publishedAt",
@@ -9320,12 +11475,18 @@ router.get(
           e.updated_at as "updatedAt"
         from church_events e
         left join church_campuses cc on cc.id = e.campus_id
+        left join lateral (
+          select count(*)::int as count
+          from church_event_registrations r
+          where r.event_id = e.id
+            and r.status = any($5::text[])
+        ) reg on true
         where e.church_id=$1 and e.status=$2
           and ($3::uuid is null or e.campus_id = $3)
         order by e.starts_at asc
         limit $4
         `,
-        [churchId, status, campusId, limit]
+        [churchId, status, campusId, limit, CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES]
       );
 
       return res.json({
@@ -9364,6 +11525,35 @@ router.post(
       const posterData = posterDataUrl ? posterDataUrl.slice(0, 2_500_000) : null;
       const status = normalizeChurchLifeEventStatus(req.body?.status || "DRAFT");
       const notifyOnPublish = toBoolean(req.body?.notifyOnPublish) !== false;
+      const rawCapacity = req.body?.capacity;
+      const parsedCapacity =
+        rawCapacity === null || typeof rawCapacity === "undefined" || rawCapacity === "" ? null : parsePositiveInt(rawCapacity, null);
+      if (
+        !(rawCapacity === null || typeof rawCapacity === "undefined" || rawCapacity === "") &&
+        (parsedCapacity === null || parsedCapacity < 1 || parsedCapacity > 200000)
+      ) {
+        return res.status(400).json({ error: "capacity must be a whole number between 1 and 200000." });
+      }
+      const capacity = parsedCapacity && parsedCapacity > 0 ? parsedCapacity : null;
+      const isTicketed = toBoolean(req.body?.isTicketed) === true;
+      let price = null;
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "price")) {
+        if (req.body?.price === null || req.body?.price === "") {
+          price = null;
+        } else {
+          const parsedPrice = Number(req.body?.price);
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0 || parsedPrice > 100000000) {
+            return res.status(400).json({ error: "price must be a valid amount between 0 and 100000000." });
+          }
+          price = toCurrencyNumber(parsedPrice);
+        }
+      }
+      if (isTicketed && !(Number.isFinite(Number(price)) && Number(price) > 0)) {
+        return res.status(400).json({ error: "price is required when isTicketed=true." });
+      }
+      if (!isTicketed) {
+        price = null;
+      }
       let campusId = null;
       try {
         campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
@@ -9380,11 +11570,12 @@ router.post(
         with inserted as (
           insert into church_events (
             church_id, campus_id, title, description, starts_at, ends_at, venue,
-            poster_url, poster_data_url, status, notify_on_publish, published_at, created_by, updated_by
+            poster_url, poster_data_url, capacity, is_ticketed, price,
+            status, notify_on_publish, published_at, created_by, updated_by
           )
           values (
             $1,$2,$3,$4,$5,$6,$7,
-            $8,$9,$10,$11,case when $10 = 'PUBLISHED' then now() else null end,$12,$12
+            $8,$9,$10,$11,$12,$13,$14,case when $13 = 'PUBLISHED' then now() else null end,$15,$15
           )
           returning
             id,
@@ -9397,6 +11588,9 @@ router.post(
             venue,
             poster_url,
             poster_data_url,
+            capacity,
+            is_ticketed,
+            price,
             status,
             notify_on_publish,
             published_at,
@@ -9416,6 +11610,10 @@ router.post(
           i.venue,
           i.poster_url as "posterUrl",
           i.poster_data_url as "posterDataUrl",
+          i.capacity,
+          i.is_ticketed as "isTicketed",
+          i.price,
+          0::int as "registrationCount",
           i.status,
           i.notify_on_publish as "notifyOnPublish",
           i.published_at as "publishedAt",
@@ -9424,7 +11622,23 @@ router.post(
         from inserted i
         left join church_campuses cc on cc.id = i.campus_id
         `,
-        [churchId, campusId, title, description, startsAt, endsAt, venue, posterUrl, posterData, status, notifyOnPublish, req.user.id]
+        [
+          churchId,
+          campusId,
+          title,
+          description,
+          startsAt,
+          endsAt,
+          venue,
+          posterUrl,
+          posterData,
+          capacity,
+          isTicketed,
+          price,
+          status,
+          notifyOnPublish,
+          req.user.id,
+        ]
       );
 
       const eventPayload = normalizeChurchEventRow(row);
@@ -9489,6 +11703,39 @@ router.patch(
         typeof req.body?.notifyOnPublish === "undefined"
           ? current.notify_on_publish !== false
           : toBoolean(req.body?.notifyOnPublish) !== false;
+      const rawCapacity = Object.prototype.hasOwnProperty.call(req.body || {}, "capacity") ? req.body?.capacity : current.capacity;
+      const parsedCapacity =
+        rawCapacity === null || typeof rawCapacity === "undefined" || rawCapacity === "" ? null : parsePositiveInt(rawCapacity, null);
+      if (
+        !(rawCapacity === null || typeof rawCapacity === "undefined" || rawCapacity === "") &&
+        (parsedCapacity === null || parsedCapacity < 1 || parsedCapacity > 200000)
+      ) {
+        return res.status(400).json({ error: "capacity must be a whole number between 1 and 200000." });
+      }
+      const capacity = parsedCapacity && parsedCapacity > 0 ? parsedCapacity : null;
+      const isTicketed =
+        typeof req.body?.isTicketed === "undefined" ? current.is_ticketed === true : toBoolean(req.body?.isTicketed) === true;
+      let price =
+        typeof req.body?.price === "undefined"
+          ? current.price == null
+            ? null
+            : toCurrencyNumber(Number(current.price))
+          : req.body?.price;
+      if (price === null || price === "") {
+        price = null;
+      } else {
+        const parsedPrice = Number(price);
+        if (!Number.isFinite(parsedPrice) || parsedPrice < 0 || parsedPrice > 100000000) {
+          return res.status(400).json({ error: "price must be a valid amount between 0 and 100000000." });
+        }
+        price = toCurrencyNumber(parsedPrice);
+      }
+      if (isTicketed && !(Number.isFinite(Number(price)) && Number(price) > 0)) {
+        return res.status(400).json({ error: "price is required when isTicketed=true." });
+      }
+      if (!isTicketed) {
+        price = null;
+      }
       let campusId = current?.campus_id || null;
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "campusId")) {
         try {
@@ -9515,14 +11762,17 @@ router.patch(
             venue = $8,
             poster_url = $9,
             poster_data_url = $10,
-            status = $11,
-            notify_on_publish = $12,
+            capacity = $11,
+            is_ticketed = $12,
+            price = $13,
+            status = $14,
+            notify_on_publish = $15,
             published_at = case
-              when status <> 'PUBLISHED' and $11 = 'PUBLISHED' then now()
-              when $11 <> 'PUBLISHED' then null
+              when status <> 'PUBLISHED' and $14 = 'PUBLISHED' then now()
+              when $14 <> 'PUBLISHED' then null
               else published_at
             end,
-            updated_by = $13,
+            updated_by = $16,
             updated_at = now()
           where id=$1 and church_id=$2
           returning
@@ -9536,6 +11786,9 @@ router.patch(
             venue,
             poster_url,
             poster_data_url,
+            capacity,
+            is_ticketed,
+            price,
             status,
             notify_on_publish,
             published_at,
@@ -9555,6 +11808,10 @@ router.patch(
           u.venue,
           u.poster_url as "posterUrl",
           u.poster_data_url as "posterDataUrl",
+          u.capacity,
+          u.is_ticketed as "isTicketed",
+          u.price,
+          coalesce(reg.count, 0)::int as "registrationCount",
           u.status,
           u.notify_on_publish as "notifyOnPublish",
           u.published_at as "publishedAt",
@@ -9562,8 +11819,32 @@ router.patch(
           u.updated_at as "updatedAt"
         from updated u
         left join church_campuses cc on cc.id = u.campus_id
+        left join lateral (
+          select count(*)::int as count
+          from church_event_registrations r
+          where r.event_id = u.id
+            and r.status = any($17::text[])
+        ) reg on true
         `,
-        [eventId, churchId, campusId, title, description, startsAt, endsAt, venue, posterUrl, posterData, status, notifyOnPublish, req.user.id]
+        [
+          eventId,
+          churchId,
+          campusId,
+          title,
+          description,
+          startsAt,
+          endsAt,
+          venue,
+          posterUrl,
+          posterData,
+          capacity,
+          isTicketed,
+          price,
+          status,
+          notifyOnPublish,
+          req.user.id,
+          CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES,
+        ]
       );
 
       const eventPayload = normalizeChurchEventRow(row);
@@ -9579,6 +11860,297 @@ router.patch(
         return res.status(503).json({ error: "Church Life events are not available yet. Run migrations and retry." });
       }
       console.error("[admin/church-life/events] patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/events/:eventId/registrations",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("events.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const eventId = String(req.params?.eventId || "").trim();
+      if (!UUID_REGEX.test(eventId)) return res.status(400).json({ error: "Invalid eventId." });
+      const statusFilterRaw = String(req.query?.status || "").trim();
+      const statusFilter = statusFilterRaw ? normalizeChurchEventRegistrationStatus(statusFilterRaw, "") : "";
+      if (statusFilterRaw && !CHURCH_EVENT_REGISTRATION_STATUSES.has(statusFilter)) {
+        return res.status(400).json({ error: "status must be REGISTERED, CHECKED_IN, or CANCELLED." });
+      }
+      const limit = parseChurchLifeLimit(req.query?.limit, 250, 1000);
+
+      const event = await findChurchEventById(churchId, eventId);
+      if (!event) return res.status(404).json({ error: "Event not found." });
+
+      const params = [churchId, eventId];
+      let where = "r.church_id = $1 and r.event_id = $2";
+      if (statusFilter) {
+        params.push(statusFilter);
+        where += ` and r.status = $${params.length}`;
+      }
+      params.push(limit);
+      const limitParam = params.length;
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          r.id,
+          r.church_id as "churchId",
+          r.event_id as "eventId",
+          r.member_pk as "memberPk",
+          r.member_id as "memberId",
+          m.full_name as "memberName",
+          m.phone as "memberPhone",
+          m.email as "memberEmail",
+          r.status,
+          r.checked_in_at as "checkedInAt",
+          r.canceled_at as "canceledAt",
+          r.created_at as "createdAt",
+          r.updated_at as "updatedAt"
+        from church_event_registrations r
+        join members m on m.id = r.member_pk
+        where ${where}
+        order by r.created_at desc
+        limit $${limitParam}
+        `,
+        params
+      );
+      const summary = await db.one(
+        `
+        select
+          count(*)::int as total,
+          count(*) filter (where status = 'REGISTERED')::int as "registeredCount",
+          count(*) filter (where status = 'CHECKED_IN')::int as "checkedInCount",
+          count(*) filter (where status = 'CANCELLED')::int as "canceledCount"
+        from church_event_registrations
+        where church_id = $1 and event_id = $2
+        `,
+        [churchId, eventId]
+      );
+      const activeCount = Number(summary?.registeredCount || 0) + Number(summary?.checkedInCount || 0);
+
+      return res.json({
+        ok: true,
+        event: normalizeChurchEventRow({ ...event, registrationCount: activeCount }),
+        registrations: rows.map(normalizeChurchEventRegistrationRow),
+        summary: {
+          total: Number(summary?.total || 0),
+          registeredCount: Number(summary?.registeredCount || 0),
+          checkedInCount: Number(summary?.checkedInCount || 0),
+          canceledCount: Number(summary?.canceledCount || 0),
+        },
+        meta: { status: statusFilter || null, limit, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Event registrations are not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/events] registrations list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/events/:eventId/registrations/export.csv",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("events.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const eventId = String(req.params?.eventId || "").trim();
+      if (!UUID_REGEX.test(eventId)) return res.status(400).json({ error: "Invalid eventId." });
+      const event = await findChurchEventById(churchId, eventId);
+      if (!event) return res.status(404).json({ error: "Event not found." });
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          r.id,
+          r.member_id as "memberId",
+          m.full_name as "memberName",
+          m.phone as "memberPhone",
+          m.email as "memberEmail",
+          r.status,
+          r.checked_in_at as "checkedInAt",
+          r.canceled_at as "canceledAt",
+          r.created_at as "createdAt"
+        from church_event_registrations r
+        join members m on m.id = r.member_pk
+        where r.church_id = $1 and r.event_id = $2
+        order by r.created_at desc
+        `,
+        [churchId, eventId]
+      );
+
+      const header = ["registrationId", "memberId", "memberName", "memberPhone", "memberEmail", "status", "checkedInAt", "canceledAt", "createdAt"];
+      const lines = [header.join(",")];
+      rows.forEach((row) => {
+        lines.push(
+          [
+            csvEscape(row?.id),
+            csvEscape(row?.memberId),
+            csvEscape(row?.memberName),
+            csvEscape(row?.memberPhone),
+            csvEscape(row?.memberEmail),
+            csvEscape(normalizeChurchEventRegistrationStatus(row?.status)),
+            csvEscape(row?.checkedInAt),
+            csvEscape(row?.canceledAt),
+            csvEscape(row?.createdAt),
+          ].join(",")
+        );
+      });
+      const fileName = `event-registrations-${String(event?.title || "event").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase()}-${eventId}.csv`;
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${fileName}\"`);
+      return res.status(200).send(lines.join("\n"));
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Event registrations are not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/events] registrations export error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/events/:eventId/registrations/:registrationId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("events.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const eventId = String(req.params?.eventId || "").trim();
+      const registrationId = String(req.params?.registrationId || "").trim();
+      if (!UUID_REGEX.test(eventId) || !UUID_REGEX.test(registrationId)) {
+        return res.status(400).json({ error: "Invalid eventId or registrationId." });
+      }
+      const nextStatus = normalizeChurchEventRegistrationStatus(req.body?.status, "");
+      if (!CHURCH_EVENT_REGISTRATION_STATUSES.has(nextStatus)) {
+        return res.status(400).json({ error: "status must be REGISTERED, CHECKED_IN, or CANCELLED." });
+      }
+
+      const updated = await db.tx(async (t) => {
+        const event = await findChurchEventById(churchId, eventId, { tx: t });
+        if (!event) throw Object.assign(new Error("Event not found."), { statusCode: 404 });
+
+        const current = await t.oneOrNone(
+          `
+          select
+            r.id,
+            r.church_id as "churchId",
+            r.event_id as "eventId",
+            r.member_pk as "memberPk",
+            r.member_id as "memberId",
+            r.status,
+            r.checked_in_at as "checkedInAt",
+            r.canceled_at as "canceledAt",
+            r.created_at as "createdAt",
+            r.updated_at as "updatedAt"
+          from church_event_registrations r
+          where r.church_id = $1 and r.event_id = $2 and r.id = $3
+          limit 1
+          for update
+          `,
+          [churchId, eventId, registrationId]
+        );
+        if (!current) throw Object.assign(new Error("Registration not found."), { statusCode: 404 });
+
+        const currentStatus = normalizeChurchEventRegistrationStatus(current?.status || "", "");
+        if (
+          CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES.includes(nextStatus) &&
+          !CHURCH_EVENT_REGISTRATION_ACTIVE_STATUSES.includes(currentStatus)
+        ) {
+          const activeCount = await countChurchEventActiveRegistrations(churchId, eventId, { tx: t });
+          const capacity = event?.capacity == null ? null : Number(event.capacity);
+          if (Number.isFinite(capacity) && capacity > 0 && activeCount >= capacity) {
+            throw Object.assign(new Error("This event is full."), { statusCode: 409 });
+          }
+        }
+
+        const row = await t.one(
+          `
+          update church_event_registrations
+          set
+            status = $4,
+            checked_in_at = case
+              when $4 = 'CHECKED_IN' then coalesce(checked_in_at, now())
+              when $4 = 'REGISTERED' then null
+              else checked_in_at
+            end,
+            canceled_at = case
+              when $4 = 'CANCELLED' then coalesce(canceled_at, now())
+              else null
+            end,
+            updated_by = $5,
+            updated_at = now()
+          where church_id = $1 and event_id = $2 and id = $3
+          returning
+            id,
+            church_id as "churchId",
+            event_id as "eventId",
+            member_pk as "memberPk",
+            member_id as "memberId",
+            status,
+            checked_in_at as "checkedInAt",
+            canceled_at as "canceledAt",
+            created_at as "createdAt",
+            updated_at as "updatedAt"
+          `,
+          [churchId, eventId, registrationId, nextStatus, req.user?.id || null]
+        );
+        return row;
+      });
+
+      const withMember = await db.oneOrNone(
+        `
+        select
+          r.id,
+          r.church_id as "churchId",
+          r.event_id as "eventId",
+          r.member_pk as "memberPk",
+          r.member_id as "memberId",
+          m.full_name as "memberName",
+          m.phone as "memberPhone",
+          m.email as "memberEmail",
+          r.status,
+          r.checked_in_at as "checkedInAt",
+          r.canceled_at as "canceledAt",
+          r.created_at as "createdAt",
+          r.updated_at as "updatedAt"
+        from church_event_registrations r
+        join members m on m.id = r.member_pk
+        where r.church_id = $1 and r.event_id = $2 and r.id = $3
+        limit 1
+        `,
+        [churchId, eventId, registrationId]
+      );
+
+      return res.json({
+        ok: true,
+        registration: normalizeChurchEventRegistrationRow(withMember || updated),
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Event registrations are not available yet. Run migrations and retry." });
+      }
+      const statusCode = Number(err?.statusCode || err?.status || 0);
+      if (statusCode >= 400 && statusCode < 500) {
+        return res.status(statusCode).json({ error: err?.message || "Could not update registration." });
+      }
+      console.error("[admin/church-life/events] registration patch error", err?.message || err, err?.stack);
       return res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -10339,6 +12911,652 @@ router.put(
   }
 );
 
+const CHURCH_PROFILE_ADDRESS_FIELD_META = [
+  { key: "addressLine1", column: "address_line1", maxLen: 180 },
+  { key: "addressLine2", column: "address_line2", maxLen: 180 },
+  { key: "suburb", column: "suburb", maxLen: 120 },
+  { key: "city", column: "city", maxLen: 120 },
+  { key: "province", column: "province", maxLen: 120 },
+  { key: "postalCode", column: "postal_code", maxLen: 40 },
+  { key: "country", column: "country", maxLen: 120 },
+];
+
+function normalizeChurchProfileAddressValue(value, maxLen) {
+  return String(value || "")
+    .trim()
+    .slice(0, maxLen) || null;
+}
+
+function normalizeChurchProfileAddressCompareValue(value, maxLen) {
+  const normalized = normalizeChurchProfileAddressValue(value, maxLen);
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function toChurchProfileAddressObject(row) {
+  const out = {};
+  for (const field of CHURCH_PROFILE_ADDRESS_FIELD_META) {
+    out[field.key] = normalizeChurchProfileAddressValue(row?.[field.key], field.maxLen);
+  }
+  return out;
+}
+
+function hasChurchProfileAddressData(address) {
+  return CHURCH_PROFILE_ADDRESS_FIELD_META.some((field) => Boolean(normalizeChurchProfileAddressValue(address?.[field.key], field.maxLen)));
+}
+
+function areChurchProfileAddressesEqual(leftAddress, rightAddress) {
+  return CHURCH_PROFILE_ADDRESS_FIELD_META.every((field) => {
+    const left = normalizeChurchProfileAddressCompareValue(leftAddress?.[field.key], field.maxLen);
+    const right = normalizeChurchProfileAddressCompareValue(rightAddress?.[field.key], field.maxLen);
+    return left === right;
+  });
+}
+
+function isChurchHouseholdAddressCompatible(parentAddress, candidateAddress) {
+  const parentHasAddress = hasChurchProfileAddressData(parentAddress);
+  const candidateHasAddress = hasChurchProfileAddressData(candidateAddress);
+  if (!parentHasAddress || !candidateHasAddress) return true;
+  return areChurchProfileAddressesEqual(parentAddress, candidateAddress);
+}
+
+function mergeChurchProfileAddressObjects(targetAddress, sourceAddress, { overwrite = false } = {}) {
+  const next = {};
+  const changedFields = [];
+  for (const field of CHURCH_PROFILE_ADDRESS_FIELD_META) {
+    const currentValue = normalizeChurchProfileAddressValue(targetAddress?.[field.key], field.maxLen);
+    const sourceValue = normalizeChurchProfileAddressValue(sourceAddress?.[field.key], field.maxLen);
+    const mergedValue = overwrite ? sourceValue : currentValue || sourceValue;
+    next[field.key] = mergedValue || null;
+    if (currentValue !== (mergedValue || null)) {
+      changedFields.push(field.key);
+    }
+  }
+  return { nextAddress: next, changedFields };
+}
+
+async function getChurchMemberProfileAddress(churchId, memberPk) {
+  return db.oneOrNone(
+    `
+    select
+      address_line1 as "addressLine1",
+      address_line2 as "addressLine2",
+      suburb,
+      city,
+      province,
+      postal_code as "postalCode",
+      country
+    from church_member_profiles
+    where church_id = $1 and member_pk = $2
+    limit 1
+    `,
+    [churchId, memberPk]
+  );
+}
+
+async function upsertChurchMemberProfileAddress({
+  churchId,
+  memberPk,
+  memberId = null,
+  address = {},
+  actorId = null,
+} = {}) {
+  const normalizedAddress = toChurchProfileAddressObject(address);
+  return db.one(
+    `
+    insert into church_member_profiles (
+      church_id,
+      member_pk,
+      member_id,
+      address_line1,
+      address_line2,
+      suburb,
+      city,
+      province,
+      postal_code,
+      country,
+      created_by,
+      updated_by
+    )
+    values (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11
+    )
+    on conflict (church_id, member_pk) do update
+    set
+      member_id = excluded.member_id,
+      address_line1 = excluded.address_line1,
+      address_line2 = excluded.address_line2,
+      suburb = excluded.suburb,
+      city = excluded.city,
+      province = excluded.province,
+      postal_code = excluded.postal_code,
+      country = excluded.country,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+    returning
+      address_line1 as "addressLine1",
+      address_line2 as "addressLine2",
+      suburb,
+      city,
+      province,
+      postal_code as "postalCode",
+      country
+    `,
+    [
+      churchId,
+      memberPk,
+      memberId,
+      normalizedAddress.addressLine1,
+      normalizedAddress.addressLine2,
+      normalizedAddress.suburb,
+      normalizedAddress.city,
+      normalizedAddress.province,
+      normalizedAddress.postalCode,
+      normalizedAddress.country,
+      actorId,
+    ]
+  );
+}
+
+async function syncChurchHouseholdAddressFromLinkedMember({
+  churchId,
+  targetMemberPk,
+  sourceMemberPk,
+  actorId = null,
+  overwrite = false,
+} = {}) {
+  if (!UUID_REGEX.test(String(targetMemberPk || "")) || !UUID_REGEX.test(String(sourceMemberPk || ""))) {
+    return { updated: false, copiedFields: [], reason: "invalid_member_reference" };
+  }
+  if (String(targetMemberPk) === String(sourceMemberPk)) {
+    return { updated: false, copiedFields: [], reason: "same_member" };
+  }
+
+  const targetMember = await findMemberInChurchByUuid(churchId, targetMemberPk);
+  if (!targetMember) return { updated: false, copiedFields: [], reason: "target_member_not_found" };
+
+  const [sourceProfile, targetProfile] = await Promise.all([
+    getChurchMemberProfileAddress(churchId, sourceMemberPk),
+    getChurchMemberProfileAddress(churchId, targetMemberPk),
+  ]);
+
+  const sourceAddress = toChurchProfileAddressObject(sourceProfile || {});
+  if (!hasChurchProfileAddressData(sourceAddress)) {
+    return { updated: false, copiedFields: [], reason: "source_address_missing" };
+  }
+
+  const currentAddress = toChurchProfileAddressObject(targetProfile || {});
+  const { nextAddress, changedFields } = mergeChurchProfileAddressObjects(currentAddress, sourceAddress, { overwrite });
+  if (!changedFields.length) {
+    return { updated: false, copiedFields: [], reason: "no_changes" };
+  }
+
+  const saved = await upsertChurchMemberProfileAddress({
+    churchId,
+    memberPk: targetMemberPk,
+    memberId: targetMember.memberId || null,
+    address: nextAddress,
+    actorId: actorId || null,
+  });
+
+  return {
+    updated: true,
+    copiedFields: changedFields,
+    address: toChurchProfileAddressObject(saved || {}),
+  };
+}
+
+async function resolveChurchHouseholdAddressCompatibility({
+  churchId,
+  parentMemberPk,
+  childMemberPk,
+} = {}) {
+  if (!UUID_REGEX.test(String(parentMemberPk || "")) || !UUID_REGEX.test(String(childMemberPk || ""))) {
+    return {
+      parentHasAddress: false,
+      childHasAddress: false,
+      mismatch: false,
+      syncDirection: null,
+    };
+  }
+
+  const [parentProfile, childProfile] = await Promise.all([
+    getChurchMemberProfileAddress(churchId, parentMemberPk),
+    getChurchMemberProfileAddress(churchId, childMemberPk),
+  ]);
+
+  const parentAddress = toChurchProfileAddressObject(parentProfile || {});
+  const childAddress = toChurchProfileAddressObject(childProfile || {});
+  const parentHasAddress = hasChurchProfileAddressData(parentAddress);
+  const childHasAddress = hasChurchProfileAddressData(childAddress);
+  const mismatch = parentHasAddress && childHasAddress && !areChurchProfileAddressesEqual(parentAddress, childAddress);
+  const syncDirection = parentHasAddress && !childHasAddress
+    ? "parent_to_child"
+    : !parentHasAddress && childHasAddress
+      ? "child_to_parent"
+      : null;
+
+  return {
+    parentHasAddress,
+    childHasAddress,
+    mismatch,
+    syncDirection,
+  };
+}
+
+async function syncChurchHouseholdAddressByDirection({
+  churchId,
+  parentMemberPk,
+  childMemberPk,
+  direction,
+  actorId = null,
+  overwrite = false,
+} = {}) {
+  if (direction === "parent_to_child") {
+    return syncChurchHouseholdAddressFromLinkedMember({
+      churchId,
+      targetMemberPk: childMemberPk,
+      sourceMemberPk: parentMemberPk,
+      actorId,
+      overwrite,
+    });
+  }
+  if (direction === "child_to_parent") {
+    return syncChurchHouseholdAddressFromLinkedMember({
+      churchId,
+      targetMemberPk: parentMemberPk,
+      sourceMemberPk: childMemberPk,
+      actorId,
+      overwrite,
+    });
+  }
+  return { updated: false, copiedFields: [] };
+}
+
+async function listChurchHouseholdMemberCandidates({
+  churchId,
+  parentMemberPk,
+  search = "",
+  limit = 20,
+} = {}) {
+  const safeLimit = parseChurchLifeLimit(limit, 20, 200);
+  const normalizedSearch = String(search || "").trim();
+  const likeSearch = normalizedSearch ? `%${normalizedSearch.replace(/[%_\\]/g, "\\$&")}%` : null;
+  return db.manyOrNone(
+    `
+    select
+      m.id as "memberPk",
+      m.member_id as "memberId",
+      m.full_name as "fullName",
+      m.phone,
+      m.email,
+      m.role,
+      m.date_of_birth as "dateOfBirth",
+      p.household_name as "householdName",
+      p.household_role as "householdRole",
+      p.address_line1 as "addressLine1",
+      p.address_line2 as "addressLine2",
+      p.suburb,
+      p.city,
+      p.province,
+      p.postal_code as "postalCode",
+      p.country,
+      exists (
+        select 1
+        from church_household_children c
+        where c.church_id = m.church_id
+          and c.parent_member_pk = $2
+          and c.child_member_pk = m.id
+          and c.active = true
+      ) as "alreadyLinked"
+    from members m
+    left join church_member_profiles p
+      on p.church_id = m.church_id
+     and p.member_pk = m.id
+    where m.church_id = $1
+      and m.id <> $2
+      and (
+        $3::text is null
+        or m.member_id ilike $4 escape '\\'
+        or m.full_name ilike $4 escape '\\'
+        or coalesce(m.phone, '') ilike $4 escape '\\'
+        or coalesce(m.email, '') ilike $4 escape '\\'
+      )
+    order by
+      case
+        when $3::text is null then 1
+        when lower(coalesce(m.member_id, '')) = lower($3::text) then 0
+        when lower(coalesce(m.phone, '')) = lower($3::text) then 0
+        when lower(coalesce(m.email, '')) = lower($3::text) then 0
+        when lower(coalesce(m.full_name, '')) = lower($3::text) then 0
+        else 1
+      end asc,
+      m.full_name asc nulls last,
+      m.member_id asc nulls last,
+      m.created_at desc
+    limit $5
+    `,
+    [churchId, parentMemberPk, normalizedSearch || null, likeSearch, safeLimit]
+  );
+}
+
+async function resolveChurchFamilyRelatedMember({
+  churchId,
+  memberPk,
+  relatedMemberPkInput,
+  relatedMemberRefInput,
+} = {}) {
+  const ownerMemberPk = String(memberPk || "").trim();
+  const relatedPkRaw = String(relatedMemberPkInput || "").trim();
+  const relatedRefRaw = String(relatedMemberRefInput || "").trim();
+
+  let byPk = null;
+  if (relatedPkRaw) {
+    if (!UUID_REGEX.test(relatedPkRaw)) {
+      return { error: "relatedMemberPk must be a valid UUID.", status: 400 };
+    }
+    if (relatedPkRaw === ownerMemberPk) {
+      return { error: "A member cannot be linked to themselves.", status: 400 };
+    }
+    byPk = await findMemberInChurchByUuid(churchId, relatedPkRaw);
+    if (!byPk) return { error: "relatedMemberPk is not in this church.", status: 400 };
+  }
+
+  let byRef = null;
+  if (relatedRefRaw) {
+    byRef = await findChurchMemberByReference(churchId, relatedRefRaw);
+    if (!byRef) return { error: "relatedMemberRef is not in this church.", status: 400 };
+    if (String(byRef.id) === ownerMemberPk) {
+      return { error: "A member cannot be linked to themselves.", status: 400 };
+    }
+  }
+
+  if (byPk && byRef && String(byPk.id) !== String(byRef.id)) {
+    return { error: "relatedMemberPk and relatedMemberRef must refer to the same member.", status: 400 };
+  }
+
+  const relatedMember = byPk || byRef || null;
+  if (!relatedMember) {
+    return { error: "relatedMemberPk or relatedMemberRef is required.", status: 400 };
+  }
+  return { relatedMember };
+}
+
+async function upsertChurchFamilyRelationshipEdge({
+  tx,
+  churchId,
+  pairKey,
+  memberPk,
+  relatedMemberPk,
+  relationshipType,
+  notes = null,
+  source = "MANUAL",
+  actorId = null,
+} = {}) {
+  const relationship = normalizeChurchFamilyRelationshipType(relationshipType, "OTHER");
+  const sourceKey = String(source || "MANUAL")
+    .trim()
+    .toUpperCase();
+  return tx.one(
+    `
+    insert into church_family_relationships (
+      church_id,
+      pair_key,
+      member_pk,
+      related_member_pk,
+      relationship_type,
+      notes,
+      source,
+      active,
+      created_by,
+      updated_by
+    )
+    values (
+      $1,$2,$3,$4,$5,$6,$7,true,$8,$8
+    )
+    on conflict (church_id, member_pk, related_member_pk, relationship_type)
+    do update set
+      pair_key = excluded.pair_key,
+      notes = excluded.notes,
+      source = excluded.source,
+      active = true,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+    returning
+      id,
+      pair_key as "pairKey",
+      church_id as "churchId",
+      member_pk as "memberPk",
+      related_member_pk as "relatedMemberPk",
+      relationship_type as "relationshipType",
+      notes,
+      source,
+      active,
+      created_at as "createdAt",
+      updated_at as "updatedAt"
+    `,
+    [churchId, pairKey, memberPk, relatedMemberPk, relationship, notes, sourceKey, actorId]
+  );
+}
+
+async function createChurchFamilyRelationshipPair({
+  churchId,
+  memberPk,
+  relatedMemberPk,
+  relationshipType,
+  notes = null,
+  actorId = null,
+} = {}) {
+  const pairKey = crypto.randomUUID();
+  const forwardType = normalizeChurchFamilyRelationshipType(relationshipType, "OTHER");
+  const reverseType = reciprocalChurchFamilyRelationshipType(forwardType);
+
+  return db.tx(async (t) => {
+    const forward = await upsertChurchFamilyRelationshipEdge({
+      tx: t,
+      churchId,
+      pairKey,
+      memberPk,
+      relatedMemberPk,
+      relationshipType: forwardType,
+      notes,
+      source: "MANUAL",
+      actorId,
+    });
+
+    const reciprocalNotes =
+      notes &&
+      String(notes)
+        .trim()
+        .slice(0, 1200)
+      ? `Reciprocal of ${forwardType.toLowerCase()}: ${String(notes).trim().slice(0, 900)}`
+      : null;
+
+    const reverse = await upsertChurchFamilyRelationshipEdge({
+      tx: t,
+      churchId,
+      pairKey,
+      memberPk: relatedMemberPk,
+      relatedMemberPk: memberPk,
+      relationshipType: reverseType,
+      notes: reciprocalNotes,
+      source: "RECIPROCAL",
+      actorId,
+    });
+
+    return { forward, reverse, pairKey };
+  });
+}
+
+async function listChurchFamilyRelationships({
+  churchId,
+  memberPk,
+  includeInactive = false,
+  limit = 120,
+} = {}) {
+  const safeLimit = parseChurchLifeLimit(limit, 120, 500);
+  return db.manyOrNone(
+    `
+    select
+      r.id,
+      r.pair_key as "pairKey",
+      r.church_id as "churchId",
+      r.member_pk as "memberPk",
+      r.related_member_pk as "relatedMemberPk",
+      r.relationship_type as "relationshipType",
+      r.notes,
+      r.source,
+      r.active,
+      r.created_at as "createdAt",
+      r.updated_at as "updatedAt",
+      rel.member_id as "relatedMemberId",
+      rel.full_name as "relatedMemberName",
+      rel.phone as "relatedMemberPhone",
+      rel.email as "relatedMemberEmail",
+      rel.role as "relatedMemberRole",
+      rel.date_of_birth as "relatedDateOfBirth",
+      p.household_name as "relatedHouseholdName",
+      p.household_role as "relatedHouseholdRole",
+      p.address_line1 as "relatedAddressLine1",
+      p.address_line2 as "relatedAddressLine2",
+      p.suburb as "relatedSuburb",
+      p.city as "relatedCity",
+      p.province as "relatedProvince",
+      p.postal_code as "relatedPostalCode",
+      p.country as "relatedCountry"
+    from church_family_relationships r
+    join members rel on rel.id = r.related_member_pk and rel.church_id = r.church_id
+    left join church_member_profiles p
+      on p.church_id = r.church_id
+     and p.member_pk = r.related_member_pk
+    where r.church_id = $1
+      and r.member_pk = $2
+      and ($3::boolean = true or r.active = true)
+    order by
+      r.active desc,
+      r.relationship_type asc,
+      rel.full_name asc nulls last,
+      r.created_at desc
+    limit $4
+    `,
+    [churchId, memberPk, includeInactive, safeLimit]
+  );
+}
+
+async function listChurchFamilyCandidates({
+  churchId,
+  memberPk,
+  search = "",
+  limit = 30,
+} = {}) {
+  const safeLimit = parseChurchLifeLimit(limit, 30, 200);
+  const normalizedSearch = String(search || "").trim();
+  const likeSearch = normalizedSearch ? `%${normalizedSearch.replace(/[%_\\]/g, "\\$&")}%` : null;
+  return db.manyOrNone(
+    `
+    select
+      m.id as "memberPk",
+      m.member_id as "memberId",
+      m.full_name as "fullName",
+      m.phone,
+      m.email,
+      m.role,
+      m.date_of_birth as "dateOfBirth",
+      p.household_name as "householdName",
+      p.household_role as "householdRole",
+      p.address_line1 as "addressLine1",
+      p.address_line2 as "addressLine2",
+      p.suburb,
+      p.city,
+      p.province,
+      p.postal_code as "postalCode",
+      p.country,
+      (
+        select coalesce(array_agg(distinct fr.relationship_type order by fr.relationship_type), '{}')
+        from church_family_relationships fr
+        where fr.church_id = m.church_id
+          and fr.member_pk = $2
+          and fr.related_member_pk = m.id
+          and fr.active = true
+      ) as "existingRelationshipTypes"
+    from members m
+    left join church_member_profiles p
+      on p.church_id = m.church_id
+     and p.member_pk = m.id
+    where m.church_id = $1
+      and m.id <> $2
+      and (
+        $3::text is null
+        or m.member_id ilike $4 escape '\\'
+        or m.full_name ilike $4 escape '\\'
+        or coalesce(m.phone, '') ilike $4 escape '\\'
+        or coalesce(m.email, '') ilike $4 escape '\\'
+      )
+    order by
+      case
+        when $3::text is null then 1
+        when lower(coalesce(m.member_id, '')) = lower($3::text) then 0
+        when lower(coalesce(m.phone, '')) = lower($3::text) then 0
+        when lower(coalesce(m.email, '')) = lower($3::text) then 0
+        when lower(coalesce(m.full_name, '')) = lower($3::text) then 0
+        else 1
+      end asc,
+      m.full_name asc nulls last,
+      m.member_id asc nulls last,
+      m.created_at desc
+    limit $5
+    `,
+    [churchId, memberPk, normalizedSearch || null, likeSearch, safeLimit]
+  );
+}
+
+async function findChurchFamilyRelationshipById({
+  churchId,
+  memberPk,
+  relationshipId,
+} = {}) {
+  return db.oneOrNone(
+    `
+    select
+      r.id,
+      r.pair_key as "pairKey",
+      r.church_id as "churchId",
+      r.member_pk as "memberPk",
+      r.related_member_pk as "relatedMemberPk",
+      r.relationship_type as "relationshipType",
+      r.notes,
+      r.source,
+      r.active,
+      r.created_at as "createdAt",
+      r.updated_at as "updatedAt",
+      rel.member_id as "relatedMemberId",
+      rel.full_name as "relatedMemberName",
+      rel.phone as "relatedMemberPhone",
+      rel.email as "relatedMemberEmail",
+      rel.role as "relatedMemberRole",
+      rel.date_of_birth as "relatedDateOfBirth",
+      p.household_name as "relatedHouseholdName",
+      p.household_role as "relatedHouseholdRole",
+      p.address_line1 as "relatedAddressLine1",
+      p.address_line2 as "relatedAddressLine2",
+      p.suburb as "relatedSuburb",
+      p.city as "relatedCity",
+      p.province as "relatedProvince",
+      p.postal_code as "relatedPostalCode",
+      p.country as "relatedCountry"
+    from church_family_relationships r
+    join members rel on rel.id = r.related_member_pk and rel.church_id = r.church_id
+    left join church_member_profiles p
+      on p.church_id = r.church_id
+     and p.member_pk = r.related_member_pk
+    where r.church_id = $1
+      and r.member_pk = $2
+      and r.id = $3
+    limit 1
+    `,
+    [churchId, memberPk, relationshipId]
+  );
+}
+
 async function listChurchHouseholdChildren({
   churchId,
   parentMemberPk,
@@ -10605,20 +13823,17 @@ router.post(
       const parent = await findMemberInChurchByUuid(churchId, memberPk);
       if (!parent) return res.status(404).json({ error: "Member not found in this church." });
 
-      const childMemberPkInput = String(req.body?.childMemberPk || "").trim();
-      let childMemberPk = null;
-      let linkedChild = null;
-      if (childMemberPkInput) {
-        if (!UUID_REGEX.test(childMemberPkInput)) {
-          return res.status(400).json({ error: "childMemberPk must be a valid UUID." });
-        }
-        if (childMemberPkInput === memberPk) {
-          return res.status(400).json({ error: "A member cannot be added as their own child." });
-        }
-        linkedChild = await findMemberInChurchByUuid(churchId, childMemberPkInput);
-        if (!linkedChild) return res.status(400).json({ error: "childMemberPk is not in this church." });
-        childMemberPk = linkedChild.id;
+      const childLinkResolution = await resolveChurchHouseholdChildMemberLink({
+        churchId,
+        parentMemberPk: memberPk,
+        childMemberPkInput: req.body?.childMemberPk,
+        childMemberRefInput: req.body?.childMemberRef,
+      });
+      if (childLinkResolution?.error) {
+        return res.status(Number(childLinkResolution.status || 400)).json({ error: childLinkResolution.error });
       }
+      const childMemberPk = childLinkResolution.childMemberPk || null;
+      const linkedChild = childLinkResolution.linkedChild || null;
 
       const childName = String(req.body?.childName || "")
         .trim()
@@ -10640,9 +13855,27 @@ router.post(
         .trim()
         .slice(0, 1200) || null;
       const active = toBoolean(req.body?.active) !== false;
+      const shareAddressInput = req.body?.shareAddress;
+      const shareAddress = typeof shareAddressInput === "undefined" ? true : toBoolean(shareAddressInput) !== false;
+      const overwriteAddress = toBoolean(req.body?.overwriteAddress) === true;
       const resolvedName = childName || linkedChild?.fullName || "";
       if (!resolvedName) {
         return res.status(400).json({ error: "childName is required unless childMemberPk is provided." });
+      }
+
+      let addressCompatibility = null;
+      if (linkedChild?.id) {
+        addressCompatibility = await resolveChurchHouseholdAddressCompatibility({
+          churchId,
+          parentMemberPk: memberPk,
+          childMemberPk: linkedChild.id,
+        });
+        if (addressCompatibility?.mismatch) {
+          return res.status(409).json({
+            error: "Household is for members at the same address. Use Family Tree for relatives with different addresses.",
+            code: "HOUSEHOLD_ADDRESS_MISMATCH",
+          });
+        }
       }
 
       const row = await db.one(
@@ -10723,9 +13956,25 @@ router.post(
         [row.id, churchId]
       );
 
+      let addressSync = { updated: false, copiedFields: [] };
+      if (linkedChild?.id && shareAddress) {
+        addressSync = await syncChurchHouseholdAddressByDirection({
+          churchId,
+          parentMemberPk: memberPk,
+          childMemberPk: linkedChild.id,
+          direction: addressCompatibility?.syncDirection || null,
+          actorId: req.user?.id || null,
+          overwrite: overwriteAddress,
+        });
+      }
+
       return res.status(201).json({
         ok: true,
         child: normalizeChurchHouseholdChildRow(withNames),
+        addressSync: {
+          updated: addressSync?.updated === true,
+          copiedFields: Array.isArray(addressSync?.copiedFields) ? addressSync.copiedFields : [],
+        },
       });
     } catch (err) {
       if (err?.code === "23505") {
@@ -10784,20 +14033,26 @@ router.patch(
       if (!current) return res.status(404).json({ error: "Child profile not found." });
 
       let childMemberPk = current.childMemberPk || null;
-      if (typeof req.body?.childMemberPk !== "undefined") {
-        const nextChildMemberPk = String(req.body?.childMemberPk || "").trim();
-        if (!nextChildMemberPk) {
+      let linkedChild = null;
+      const hasChildMemberPkInput = Object.prototype.hasOwnProperty.call(req.body || {}, "childMemberPk");
+      const hasChildMemberRefInput = Object.prototype.hasOwnProperty.call(req.body || {}, "childMemberRef");
+      if (hasChildMemberPkInput || hasChildMemberRefInput) {
+        const nextChildMemberPk = hasChildMemberPkInput ? String(req.body?.childMemberPk || "").trim() : "";
+        const nextChildMemberRef = hasChildMemberRefInput ? String(req.body?.childMemberRef || "").trim() : "";
+        if (hasChildMemberPkInput && !nextChildMemberPk && (!hasChildMemberRefInput || !nextChildMemberRef)) {
           childMemberPk = null;
-        } else {
-          if (!UUID_REGEX.test(nextChildMemberPk)) {
-            return res.status(400).json({ error: "childMemberPk must be a valid UUID." });
+        } else if (nextChildMemberPk || nextChildMemberRef) {
+          const childLinkResolution = await resolveChurchHouseholdChildMemberLink({
+            churchId,
+            parentMemberPk: memberPk,
+            childMemberPkInput: nextChildMemberPk || undefined,
+            childMemberRefInput: nextChildMemberRef || undefined,
+          });
+          if (childLinkResolution?.error) {
+            return res.status(Number(childLinkResolution.status || 400)).json({ error: childLinkResolution.error });
           }
-          if (nextChildMemberPk === memberPk) {
-            return res.status(400).json({ error: "A member cannot be added as their own child." });
-          }
-          const linked = await findMemberInChurchByUuid(churchId, nextChildMemberPk);
-          if (!linked) return res.status(400).json({ error: "childMemberPk is not in this church." });
-          childMemberPk = linked.id;
+          childMemberPk = childLinkResolution.childMemberPk || null;
+          linkedChild = childLinkResolution.linkedChild || null;
         }
       }
 
@@ -10828,9 +14083,27 @@ router.patch(
           .trim()
           .slice(0, 1200) || null;
       const active = typeof req.body?.active === "undefined" ? current.active !== false : toBoolean(req.body?.active) !== false;
+      const shareAddressInput = req.body?.shareAddress;
+      const shareAddress = typeof shareAddressInput === "undefined" ? false : toBoolean(shareAddressInput) !== false;
+      const overwriteAddress = toBoolean(req.body?.overwriteAddress) === true;
 
       if (!childName && !childMemberPk) {
         return res.status(400).json({ error: "childName is required unless childMemberPk is set." });
+      }
+
+      let addressCompatibility = null;
+      if (childMemberPk) {
+        addressCompatibility = await resolveChurchHouseholdAddressCompatibility({
+          churchId,
+          parentMemberPk: memberPk,
+          childMemberPk,
+        });
+        if (addressCompatibility?.mismatch) {
+          return res.status(409).json({
+            error: "Household is for members at the same address. Use Family Tree for relatives with different addresses.",
+            code: "HOUSEHOLD_ADDRESS_MISMATCH",
+          });
+        }
       }
 
       const row = await db.one(
@@ -10882,7 +14155,26 @@ router.patch(
         [row.id, churchId]
       );
 
-      return res.json({ ok: true, child: normalizeChurchHouseholdChildRow(withNames) });
+      let addressSync = { updated: false, copiedFields: [] };
+      if (shareAddress && childMemberPk) {
+        addressSync = await syncChurchHouseholdAddressByDirection({
+          churchId,
+          parentMemberPk: memberPk,
+          childMemberPk,
+          direction: addressCompatibility?.syncDirection || null,
+          actorId: req.user?.id || null,
+          overwrite: overwriteAddress,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        child: normalizeChurchHouseholdChildRow(withNames),
+        addressSync: {
+          updated: addressSync?.updated === true,
+          copiedFields: Array.isArray(addressSync?.copiedFields) ? addressSync.copiedFields : [],
+        },
+      });
     } catch (err) {
       if (err?.code === "23505") {
         return res.status(409).json({ error: "This child is already linked to the selected parent." });
@@ -10967,26 +14259,306 @@ router.get("/church-life/household/children", requireAuth, requireChurchGrowthAc
   }
 });
 
+router.get("/church-life/household/member-candidates", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const parentMemberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(parentMemberPk)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const search = String(req.query?.search || req.query?.q || "").trim();
+    const allowEmpty = toBoolean(req.query?.allowEmpty) === true;
+    if (!search && !allowEmpty) {
+      return res.status(400).json({ error: "search is required." });
+    }
+
+    const limit = parseChurchLifeLimit(req.query?.limit, 20, 200);
+    const rows = await listChurchHouseholdMemberCandidates({
+      churchId,
+      parentMemberPk,
+      search,
+      limit,
+    });
+    const parentAddress = toChurchProfileAddressObject(
+      (await getChurchMemberProfileAddress(churchId, parentMemberPk)) || {}
+    );
+    const compatibleRows = rows.filter((row) =>
+      isChurchHouseholdAddressCompatible(parentAddress, toChurchProfileAddressObject(row || {}))
+    );
+
+    return res.json({
+      ok: true,
+      members: compatibleRows.map(normalizeChurchHouseholdMemberCandidateRow),
+      meta: {
+        search: search || null,
+        limit,
+        returned: compatibleRows.length,
+        sameAddressOnly: true,
+      },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Household member candidates are not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/household/member-candidates] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/family/relationships", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const includeInactive = toBoolean(req.query?.includeInactive) === true;
+    const limit = parseChurchLifeLimit(req.query?.limit, 120, 500);
+    const rows = await listChurchFamilyRelationships({
+      churchId,
+      memberPk,
+      includeInactive,
+      limit,
+    });
+    const relationships = rows.map(normalizeChurchFamilyRelationshipRow);
+    const summary = relationships.reduce(
+      (acc, item) => {
+        acc.total += 1;
+        if (item?.active === false) return acc;
+        acc.active += 1;
+        const type = normalizeChurchFamilyRelationshipType(item?.relationshipType, "OTHER");
+        acc.byType[type] = (acc.byType[type] || 0) + 1;
+        return acc;
+      },
+      { total: 0, active: 0, byType: {} }
+    );
+
+    return res.json({
+      ok: true,
+      relationships,
+      relationshipTypes: Array.from(CHURCH_FAMILY_RELATIONSHIP_TYPES.values()),
+      summary,
+      meta: { includeInactive, limit, returned: relationships.length },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life family tree is not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/family/relationships] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/church-life/family/candidates", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const search = String(req.query?.search || req.query?.q || "").trim();
+    const allowEmpty = toBoolean(req.query?.allowEmpty) === true;
+    if (!search && !allowEmpty) {
+      return res.status(400).json({ error: "search is required." });
+    }
+    const limit = parseChurchLifeLimit(req.query?.limit, 30, 200);
+    const rows = await listChurchFamilyCandidates({
+      churchId,
+      memberPk,
+      search,
+      limit,
+    });
+
+    return res.json({
+      ok: true,
+      members: rows.map(normalizeChurchFamilyCandidateRow),
+      relationshipTypes: Array.from(CHURCH_FAMILY_RELATIONSHIP_TYPES.values()),
+      meta: { search: search || null, limit, returned: rows.length },
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life family tree is not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/family/candidates] list error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/church-life/family/relationships", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const relationshipType = normalizeChurchFamilyRelationshipType(
+      req.body?.relationshipType || req.body?.type || "OTHER",
+      "OTHER"
+    );
+    const notes =
+      String(req.body?.notes || "")
+        .trim()
+        .slice(0, 1200) || null;
+
+    const relatedResolution = await resolveChurchFamilyRelatedMember({
+      churchId,
+      memberPk,
+      relatedMemberPkInput: req.body?.relatedMemberPk,
+      relatedMemberRefInput: req.body?.relatedMemberRef || req.body?.relatedMemberId || req.body?.relatedMemberIdentifier,
+    });
+    if (relatedResolution?.error) {
+      return res.status(Number(relatedResolution.status || 400)).json({ error: relatedResolution.error });
+    }
+    const relatedMemberPk = String(relatedResolution?.relatedMember?.id || "").trim();
+    if (!UUID_REGEX.test(relatedMemberPk)) {
+      return res.status(400).json({ error: "Invalid relatedMemberPk." });
+    }
+
+    await db.none(
+      `
+      update church_family_relationships
+      set
+        active = false,
+        updated_by = $4,
+        updated_at = now()
+      where church_id = $1
+        and active = true
+        and (
+          (member_pk = $2 and related_member_pk = $3)
+          or (member_pk = $3 and related_member_pk = $2)
+        )
+      `,
+      [churchId, memberPk, relatedMemberPk, req.user?.id || null]
+    );
+
+    const created = await createChurchFamilyRelationshipPair({
+      churchId,
+      memberPk,
+      relatedMemberPk,
+      relationshipType,
+      notes,
+      actorId: req.user?.id || null,
+    });
+
+    const row = await findChurchFamilyRelationshipById({
+      churchId,
+      memberPk,
+      relationshipId: created?.forward?.id,
+    });
+
+    return res.status(201).json({
+      ok: true,
+      relationship: normalizeChurchFamilyRelationshipRow(row || created?.forward),
+      reciprocalRelationshipId: created?.reverse?.id || null,
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life family tree is not available yet. Run migrations and retry." });
+    }
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "This family relationship already exists." });
+    }
+    console.error("[church-life/family/relationships] create error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.delete("/church-life/family/relationships/:relationshipId", requireAuth, requireChurchGrowthActive, async (req, res) => {
+  try {
+    const churchId = requireChurch(req, res);
+    if (!churchId) return;
+
+    const memberPk = String(req.user?.id || "").trim();
+    if (!UUID_REGEX.test(memberPk)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const relationshipId = String(req.params?.relationshipId || "").trim();
+    if (!UUID_REGEX.test(relationshipId)) {
+      return res.status(400).json({ error: "Invalid relationshipId." });
+    }
+
+    const row = await db.oneOrNone(
+      `
+      select
+        id,
+        pair_key as "pairKey",
+        member_pk as "memberPk",
+        related_member_pk as "relatedMemberPk",
+        active
+      from church_family_relationships
+      where church_id = $1
+        and member_pk = $2
+        and id = $3
+      limit 1
+      `,
+      [churchId, memberPk, relationshipId]
+    );
+    if (!row) return res.status(404).json({ error: "Relationship not found." });
+
+    const deactivated = await db.result(
+      `
+      update church_family_relationships
+      set
+        active = false,
+        updated_by = $4,
+        updated_at = now()
+      where church_id = $1
+        and pair_key = $2
+        and (
+          (member_pk = $3 and related_member_pk = $5)
+          or (member_pk = $5 and related_member_pk = $3)
+        )
+        and active = true
+      `,
+      [churchId, row.pairKey, memberPk, req.user?.id || null, row.relatedMemberPk]
+    );
+
+    return res.json({
+      ok: true,
+      relationshipId: row.id,
+      pairKey: row.pairKey,
+      deactivated: Number(deactivated?.rowCount || 0),
+      active: false,
+    });
+  } catch (err) {
+    if (err?.code === "42P01" || err?.code === "42703") {
+      return res.status(503).json({ error: "Church Life family tree is not available yet. Run migrations and retry." });
+    }
+    console.error("[church-life/family/relationships] delete error", err?.message || err, err?.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.post("/church-life/household/children", requireAuth, requireChurchGrowthActive, async (req, res) => {
   try {
     const churchId = requireChurch(req, res);
     if (!churchId) return;
 
     const parentMemberPk = String(req.user.id || "").trim();
-    const childMemberPkInput = String(req.body?.childMemberPk || "").trim();
-    let childMemberPk = null;
-    let linkedChild = null;
-    if (childMemberPkInput) {
-      if (!UUID_REGEX.test(childMemberPkInput)) {
-        return res.status(400).json({ error: "childMemberPk must be a valid UUID." });
-      }
-      if (childMemberPkInput === parentMemberPk) {
-        return res.status(400).json({ error: "A member cannot be added as their own child." });
-      }
-      linkedChild = await findMemberInChurchByUuid(churchId, childMemberPkInput);
-      if (!linkedChild) return res.status(400).json({ error: "childMemberPk is not in this church." });
-      childMemberPk = linkedChild.id;
+    const childLinkResolution = await resolveChurchHouseholdChildMemberLink({
+      churchId,
+      parentMemberPk,
+      childMemberPkInput: req.body?.childMemberPk,
+      childMemberRefInput: req.body?.childMemberRef,
+    });
+    if (childLinkResolution?.error) {
+      return res.status(Number(childLinkResolution.status || 400)).json({ error: childLinkResolution.error });
     }
+    const childMemberPk = childLinkResolution.childMemberPk || null;
+    const linkedChild = childLinkResolution.linkedChild || null;
 
     const childName = String(req.body?.childName || "")
       .trim()
@@ -11008,9 +14580,27 @@ router.post("/church-life/household/children", requireAuth, requireChurchGrowthA
       .trim()
       .slice(0, 1200) || null;
     const active = toBoolean(req.body?.active) !== false;
+    const shareAddressInput = req.body?.shareAddress;
+    const shareAddress = typeof shareAddressInput === "undefined" ? true : toBoolean(shareAddressInput) !== false;
+    const overwriteAddress = toBoolean(req.body?.overwriteAddress) === true;
     const resolvedName = childName || linkedChild?.fullName || "";
     if (!resolvedName) {
       return res.status(400).json({ error: "childName is required unless childMemberPk is provided." });
+    }
+
+    let addressCompatibility = null;
+    if (linkedChild?.id) {
+      addressCompatibility = await resolveChurchHouseholdAddressCompatibility({
+        churchId,
+        parentMemberPk,
+        childMemberPk: linkedChild.id,
+      });
+      if (addressCompatibility?.mismatch) {
+        return res.status(409).json({
+          error: "Household is for members at the same address. Use Family Tree for relatives with different addresses.",
+          code: "HOUSEHOLD_ADDRESS_MISMATCH",
+        });
+      }
     }
 
     const row = await db.one(
@@ -11079,7 +14669,26 @@ router.post("/church-life/household/children", requireAuth, requireChurchGrowthA
       [row.id, churchId]
     );
 
-    return res.status(201).json({ ok: true, child: normalizeChurchHouseholdChildRow(withNames) });
+    let addressSync = { updated: false, copiedFields: [] };
+    if (linkedChild?.id && shareAddress) {
+      addressSync = await syncChurchHouseholdAddressByDirection({
+        churchId,
+        parentMemberPk,
+        childMemberPk: linkedChild.id,
+        direction: addressCompatibility?.syncDirection || null,
+        actorId: req.user?.id || null,
+        overwrite: overwriteAddress,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      child: normalizeChurchHouseholdChildRow(withNames),
+      addressSync: {
+        updated: addressSync?.updated === true,
+        copiedFields: Array.isArray(addressSync?.copiedFields) ? addressSync.copiedFields : [],
+      },
+    });
   } catch (err) {
     if (err?.code === "23505") {
       return res.status(409).json({ error: "This child is already linked to your profile." });
@@ -11121,20 +14730,26 @@ router.patch("/church-life/household/children/:childId", requireAuth, requireChu
     if (!current) return res.status(404).json({ error: "Child profile not found." });
 
     let childMemberPk = current.childMemberPk || null;
-    if (typeof req.body?.childMemberPk !== "undefined") {
-      const nextChildMemberPk = String(req.body?.childMemberPk || "").trim();
-      if (!nextChildMemberPk) {
+    let linkedChild = null;
+    const hasChildMemberPkInput = Object.prototype.hasOwnProperty.call(req.body || {}, "childMemberPk");
+    const hasChildMemberRefInput = Object.prototype.hasOwnProperty.call(req.body || {}, "childMemberRef");
+    if (hasChildMemberPkInput || hasChildMemberRefInput) {
+      const nextChildMemberPk = hasChildMemberPkInput ? String(req.body?.childMemberPk || "").trim() : "";
+      const nextChildMemberRef = hasChildMemberRefInput ? String(req.body?.childMemberRef || "").trim() : "";
+      if (hasChildMemberPkInput && !nextChildMemberPk && (!hasChildMemberRefInput || !nextChildMemberRef)) {
         childMemberPk = null;
-      } else {
-        if (!UUID_REGEX.test(nextChildMemberPk)) {
-          return res.status(400).json({ error: "childMemberPk must be a valid UUID." });
+      } else if (nextChildMemberPk || nextChildMemberRef) {
+        const childLinkResolution = await resolveChurchHouseholdChildMemberLink({
+          churchId,
+          parentMemberPk,
+          childMemberPkInput: nextChildMemberPk || undefined,
+          childMemberRefInput: nextChildMemberRef || undefined,
+        });
+        if (childLinkResolution?.error) {
+          return res.status(Number(childLinkResolution.status || 400)).json({ error: childLinkResolution.error });
         }
-        if (nextChildMemberPk === parentMemberPk) {
-          return res.status(400).json({ error: "A member cannot be added as their own child." });
-        }
-        const linked = await findMemberInChurchByUuid(churchId, nextChildMemberPk);
-        if (!linked) return res.status(400).json({ error: "childMemberPk is not in this church." });
-        childMemberPk = linked.id;
+        childMemberPk = childLinkResolution.childMemberPk || null;
+        linkedChild = childLinkResolution.linkedChild || null;
       }
     }
 
@@ -11165,8 +14780,26 @@ router.patch("/church-life/household/children/:childId", requireAuth, requireChu
         .trim()
         .slice(0, 1200) || null;
     const active = typeof req.body?.active === "undefined" ? current.active !== false : toBoolean(req.body?.active) !== false;
+    const shareAddressInput = req.body?.shareAddress;
+    const shareAddress = typeof shareAddressInput === "undefined" ? false : toBoolean(shareAddressInput) !== false;
+    const overwriteAddress = toBoolean(req.body?.overwriteAddress) === true;
     if (!childName && !childMemberPk) {
       return res.status(400).json({ error: "childName is required unless childMemberPk is set." });
+    }
+
+    let addressCompatibility = null;
+    if (childMemberPk) {
+      addressCompatibility = await resolveChurchHouseholdAddressCompatibility({
+        churchId,
+        parentMemberPk,
+        childMemberPk,
+      });
+      if (addressCompatibility?.mismatch) {
+        return res.status(409).json({
+          error: "Household is for members at the same address. Use Family Tree for relatives with different addresses.",
+          code: "HOUSEHOLD_ADDRESS_MISMATCH",
+        });
+      }
     }
 
     const row = await db.one(
@@ -11218,7 +14851,26 @@ router.patch("/church-life/household/children/:childId", requireAuth, requireChu
       [row.id, churchId]
     );
 
-    return res.json({ ok: true, child: normalizeChurchHouseholdChildRow(withNames) });
+    let addressSync = { updated: false, copiedFields: [] };
+    if (shareAddress && childMemberPk) {
+      addressSync = await syncChurchHouseholdAddressByDirection({
+        churchId,
+        parentMemberPk,
+        childMemberPk,
+        direction: addressCompatibility?.syncDirection || null,
+        actorId: req.user?.id || null,
+        overwrite: overwriteAddress,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      child: normalizeChurchHouseholdChildRow(withNames),
+      addressSync: {
+        updated: addressSync?.updated === true,
+        copiedFields: Array.isArray(addressSync?.copiedFields) ? addressSync.copiedFields : [],
+      },
+    });
   } catch (err) {
     if (err?.code === "23505") {
       return res.status(409).json({ error: "This child is already linked to your profile." });
@@ -12133,6 +15785,514 @@ router.put(
         return res.status(503).json({ error: "Church CRM groups are not available yet. Run migrations and retry." });
       }
       console.error("[admin/church-life/groups] members save error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/groups/:groupId/meetings",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("groups.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const groupId = String(req.params?.groupId || "").trim();
+      if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+      const group = await findChurchGroupById(churchId, groupId);
+      if (!group) return res.status(404).json({ error: "Group not found." });
+
+      const statusRaw = String(req.query?.status || "").trim();
+      if (statusRaw && !CHURCH_GROUP_MEETING_STATUSES.has(normalizeUpperToken(statusRaw))) {
+        return res.status(400).json({ error: "status must be SCHEDULED, COMPLETED, or CANCELLED when provided." });
+      }
+      const status = statusRaw ? normalizeChurchGroupMeetingStatus(statusRaw) : null;
+      const limit = parseChurchLifeLimit(req.query?.limit, 80, 300);
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          gm.id,
+          gm.church_id as "churchId",
+          gm.group_id as "groupId",
+          gm.meeting_date as "meetingDate",
+          gm.starts_at as "startsAt",
+          gm.ends_at as "endsAt",
+          gm.location,
+          gm.notes,
+          gm.status,
+          gm.created_at as "createdAt",
+          gm.updated_at as "updatedAt",
+          coalesce(agg.total, 0)::int as "attendanceCount",
+          coalesce(agg.present_count, 0)::int as "presentCount",
+          coalesce(agg.late_count, 0)::int as "lateCount",
+          coalesce(agg.absent_count, 0)::int as "absentCount",
+          coalesce(agg.excused_count, 0)::int as "excusedCount"
+        from church_group_meetings gm
+        left join lateral (
+          select
+            count(*)::int as total,
+            count(*) filter (where status='PRESENT')::int as present_count,
+            count(*) filter (where status='LATE')::int as late_count,
+            count(*) filter (where status='ABSENT')::int as absent_count,
+            count(*) filter (where status='EXCUSED')::int as excused_count
+          from church_group_attendance cga
+          where cga.meeting_id = gm.id
+        ) agg on true
+        where gm.church_id = $1
+          and gm.group_id = $2
+          and ($3::text is null or gm.status = $3::text)
+        order by gm.meeting_date desc, coalesce(gm.starts_at, gm.created_at) desc
+        limit $4
+        `,
+        [churchId, groupId, status, limit]
+      );
+
+      return res.json({
+        ok: true,
+        group: normalizeChurchGroupRow(group),
+        meetings: rows.map(normalizeChurchGroupMeetingRow),
+        meta: { limit, status, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Church Life group meetings are not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/groups] meetings list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/groups/:groupId/meetings",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("groups.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const groupId = String(req.params?.groupId || "").trim();
+      if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+      const group = await findChurchGroupById(churchId, groupId);
+      if (!group) return res.status(404).json({ error: "Group not found." });
+
+      const meetingDate = parseChurchLifeDate(req.body?.meetingDate);
+      if (!meetingDate) return res.status(400).json({ error: "meetingDate is required (YYYY-MM-DD)." });
+      const startsAtInput = req.body?.startsAt;
+      const startsAt = parseChurchLifeDateTimeOrNull(startsAtInput);
+      if ((startsAtInput || startsAtInput === "") && startsAtInput !== null && startsAtInput !== "" && !startsAt) {
+        return res.status(400).json({ error: "startsAt must be a valid ISO datetime when provided." });
+      }
+      const endsAtInput = req.body?.endsAt;
+      const endsAt = parseChurchLifeDateTimeOrNull(endsAtInput);
+      if ((endsAtInput || endsAtInput === "") && endsAtInput !== null && endsAtInput !== "" && !endsAt) {
+        return res.status(400).json({ error: "endsAt must be a valid ISO datetime when provided." });
+      }
+      if (startsAt && endsAt && Date.parse(endsAt) < Date.parse(startsAt)) {
+        return res.status(400).json({ error: "endsAt cannot be before startsAt." });
+      }
+      const status = normalizeChurchGroupMeetingStatus(req.body?.status || "SCHEDULED");
+      const location = String(req.body?.location || "").trim().slice(0, 250) || null;
+      const notes = String(req.body?.notes || "").trim().slice(0, 2000) || null;
+
+      const row = await db.one(
+        `
+        insert into church_group_meetings (
+          church_id, group_id, meeting_date, starts_at, ends_at, location, notes, status, created_by, updated_by
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+        returning
+          id,
+          church_id as "churchId",
+          group_id as "groupId",
+          meeting_date as "meetingDate",
+          starts_at as "startsAt",
+          ends_at as "endsAt",
+          location,
+          notes,
+          status,
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        `,
+        [churchId, groupId, meetingDate, startsAt, endsAt, location, notes, status, req.user?.id || null]
+      );
+
+      return res.status(201).json({
+        ok: true,
+        group: normalizeChurchGroupRow(group),
+        meeting: normalizeChurchGroupMeetingRow(row),
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Church Life group meetings are not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/groups] meetings create error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/groups/:groupId/meetings/:meetingId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("groups.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const groupId = String(req.params?.groupId || "").trim();
+      const meetingId = String(req.params?.meetingId || "").trim();
+      if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+      if (!UUID_REGEX.test(meetingId)) return res.status(400).json({ error: "Invalid meetingId" });
+      const group = await findChurchGroupById(churchId, groupId);
+      if (!group) return res.status(404).json({ error: "Group not found." });
+
+      const current = await db.oneOrNone(
+        `
+        select
+          id,
+          meeting_date as "meetingDate",
+          starts_at as "startsAt",
+          ends_at as "endsAt",
+          location,
+          notes,
+          status
+        from church_group_meetings
+        where church_id=$1 and group_id=$2 and id=$3
+        limit 1
+        `,
+        [churchId, groupId, meetingId]
+      );
+      if (!current) return res.status(404).json({ error: "Meeting not found." });
+
+      const meetingDateInput = req.body?.meetingDate;
+      const meetingDate = typeof meetingDateInput === "undefined" ? formatDateIsoLike(current.meetingDate) : parseChurchLifeDate(meetingDateInput);
+      if (!meetingDate) return res.status(400).json({ error: "meetingDate must be YYYY-MM-DD when provided." });
+
+      const startsAtInput = typeof req.body?.startsAt === "undefined" ? current.startsAt : req.body?.startsAt;
+      const startsAt = parseChurchLifeDateTimeOrNull(startsAtInput);
+      if (startsAtInput !== null && startsAtInput !== "" && typeof startsAtInput !== "undefined" && !startsAt) {
+        return res.status(400).json({ error: "startsAt must be a valid ISO datetime when provided." });
+      }
+      const endsAtInput = typeof req.body?.endsAt === "undefined" ? current.endsAt : req.body?.endsAt;
+      const endsAt = parseChurchLifeDateTimeOrNull(endsAtInput);
+      if (endsAtInput !== null && endsAtInput !== "" && typeof endsAtInput !== "undefined" && !endsAt) {
+        return res.status(400).json({ error: "endsAt must be a valid ISO datetime when provided." });
+      }
+      if (startsAt && endsAt && Date.parse(endsAt) < Date.parse(startsAt)) {
+        return res.status(400).json({ error: "endsAt cannot be before startsAt." });
+      }
+
+      const status =
+        typeof req.body?.status === "undefined"
+          ? normalizeChurchGroupMeetingStatus(current.status)
+          : normalizeChurchGroupMeetingStatus(req.body?.status);
+      const location =
+        String(typeof req.body?.location === "undefined" ? current.location || "" : req.body?.location || "")
+          .trim()
+          .slice(0, 250) || null;
+      const notes =
+        String(typeof req.body?.notes === "undefined" ? current.notes || "" : req.body?.notes || "")
+          .trim()
+          .slice(0, 2000) || null;
+
+      const row = await db.one(
+        `
+        update church_group_meetings
+        set
+          meeting_date = $4,
+          starts_at = $5,
+          ends_at = $6,
+          location = $7,
+          notes = $8,
+          status = $9,
+          updated_by = $10,
+          updated_at = now()
+        where church_id=$1 and group_id=$2 and id=$3
+        returning
+          id,
+          church_id as "churchId",
+          group_id as "groupId",
+          meeting_date as "meetingDate",
+          starts_at as "startsAt",
+          ends_at as "endsAt",
+          location,
+          notes,
+          status,
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        `,
+        [churchId, groupId, meetingId, meetingDate, startsAt, endsAt, location, notes, status, req.user?.id || null]
+      );
+
+      return res.json({
+        ok: true,
+        group: normalizeChurchGroupRow(group),
+        meeting: normalizeChurchGroupMeetingRow(row),
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Church Life group meetings are not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/groups] meetings patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/groups/:groupId/meetings/:meetingId/attendance",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("groups.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const groupId = String(req.params?.groupId || "").trim();
+      const meetingId = String(req.params?.meetingId || "").trim();
+      if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+      if (!UUID_REGEX.test(meetingId)) return res.status(400).json({ error: "Invalid meetingId" });
+      const group = await findChurchGroupById(churchId, groupId);
+      if (!group) return res.status(404).json({ error: "Group not found." });
+
+      const meeting = await db.oneOrNone(
+        `
+        select
+          id,
+          church_id as "churchId",
+          group_id as "groupId",
+          meeting_date as "meetingDate",
+          starts_at as "startsAt",
+          ends_at as "endsAt",
+          location,
+          notes,
+          status,
+          created_at as "createdAt",
+          updated_at as "updatedAt"
+        from church_group_meetings
+        where church_id=$1 and group_id=$2 and id=$3
+        limit 1
+        `,
+        [churchId, groupId, meetingId]
+      );
+      if (!meeting) return res.status(404).json({ error: "Meeting not found." });
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          gmem.member_pk as "memberPk",
+          gmem.member_id as "memberId",
+          gmem.member_role as role,
+          gmem.active,
+          m.full_name as "fullName",
+          m.phone,
+          m.email,
+          cga.id,
+          cga.church_id as "churchId",
+          cga.group_id as "groupId",
+          cga.meeting_id as "meetingId",
+          cga.status,
+          cga.notes,
+          cga.marked_by as "markedBy",
+          marker.full_name as "markedByName",
+          cga.created_at as "createdAt",
+          cga.updated_at as "updatedAt"
+        from church_group_members gmem
+        join members m on m.id = gmem.member_pk
+        left join church_group_attendance cga
+          on cga.meeting_id = $3
+         and cga.member_pk = gmem.member_pk
+        left join members marker on marker.id = cga.marked_by
+        where gmem.church_id = $1 and gmem.group_id = $2
+        order by gmem.active desc, gmem.member_role asc, m.full_name asc
+        `,
+        [churchId, groupId, meetingId]
+      );
+
+      const summary = rows.reduce(
+        (acc, row) => {
+          const status = normalizeChurchGroupAttendanceStatus(row?.status || "", "");
+          if (!status) {
+            acc.unmarked += 1;
+            return acc;
+          }
+          acc.marked += 1;
+          if (status === "PRESENT") acc.present += 1;
+          else if (status === "LATE") acc.late += 1;
+          else if (status === "ABSENT") acc.absent += 1;
+          else if (status === "EXCUSED") acc.excused += 1;
+          return acc;
+        },
+        { total: rows.length, marked: 0, unmarked: 0, present: 0, late: 0, absent: 0, excused: 0 }
+      );
+
+      return res.json({
+        ok: true,
+        group: normalizeChurchGroupRow(group),
+        meeting: normalizeChurchGroupMeetingRow({
+          ...meeting,
+          attendanceCount: summary.marked,
+          presentCount: summary.present,
+          lateCount: summary.late,
+          absentCount: summary.absent,
+          excusedCount: summary.excused,
+        }),
+        attendance: rows.map(normalizeChurchGroupAttendanceRow),
+        summary,
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Church Life group attendance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/groups] attendance list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.put(
+  "/admin/church-life/groups/:groupId/meetings/:meetingId/attendance",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("groups.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const groupId = String(req.params?.groupId || "").trim();
+      const meetingId = String(req.params?.meetingId || "").trim();
+      if (!UUID_REGEX.test(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+      if (!UUID_REGEX.test(meetingId)) return res.status(400).json({ error: "Invalid meetingId" });
+      const group = await findChurchGroupById(churchId, groupId);
+      if (!group) return res.status(404).json({ error: "Group not found." });
+
+      const meeting = await db.oneOrNone(
+        `
+        select id
+        from church_group_meetings
+        where church_id=$1 and group_id=$2 and id=$3
+        limit 1
+        `,
+        [churchId, groupId, meetingId]
+      );
+      if (!meeting) return res.status(404).json({ error: "Meeting not found." });
+
+      const inputRows = Array.isArray(req.body?.attendance) ? req.body.attendance : [];
+      if (inputRows.length > 2000) return res.status(400).json({ error: "Too many attendance rows (max 2000)." });
+      const markerMemberPk = parseUuidOrNull(req.user?.id);
+
+      const invalidStatuses = [];
+      const normalized = [];
+      for (const row of inputRows) {
+        const memberPk = String(row?.memberPk || "").trim();
+        if (!UUID_REGEX.test(memberPk)) continue;
+        const rawStatus = String(row?.status || "").trim();
+        if (rawStatus && !CHURCH_GROUP_ATTENDANCE_STATUSES.has(normalizeUpperToken(rawStatus))) {
+          invalidStatuses.push(rawStatus);
+          continue;
+        }
+        normalized.push({
+          memberPk,
+          status: normalizeChurchGroupAttendanceStatus(rawStatus || "PRESENT"),
+          notes: String(row?.notes || "").trim().slice(0, 500) || null,
+        });
+      }
+      if (invalidStatuses.length) {
+        return res.status(400).json({
+          error: "attendance.status contains invalid values.",
+          invalidStatuses: Array.from(new Set(invalidStatuses)).slice(0, 20),
+        });
+      }
+      const deduped = Array.from(new Map(normalized.map((row) => [row.memberPk, row])).values());
+      const memberPkSet = deduped.map((row) => row.memberPk);
+
+      if (memberPkSet.length) {
+        const membershipRows = await db.manyOrNone(
+          `
+          select member_pk::text as "memberPk"
+          from church_group_members
+          where church_id = $1
+            and group_id = $2
+            and member_pk = any($3::uuid[])
+          `,
+          [churchId, groupId, memberPkSet]
+        );
+        const allowed = new Set(membershipRows.map((row) => String(row.memberPk)));
+        const invalidMembers = memberPkSet.filter((memberPk) => !allowed.has(memberPk));
+        if (invalidMembers.length) {
+          return res.status(400).json({
+            error: "Some members are not in this group.",
+            invalidMemberPks: invalidMembers.slice(0, 20),
+          });
+        }
+      }
+
+      await db.tx(async (t) => {
+        await t.none("delete from church_group_attendance where church_id=$1 and group_id=$2 and meeting_id=$3", [
+          churchId,
+          groupId,
+          meetingId,
+        ]);
+        for (const row of deduped) {
+          const member = await t.oneOrNone(
+            "select member_id from members where church_id=$1 and id=$2",
+            [churchId, row.memberPk]
+          );
+          await t.none(
+            `
+            insert into church_group_attendance (
+              church_id, group_id, meeting_id, member_pk, member_id, status, notes, marked_by
+            )
+            values ($1,$2,$3,$4,$5,$6,$7,$8)
+            `,
+            [churchId, groupId, meetingId, row.memberPk, member?.member_id || null, row.status, row.notes, markerMemberPk]
+          );
+        }
+      });
+
+      const summaryRow = await db.one(
+        `
+        select
+          count(*)::int as total,
+          count(*) filter (where status='PRESENT')::int as present,
+          count(*) filter (where status='LATE')::int as late,
+          count(*) filter (where status='ABSENT')::int as absent,
+          count(*) filter (where status='EXCUSED')::int as excused
+        from church_group_attendance
+        where church_id = $1 and group_id = $2 and meeting_id = $3
+        `,
+        [churchId, groupId, meetingId]
+      );
+
+      return res.json({
+        ok: true,
+        group: normalizeChurchGroupRow(group),
+        meeting: { id: meetingId },
+        saved: deduped.length,
+        summary: {
+          total: Number(summaryRow?.total || 0),
+          present: Number(summaryRow?.present || 0),
+          late: Number(summaryRow?.late || 0),
+          absent: Number(summaryRow?.absent || 0),
+          excused: Number(summaryRow?.excused || 0),
+        },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Church Life group attendance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/groups] attendance save error", err?.message || err, err?.stack);
       return res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -15376,6 +19536,1994 @@ router.post("/giving-links", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
+
+router.get(
+  "/admin/church-life/ministries",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+
+      const includeInactive = toBoolean(req.query?.includeInactive) === true;
+      const limit = parseChurchLifeLimit(req.query?.limit, 120, 500);
+      let campusId = null;
+      try {
+        campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+      } catch (campusErr) {
+        return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+      }
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          m.id,
+          m.church_id as "churchId",
+          m.campus_id as "campusId",
+          cc.name as "campusName",
+          cc.code as "campusCode",
+          m.name,
+          m.code,
+          m.description,
+          m.active,
+          m.created_at as "createdAt",
+          m.updated_at as "updatedAt",
+          coalesce(role_agg.count, 0)::int as "roleCount",
+          coalesce(term_agg.count, 0)::int as "activeVolunteerCount"
+        from church_ministries m
+        left join church_campuses cc on cc.id = m.campus_id
+        left join lateral (
+          select count(*)::int as count
+          from church_ministry_roles r
+          where r.church_id = m.church_id and r.ministry_id = m.id and r.active = true
+        ) role_agg on true
+        left join lateral (
+          select count(*)::int as count
+          from volunteer_role_terms t
+          where t.church_id = m.church_id and t.ministry_id = m.id and t.status in ('ACTIVE', 'REVIEW_DUE')
+        ) term_agg on true
+        where m.church_id=$1
+          and ($2::boolean = true or m.active = true)
+          and ($3::uuid is null or m.campus_id = $3)
+        order by lower(m.name) asc, m.created_at asc
+        limit $4
+        `,
+        [churchId, includeInactive, campusId, limit]
+      );
+
+      return res.json({
+        ok: true,
+        ministries: rows.map(normalizeMinistryRow),
+        meta: { includeInactive, limit, campusId: campusId || null, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministries] list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/ministries",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+
+      const name = String(req.body?.name || "").trim().slice(0, 140);
+      if (!name) return res.status(400).json({ error: "name is required." });
+      const codeInput = String(req.body?.code || "").trim().slice(0, 32);
+      const code = codeInput ? codeInput.toUpperCase() : null;
+      const description = String(req.body?.description || "").trim().slice(0, 1200) || null;
+      const active = toBoolean(req.body?.active) !== false;
+      let campusId = null;
+      try {
+        campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
+      } catch (campusErr) {
+        return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+      }
+
+      const inserted = await db.one(
+        `
+        insert into church_ministries (
+          church_id, campus_id, name, code, description, active, created_by, updated_by
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$7)
+        returning id
+        `,
+        [churchId, campusId, name, code, description, active, req.user?.id || null]
+      );
+
+      const ministry = await loadChurchMinistryWithStats(churchId, inserted.id);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "MINISTRY_CREATED",
+        entityType: "MINISTRY",
+        entityId: ministry?.id || null,
+        entityRef: ministry?.code || ministry?.name || null,
+        before: {},
+        after: { ministry: normalizeMinistryRow(ministry) },
+        meta: { route: "admin/church-life/ministries:create" },
+      });
+
+      return res.status(201).json({ ok: true, ministry: normalizeMinistryRow(ministry) });
+    } catch (err) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "A ministry with the same name/code already exists." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministries] create error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/ministries/:ministryId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const ministryId = String(req.params?.ministryId || "").trim();
+      if (!UUID_REGEX.test(ministryId)) return res.status(400).json({ error: "Invalid ministryId" });
+
+      const current = await loadChurchMinistryWithStats(churchId, ministryId);
+      if (!current) return res.status(404).json({ error: "Ministry not found." });
+
+      const name = String(typeof req.body?.name === "undefined" ? current.name || "" : req.body?.name || "")
+        .trim()
+        .slice(0, 140);
+      if (!name) return res.status(400).json({ error: "name is required." });
+      const codeInput =
+        typeof req.body?.code === "undefined" ? String(current.code || "") : String(req.body?.code || "");
+      const code = codeInput.trim().slice(0, 32);
+      const normalizedCode = code ? code.toUpperCase() : null;
+      const description = String(
+        typeof req.body?.description === "undefined" ? current.description || "" : req.body?.description || ""
+      )
+        .trim()
+        .slice(0, 1200) || null;
+      const active = typeof req.body?.active === "undefined" ? current.active !== false : toBoolean(req.body?.active) !== false;
+      let campusId = current.campusId || null;
+      if (typeof req.body?.campusId !== "undefined") {
+        try {
+          campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
+        } catch (campusErr) {
+          return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+        }
+      }
+
+      await db.none(
+        `
+        update church_ministries
+        set
+          campus_id = $3,
+          name = $4,
+          code = $5,
+          description = $6,
+          active = $7,
+          updated_by = $8,
+          updated_at = now()
+        where church_id=$1 and id=$2
+        `,
+        [churchId, ministryId, campusId, name, normalizedCode, description, active, req.user?.id || null]
+      );
+
+      const ministry = await loadChurchMinistryWithStats(churchId, ministryId);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "MINISTRY_UPDATED",
+        entityType: "MINISTRY",
+        entityId: ministry?.id || null,
+        entityRef: ministry?.code || ministry?.name || null,
+        before: { ministry: normalizeMinistryRow(current) },
+        after: { ministry: normalizeMinistryRow(ministry) },
+        meta: { route: "admin/church-life/ministries:patch" },
+      });
+
+      return res.json({ ok: true, ministry: normalizeMinistryRow(ministry) });
+    } catch (err) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "A ministry with the same name/code already exists." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministries] patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/ministry-roles",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const includeInactive = toBoolean(req.query?.includeInactive) === true;
+      const limit = parseChurchLifeLimit(req.query?.limit, 160, 500);
+      const ministryId = String(req.query?.ministryId || "").trim();
+      if (ministryId && !UUID_REGEX.test(ministryId)) {
+        return res.status(400).json({ error: "ministryId must be a UUID." });
+      }
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          r.id,
+          r.church_id as "churchId",
+          r.ministry_id as "ministryId",
+          m.name as "ministryName",
+          r.role_name as "roleName",
+          r.default_term_months as "defaultTermMonths",
+          r.responsibilities_template as "responsibilitiesTemplate",
+          r.active,
+          r.created_at as "createdAt",
+          r.updated_at as "updatedAt",
+          coalesce(term_agg.count, 0)::int as "activeTermsCount"
+        from church_ministry_roles r
+        join church_ministries m on m.id = r.ministry_id and m.church_id = r.church_id
+        left join lateral (
+          select count(*)::int as count
+          from volunteer_role_terms t
+          where t.church_id = r.church_id
+            and t.ministry_role_id = r.id
+            and t.status in ('ACTIVE', 'REVIEW_DUE')
+        ) term_agg on true
+        where r.church_id=$1
+          and ($2::uuid is null or r.ministry_id=$2)
+          and ($3::boolean = true or r.active = true)
+        order by lower(m.name) asc, lower(r.role_name) asc, r.created_at asc
+        limit $4
+        `,
+        [churchId, ministryId || null, includeInactive, limit]
+      );
+
+      return res.json({
+        ok: true,
+        ministryRoles: rows.map(normalizeMinistryRoleRow),
+        meta: { includeInactive, limit, ministryId: ministryId || null, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministry-roles] list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/ministry-roles",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const ministryId = String(req.body?.ministryId || "").trim();
+      if (!UUID_REGEX.test(ministryId)) return res.status(400).json({ error: "ministryId is required." });
+      const ministry = await findChurchMinistryById(churchId, ministryId);
+      if (!ministry) return res.status(400).json({ error: "ministryId is not in this church." });
+
+      const roleName = String(req.body?.roleName || "").trim().slice(0, 120);
+      if (!roleName) return res.status(400).json({ error: "roleName is required." });
+      const defaultTermMonthsRaw = req.body?.defaultTermMonths;
+      const defaultTermMonths =
+        typeof defaultTermMonthsRaw === "undefined"
+          ? 12
+          : parsePositiveInt(defaultTermMonthsRaw, null);
+      if (!defaultTermMonths || defaultTermMonths < 1 || defaultTermMonths > 120) {
+        return res.status(400).json({ error: "defaultTermMonths must be between 1 and 120." });
+      }
+      const responsibilitiesTemplate = normalizeResponsibilitiesTemplate(req.body?.responsibilitiesTemplate);
+      const active = toBoolean(req.body?.active) !== false;
+
+      const inserted = await db.one(
+        `
+        insert into church_ministry_roles (
+          church_id, ministry_id, role_name, default_term_months, responsibilities_template, active, created_by, updated_by
+        )
+        values ($1,$2,$3,$4,$5::jsonb,$6,$7,$7)
+        returning id
+        `,
+        [
+          churchId,
+          ministryId,
+          roleName,
+          defaultTermMonths,
+          JSON.stringify(responsibilitiesTemplate),
+          active,
+          req.user?.id || null,
+        ]
+      );
+
+      const ministryRole = await loadChurchMinistryRoleWithStats(churchId, inserted.id);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "MINISTRY_ROLE_CREATED",
+        entityType: "MINISTRY_ROLE",
+        entityId: ministryRole?.id || null,
+        entityRef: ministryRole?.roleName || null,
+        before: {},
+        after: { ministryRole: normalizeMinistryRoleRow(ministryRole) },
+        meta: { route: "admin/church-life/ministry-roles:create" },
+      });
+
+      return res.status(201).json({ ok: true, ministryRole: normalizeMinistryRoleRow(ministryRole) });
+    } catch (err) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "This role already exists for the ministry." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministry-roles] create error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/ministry-roles/:ministryRoleId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const ministryRoleId = String(req.params?.ministryRoleId || "").trim();
+      if (!UUID_REGEX.test(ministryRoleId)) return res.status(400).json({ error: "Invalid ministryRoleId" });
+
+      const current = await loadChurchMinistryRoleWithStats(churchId, ministryRoleId);
+      if (!current) return res.status(404).json({ error: "Ministry role not found." });
+
+      let ministryId = current.ministryId;
+      if (typeof req.body?.ministryId !== "undefined") {
+        const requestedMinistryId = String(req.body?.ministryId || "").trim();
+        if (!UUID_REGEX.test(requestedMinistryId)) return res.status(400).json({ error: "ministryId must be a UUID." });
+        const ministry = await findChurchMinistryById(churchId, requestedMinistryId);
+        if (!ministry) return res.status(400).json({ error: "ministryId is not in this church." });
+        ministryId = ministry.id;
+      }
+
+      const roleName = String(
+        typeof req.body?.roleName === "undefined" ? current.roleName || "" : req.body?.roleName || ""
+      )
+        .trim()
+        .slice(0, 120);
+      if (!roleName) return res.status(400).json({ error: "roleName is required." });
+
+      const termMonthsRaw =
+        typeof req.body?.defaultTermMonths === "undefined" ? current.defaultTermMonths : req.body?.defaultTermMonths;
+      const defaultTermMonths = parsePositiveInt(termMonthsRaw, null);
+      if (!defaultTermMonths || defaultTermMonths < 1 || defaultTermMonths > 120) {
+        return res.status(400).json({ error: "defaultTermMonths must be between 1 and 120." });
+      }
+
+      const responsibilitiesTemplate =
+        typeof req.body?.responsibilitiesTemplate === "undefined"
+          ? normalizeResponsibilitiesTemplate(current.responsibilitiesTemplate)
+          : normalizeResponsibilitiesTemplate(req.body?.responsibilitiesTemplate);
+      const active = typeof req.body?.active === "undefined" ? current.active !== false : toBoolean(req.body?.active) !== false;
+
+      await db.none(
+        `
+        update church_ministry_roles
+        set
+          ministry_id = $3,
+          role_name = $4,
+          default_term_months = $5,
+          responsibilities_template = $6::jsonb,
+          active = $7,
+          updated_by = $8,
+          updated_at = now()
+        where church_id = $1 and id = $2
+        `,
+        [
+          churchId,
+          ministryRoleId,
+          ministryId,
+          roleName,
+          defaultTermMonths,
+          JSON.stringify(responsibilitiesTemplate),
+          active,
+          req.user?.id || null,
+        ]
+      );
+
+      const ministryRole = await loadChurchMinistryRoleWithStats(churchId, ministryRoleId);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "MINISTRY_ROLE_UPDATED",
+        entityType: "MINISTRY_ROLE",
+        entityId: ministryRole?.id || null,
+        entityRef: ministryRole?.roleName || null,
+        before: { ministryRole: normalizeMinistryRoleRow(current) },
+        after: { ministryRole: normalizeMinistryRoleRow(ministryRole) },
+        meta: { route: "admin/church-life/ministry-roles:patch" },
+      });
+
+      return res.json({ ok: true, ministryRole: normalizeMinistryRoleRow(ministryRole) });
+    } catch (err) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "This role already exists for the ministry." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/ministry-roles] patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/volunteer-terms/attention",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const access = getChurchLifeAccess(req);
+      const canManage = hasChurchLifePermission(access, "volunteers.write");
+      const memberPk = String(req.user?.id || "").trim();
+      if (!canManage && !UUID_REGEX.test(memberPk)) {
+        return res.status(403).json({ error: "Your profile is not linked for volunteer insights." });
+      }
+
+      const daysRaw = req.query?.days;
+      const parsedDays = parsePositiveInt(daysRaw, 30);
+      if (daysRaw !== undefined && daysRaw !== null && daysRaw !== "" && parsedDays === null) {
+        return res.status(400).json({ error: "days must be a positive integer." });
+      }
+      const days = Math.min(Math.max(parsedDays || 30, 1), 180);
+      let campusId = null;
+      try {
+        campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+      } catch (campusErr) {
+        return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+      }
+
+      const summary = await db.one(
+        `
+        with scoped_terms as (
+          select
+            t.member_pk,
+            t.end_date
+          from volunteer_role_terms t
+          join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+          where t.church_id = $1
+            and t.status in ('ACTIVE', 'REVIEW_DUE')
+            and ($2::uuid is null or ministry.campus_id = $2::uuid)
+            and ($3::boolean = true or t.member_pk = $4::uuid)
+        ),
+        load_by_member as (
+          select member_pk, count(*)::int as active_roles
+          from scoped_terms
+          group by member_pk
+        )
+        select
+          (select count(*)::int from scoped_terms) as "openTerms",
+          (select count(*)::int from scoped_terms where end_date is not null and end_date <= (current_date + $5::int)) as "reviewsDue",
+          (select count(*)::int from load_by_member where active_roles = 3) as "highLoadMembers",
+          (select count(*)::int from load_by_member where active_roles >= 4) as "overloadMembers"
+        `,
+        [churchId, campusId, canManage, memberPk || null, days]
+      );
+
+      const overloadRows = await db.manyOrNone(
+        `
+        with scoped_terms as (
+          select
+            t.member_pk
+          from volunteer_role_terms t
+          join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+          where t.church_id = $1
+            and t.status in ('ACTIVE', 'REVIEW_DUE')
+            and ($2::uuid is null or ministry.campus_id = $2::uuid)
+            and ($3::boolean = true or t.member_pk = $4::uuid)
+        ),
+        load_by_member as (
+          select member_pk, count(*)::int as active_roles
+          from scoped_terms
+          group by member_pk
+        )
+        select
+          m.id as "memberPk",
+          m.member_id as "memberId",
+          m.full_name as "memberName",
+          l.active_roles as "activeRoles"
+        from load_by_member l
+        join members m on m.id = l.member_pk and m.church_id = $1
+        where l.active_roles >= 3
+        order by l.active_roles desc, m.full_name asc
+        limit 25
+        `,
+        [churchId, campusId, canManage, memberPk || null]
+      );
+
+      return res.json({
+        ok: true,
+        summary: {
+          days,
+          campusId: campusId || null,
+          canManage,
+          openTerms: Number(summary?.openTerms || 0),
+          reviewsDue: Number(summary?.reviewsDue || 0),
+          highLoadMembers: Number(summary?.highLoadMembers || 0),
+          overloadMembers: Number(summary?.overloadMembers || 0),
+        },
+        overloadMembers: overloadRows.map((row) => ({
+          memberPk: row?.memberPk || null,
+          memberId: row?.memberId || null,
+          memberName: row?.memberName || null,
+          activeRoles: Number(row?.activeRoles || 0),
+        })),
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/volunteer-terms] attention error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/volunteer-terms",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const access = getChurchLifeAccess(req);
+      const canManage = hasChurchLifePermission(access, "volunteers.write");
+      const limit = parseChurchLifeLimit(req.query?.limit, 120, 500);
+      const status = normalizeVolunteerTermStatus(req.query?.status, "");
+      const memberPk = String(req.query?.memberPk || "").trim();
+      const ministryId = String(req.query?.ministryId || "").trim();
+      const ministryRoleId = String(req.query?.ministryRoleId || "").trim();
+      const dueWithinDaysRaw = req.query?.dueWithinDays;
+      const dueWithinDays =
+        typeof dueWithinDaysRaw === "undefined" || dueWithinDaysRaw === null || dueWithinDaysRaw === ""
+          ? null
+          : parsePositiveInt(dueWithinDaysRaw, null);
+      let campusId = null;
+      try {
+        campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+      } catch (campusErr) {
+        return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+      }
+
+      if (memberPk && !UUID_REGEX.test(memberPk)) return res.status(400).json({ error: "memberPk must be a UUID." });
+      if (ministryId && !UUID_REGEX.test(ministryId)) return res.status(400).json({ error: "ministryId must be a UUID." });
+      if (ministryRoleId && !UUID_REGEX.test(ministryRoleId)) {
+        return res.status(400).json({ error: "ministryRoleId must be a UUID." });
+      }
+      if (dueWithinDaysRaw !== undefined && dueWithinDays === null) {
+        return res.status(400).json({ error: "dueWithinDays must be a positive integer." });
+      }
+      if (!canManage && memberPk && memberPk !== String(req.user?.id || "")) {
+        return res.status(403).json({ error: "You can only view your own volunteer terms." });
+      }
+
+      const where = ["t.church_id = $1"];
+      const params = [churchId];
+      let idx = 2;
+
+      if (status && VOLUNTEER_TERM_STATUSES.has(status)) {
+        where.push(`t.status = $${idx}`);
+        params.push(status);
+        idx += 1;
+      }
+      if (memberPk) {
+        where.push(`t.member_pk = $${idx}::uuid`);
+        params.push(memberPk);
+        idx += 1;
+      }
+      if (ministryId) {
+        where.push(`t.ministry_id = $${idx}::uuid`);
+        params.push(ministryId);
+        idx += 1;
+      }
+      if (ministryRoleId) {
+        where.push(`t.ministry_role_id = $${idx}::uuid`);
+        params.push(ministryRoleId);
+        idx += 1;
+      }
+      if (campusId) {
+        where.push(`ministry.campus_id = $${idx}::uuid`);
+        params.push(campusId);
+        idx += 1;
+      }
+      if (dueWithinDays !== null) {
+        where.push(`t.end_date is not null and t.end_date <= current_date + $${idx}::int`);
+        params.push(dueWithinDays);
+        idx += 1;
+      }
+      if (!canManage) {
+        where.push(`t.member_pk = $${idx}::uuid`);
+        params.push(req.user?.id || null);
+        idx += 1;
+      }
+
+      params.push(limit);
+      const rows = await db.manyOrNone(
+        `
+        select
+          t.id,
+          t.church_id as "churchId",
+          t.member_pk as "memberPk",
+          t.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          t.ministry_id as "ministryId",
+          ministry.name as "ministryName",
+          t.ministry_role_id as "ministryRoleId",
+          role.role_name as "ministryRoleName",
+          t.start_date as "startDate",
+          t.end_date as "endDate",
+          t.term_length_months as "termLengthMonths",
+          t.status,
+          t.end_reason as "endReason",
+          t.attendance_rate as "attendanceRate",
+          t.reliability_rate as "reliabilityRate",
+          t.training_completed as "trainingCompleted",
+          t.system_rating as "systemRating",
+          t.manual_review_score as "manualReviewScore",
+          t.performance_notes as "performanceNotes",
+          t.reviewed_by as "reviewedBy",
+          reviewer.full_name as "reviewedByName",
+          t.reviewed_at as "reviewedAt",
+          t.created_at as "createdAt",
+          t.updated_at as "updatedAt",
+          coalesce(active_agg.count, 0)::int as "activeRolesCount"
+        from volunteer_role_terms t
+        join members m on m.id = t.member_pk and m.church_id = t.church_id
+        join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+        join church_ministry_roles role on role.id = t.ministry_role_id and role.church_id = t.church_id
+        left join members reviewer on reviewer.id = t.reviewed_by and reviewer.church_id = t.church_id
+        left join lateral (
+          select count(*)::int as count
+          from volunteer_role_terms active_terms
+          where active_terms.church_id = t.church_id
+            and active_terms.member_pk = t.member_pk
+            and active_terms.status in ('ACTIVE', 'REVIEW_DUE')
+        ) active_agg on true
+        where ${where.join(" and ")}
+        order by
+          case t.status
+            when 'REVIEW_DUE' then 0
+            when 'ACTIVE' then 1
+            when 'RENEWED' then 2
+            else 3
+          end asc,
+          coalesce(t.end_date, (current_date + 3650)) asc,
+          t.created_at desc
+        limit $${idx}
+        `,
+        params
+      );
+
+      return res.json({
+        ok: true,
+        volunteerTerms: rows.map(normalizeVolunteerTermRow),
+        meta: {
+          limit,
+          status: status || null,
+          memberPk: memberPk || (!canManage ? req.user?.id || null : null),
+          ministryId: ministryId || null,
+          ministryRoleId: ministryRoleId || null,
+          dueWithinDays,
+          campusId: campusId || null,
+          canManage,
+          returned: rows.length,
+        },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/volunteer-terms] list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/volunteer-terms/reviews-due",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const access = getChurchLifeAccess(req);
+      const canManage = hasChurchLifePermission(access, "volunteers.write");
+      const limit = parseChurchLifeLimit(req.query?.limit, 120, 400);
+      const days = parsePositiveInt(req.query?.days, 30);
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          t.id,
+          t.church_id as "churchId",
+          t.member_pk as "memberPk",
+          t.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          t.ministry_id as "ministryId",
+          ministry.name as "ministryName",
+          t.ministry_role_id as "ministryRoleId",
+          role.role_name as "ministryRoleName",
+          t.start_date as "startDate",
+          t.end_date as "endDate",
+          t.term_length_months as "termLengthMonths",
+          t.status,
+          t.end_reason as "endReason",
+          t.attendance_rate as "attendanceRate",
+          t.reliability_rate as "reliabilityRate",
+          t.training_completed as "trainingCompleted",
+          t.system_rating as "systemRating",
+          t.manual_review_score as "manualReviewScore",
+          t.performance_notes as "performanceNotes",
+          t.reviewed_by as "reviewedBy",
+          reviewer.full_name as "reviewedByName",
+          t.reviewed_at as "reviewedAt",
+          t.created_at as "createdAt",
+          t.updated_at as "updatedAt",
+          coalesce(active_agg.count, 0)::int as "activeRolesCount"
+        from volunteer_role_terms t
+        join members m on m.id = t.member_pk and m.church_id = t.church_id
+        join church_ministries ministry on ministry.id = t.ministry_id and ministry.church_id = t.church_id
+        join church_ministry_roles role on role.id = t.ministry_role_id and role.church_id = t.church_id
+        left join members reviewer on reviewer.id = t.reviewed_by and reviewer.church_id = t.church_id
+        left join lateral (
+          select count(*)::int as count
+          from volunteer_role_terms active_terms
+          where active_terms.church_id = t.church_id
+            and active_terms.member_pk = t.member_pk
+            and active_terms.status in ('ACTIVE', 'REVIEW_DUE')
+        ) active_agg on true
+        where t.church_id = $1
+          and t.status in ('ACTIVE', 'REVIEW_DUE')
+          and t.end_date is not null
+          and t.end_date <= current_date + $2::int
+          and ($3::boolean = true or t.member_pk = $4::uuid)
+        order by t.end_date asc, t.created_at desc
+        limit $5
+        `,
+        [churchId, days, canManage, req.user?.id || null, limit]
+      );
+
+      return res.json({
+        ok: true,
+        volunteerTerms: rows.map(normalizeVolunteerTermRow),
+        meta: { days, limit, canManage, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/volunteer-terms] due list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/volunteer-terms",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const memberPk = String(req.body?.memberPk || "").trim();
+      const ministryRoleId = String(req.body?.ministryRoleId || "").trim();
+      if (!UUID_REGEX.test(memberPk)) return res.status(400).json({ error: "memberPk is required." });
+      if (!UUID_REGEX.test(ministryRoleId)) return res.status(400).json({ error: "ministryRoleId is required." });
+
+      const member = await findMemberInChurchByUuid(churchId, memberPk);
+      if (!member) return res.status(400).json({ error: "memberPk is not in this church." });
+
+      const ministryRole = await findChurchMinistryRoleById(churchId, ministryRoleId);
+      if (!ministryRole) return res.status(400).json({ error: "ministryRoleId is not in this church." });
+
+      const startDate = parseChurchLifeDate(req.body?.startDate) || new Date().toISOString().slice(0, 10);
+      const termLengthMonthsRaw =
+        typeof req.body?.termLengthMonths === "undefined" ? ministryRole.defaultTermMonths : req.body?.termLengthMonths;
+      const termLengthMonths = parsePositiveInt(termLengthMonthsRaw, null);
+      if (!termLengthMonths || termLengthMonths < 1 || termLengthMonths > 120) {
+        return res.status(400).json({ error: "termLengthMonths must be between 1 and 120." });
+      }
+      const providedEndDate = parseChurchLifeDate(req.body?.endDate);
+      let endDate = providedEndDate || buildVolunteerTermDefaultEndDate(startDate, termLengthMonths);
+      if (!endDate) return res.status(400).json({ error: "Unable to compute endDate from startDate/termLengthMonths." });
+
+      const status = normalizeVolunteerTermStatus(req.body?.status, "ACTIVE");
+      const endReason = normalizeVolunteerTermEndReason(req.body?.endReason);
+      if (status === "ENDED" && !endReason) {
+        return res.status(400).json({ error: "endReason is required when status is ENDED." });
+      }
+      if (status === "RENEWED" && !endReason) {
+        return res.status(400).json({ error: "endReason is required when status is RENEWED." });
+      }
+      const attendanceRateRaw = typeof req.body?.attendanceRate === "undefined" ? null : req.body?.attendanceRate;
+      const attendanceRate = parseBoundedDecimal(attendanceRateRaw, { min: 0, max: 100, decimals: 2 });
+      if (attendanceRateRaw !== null && attendanceRateRaw !== undefined && attendanceRateRaw !== "" && attendanceRate === null) {
+        return res.status(400).json({ error: "attendanceRate must be between 0 and 100." });
+      }
+      const reliabilityRateRaw = typeof req.body?.reliabilityRate === "undefined" ? null : req.body?.reliabilityRate;
+      const reliabilityRate = parseBoundedDecimal(reliabilityRateRaw, { min: 0, max: 100, decimals: 2 });
+      if (reliabilityRateRaw !== null && reliabilityRateRaw !== undefined && reliabilityRateRaw !== "" && reliabilityRate === null) {
+        return res.status(400).json({ error: "reliabilityRate must be between 0 and 100." });
+      }
+      const manualReviewScoreRaw =
+        typeof req.body?.manualReviewScore === "undefined" ? null : req.body?.manualReviewScore;
+      const manualReviewScore = parseBoundedDecimal(manualReviewScoreRaw, { min: 0, max: 100, decimals: 2 });
+      if (
+        manualReviewScoreRaw !== null &&
+        manualReviewScoreRaw !== undefined &&
+        manualReviewScoreRaw !== "" &&
+        manualReviewScore === null
+      ) {
+        return res.status(400).json({ error: "manualReviewScore must be between 0 and 100." });
+      }
+      const trainingCompleted = toBoolean(req.body?.trainingCompleted) === true;
+      const systemRating = normalizeVolunteerSystemRating(req.body?.systemRating);
+      const performanceNotes = String(req.body?.performanceNotes || "").trim().slice(0, 4000) || null;
+      const reviewedBy = String(req.body?.reviewedBy || "").trim();
+      if (reviewedBy && !UUID_REGEX.test(reviewedBy)) return res.status(400).json({ error: "reviewedBy must be a UUID." });
+      let reviewedByMemberId = null;
+      if (reviewedBy) {
+        const reviewedByMember = await findMemberInChurchByUuid(churchId, reviewedBy);
+        if (!reviewedByMember) return res.status(400).json({ error: "reviewedBy is not in this church." });
+        reviewedByMemberId = reviewedByMember.id;
+      }
+      const reviewedAtInput = req.body?.reviewedAt;
+      const reviewedAt =
+        typeof reviewedAtInput === "undefined" || reviewedAtInput === null || reviewedAtInput === ""
+          ? null
+          : parseChurchLifeDateTimeOrNull(reviewedAtInput);
+      if (reviewedAtInput && !reviewedAt) return res.status(400).json({ error: "reviewedAt is invalid." });
+
+      const promoteFromTermId = String(req.body?.promoteFromTermId || "").trim();
+      if (promoteFromTermId && !UUID_REGEX.test(promoteFromTermId)) {
+        return res.status(400).json({ error: "promoteFromTermId must be a UUID." });
+      }
+
+      const result = await db.tx(async (t) => {
+        let promotedFromBefore = null;
+        if (promoteFromTermId) {
+          promotedFromBefore = await loadVolunteerRoleTermById(churchId, promoteFromTermId, t);
+          if (!promotedFromBefore) {
+            throw Object.assign(new Error("promoteFromTermId not found in this church."), { statusCode: 400 });
+          }
+          if (promotedFromBefore.memberPk !== member.id || promotedFromBefore.ministryId !== ministryRole.ministryId) {
+            throw Object.assign(new Error("promoteFromTermId must belong to the same member and ministry."), {
+              statusCode: 400,
+            });
+          }
+
+          await t.none(
+            `
+            update volunteer_role_terms
+            set
+              status = 'ENDED',
+              end_reason = 'PROMOTED',
+              end_date = coalesce(end_date, current_date),
+              updated_by = $3,
+              updated_at = now()
+            where church_id = $1 and id = $2
+            `,
+            [churchId, promoteFromTermId, req.user?.id || null]
+          );
+        }
+
+        const inserted = await t.one(
+          `
+          insert into volunteer_role_terms (
+            church_id,
+            member_pk,
+            member_id,
+            ministry_id,
+            ministry_role_id,
+            start_date,
+            end_date,
+            term_length_months,
+            status,
+            end_reason,
+            attendance_rate,
+            reliability_rate,
+            training_completed,
+            system_rating,
+            manual_review_score,
+            performance_notes,
+            reviewed_by,
+            reviewed_at,
+            created_by,
+            updated_by
+          )
+          values (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19
+          )
+          returning id
+          `,
+          [
+            churchId,
+            member.id,
+            member.memberId || null,
+            ministryRole.ministryId,
+            ministryRole.id,
+            startDate,
+            endDate,
+            termLengthMonths,
+            status,
+            endReason,
+            attendanceRate,
+            reliabilityRate,
+            trainingCompleted,
+            systemRating,
+            manualReviewScore,
+            performanceNotes,
+            reviewedByMemberId,
+            reviewedAt,
+            req.user?.id || null,
+          ]
+        );
+
+        const term = await loadVolunteerRoleTermById(churchId, inserted.id, t);
+        const promotedFromAfter = promoteFromTermId ? await loadVolunteerRoleTermById(churchId, promoteFromTermId, t) : null;
+        return { term, promotedFromBefore, promotedFromAfter };
+      });
+
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "VOLUNTEER_TERM_CREATED",
+        entityType: "VOLUNTEER_TERM",
+        entityId: result?.term?.id || null,
+        entityRef: result?.term?.memberId || result?.term?.memberPk || null,
+        before: {},
+        after: { term: normalizeVolunteerTermRow(result?.term) },
+        meta: { route: "admin/church-life/volunteer-terms:create" },
+      });
+
+      if (result?.promotedFromBefore && result?.promotedFromAfter) {
+        await writeChurchLifeAuditLog({
+          churchId,
+          actorMemberId: req.user?.id || null,
+          actorRole: req.user?.role || null,
+          action: "VOLUNTEER_TERM_ENDED",
+          entityType: "VOLUNTEER_TERM",
+          entityId: result.promotedFromAfter.id,
+          entityRef: result.promotedFromAfter.memberId || result.promotedFromAfter.memberPk || null,
+          before: { term: normalizeVolunteerTermRow(result.promotedFromBefore) },
+          after: { term: normalizeVolunteerTermRow(result.promotedFromAfter) },
+          meta: { route: "admin/church-life/volunteer-terms:promote" },
+        });
+      }
+
+      return res.status(201).json({ ok: true, volunteerTerm: normalizeVolunteerTermRow(result?.term) });
+    } catch (err) {
+      if (err?.statusCode) {
+        return res.status(Number(err.statusCode) || 400).json({ error: err?.message || "Invalid request" });
+      }
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "Member already has an active role term for this ministry." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/volunteer-terms] create error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/volunteer-terms/:termId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("volunteers.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const termId = String(req.params?.termId || "").trim();
+      if (!UUID_REGEX.test(termId)) return res.status(400).json({ error: "Invalid termId" });
+
+      const current = await loadVolunteerRoleTermById(churchId, termId);
+      if (!current) return res.status(404).json({ error: "Volunteer term not found." });
+
+      const status = normalizeVolunteerTermStatus(
+        typeof req.body?.status === "undefined" ? current.status : req.body?.status,
+        current.status
+      );
+      const endReason =
+        typeof req.body?.endReason === "undefined"
+          ? normalizeVolunteerTermEndReason(current.endReason)
+          : normalizeVolunteerTermEndReason(req.body?.endReason);
+
+      const startDate = parseChurchLifeDate(
+        typeof req.body?.startDate === "undefined" ? current.startDate : req.body?.startDate
+      );
+      if (!startDate) return res.status(400).json({ error: "startDate must be YYYY-MM-DD." });
+
+      const termLengthMonthsRaw =
+        typeof req.body?.termLengthMonths === "undefined" ? current.termLengthMonths : req.body?.termLengthMonths;
+      const termLengthMonths = parsePositiveInt(termLengthMonthsRaw, null);
+      if (!termLengthMonths || termLengthMonths < 1 || termLengthMonths > 120) {
+        return res.status(400).json({ error: "termLengthMonths must be between 1 and 120." });
+      }
+
+      const requestedEndDateInput =
+        typeof req.body?.endDate === "undefined" ? current.endDate : req.body?.endDate;
+      let endDate = requestedEndDateInput ? parseChurchLifeDate(requestedEndDateInput) : null;
+      if (requestedEndDateInput && !endDate) return res.status(400).json({ error: "endDate must be YYYY-MM-DD." });
+      if (!endDate && (status === "ACTIVE" || status === "REVIEW_DUE")) {
+        endDate = buildVolunteerTermDefaultEndDate(startDate, termLengthMonths);
+      }
+      if (!endDate && status === "ENDED") {
+        endDate = new Date().toISOString().slice(0, 10);
+      }
+      if (!endDate) return res.status(400).json({ error: "endDate is required for this status." });
+
+      if (status === "ENDED" && !endReason) {
+        return res.status(400).json({ error: "endReason is required when status is ENDED." });
+      }
+
+      const attendanceRateRaw =
+        typeof req.body?.attendanceRate === "undefined" ? current.attendanceRate : req.body?.attendanceRate;
+      const attendanceRate = parseBoundedDecimal(attendanceRateRaw, { min: 0, max: 100, decimals: 2 });
+      if (attendanceRateRaw !== null && attendanceRateRaw !== undefined && attendanceRateRaw !== "" && attendanceRate === null) {
+        return res.status(400).json({ error: "attendanceRate must be between 0 and 100." });
+      }
+      const reliabilityRateRaw =
+        typeof req.body?.reliabilityRate === "undefined" ? current.reliabilityRate : req.body?.reliabilityRate;
+      const reliabilityRate = parseBoundedDecimal(reliabilityRateRaw, { min: 0, max: 100, decimals: 2 });
+      if (
+        reliabilityRateRaw !== null &&
+        reliabilityRateRaw !== undefined &&
+        reliabilityRateRaw !== "" &&
+        reliabilityRate === null
+      ) {
+        return res.status(400).json({ error: "reliabilityRate must be between 0 and 100." });
+      }
+      const manualReviewScoreRaw =
+        typeof req.body?.manualReviewScore === "undefined" ? current.manualReviewScore : req.body?.manualReviewScore;
+      const manualReviewScore = parseBoundedDecimal(manualReviewScoreRaw, { min: 0, max: 100, decimals: 2 });
+      if (
+        manualReviewScoreRaw !== null &&
+        manualReviewScoreRaw !== undefined &&
+        manualReviewScoreRaw !== "" &&
+        manualReviewScore === null
+      ) {
+        return res.status(400).json({ error: "manualReviewScore must be between 0 and 100." });
+      }
+      const trainingCompleted =
+        typeof req.body?.trainingCompleted === "undefined"
+          ? current.trainingCompleted === true
+          : toBoolean(req.body?.trainingCompleted) === true;
+      const systemRating =
+        typeof req.body?.systemRating === "undefined"
+          ? normalizeVolunteerSystemRating(current.systemRating)
+          : normalizeVolunteerSystemRating(req.body?.systemRating);
+      const performanceNotes = String(
+        typeof req.body?.performanceNotes === "undefined" ? current.performanceNotes || "" : req.body?.performanceNotes || ""
+      )
+        .trim()
+        .slice(0, 4000) || null;
+      const reviewedByInput = String(
+        typeof req.body?.reviewedBy === "undefined" ? current.reviewedBy || "" : req.body?.reviewedBy || ""
+      ).trim();
+      if (reviewedByInput && !UUID_REGEX.test(reviewedByInput)) {
+        return res.status(400).json({ error: "reviewedBy must be a UUID." });
+      }
+      let reviewedBy = null;
+      if (reviewedByInput) {
+        const reviewedByMember = await findMemberInChurchByUuid(churchId, reviewedByInput);
+        if (!reviewedByMember) return res.status(400).json({ error: "reviewedBy is not in this church." });
+        reviewedBy = reviewedByMember.id;
+      }
+      const reviewedAtInput = typeof req.body?.reviewedAt === "undefined" ? current.reviewedAt : req.body?.reviewedAt;
+      const reviewedAt =
+        reviewedAtInput === null || reviewedAtInput === ""
+          ? null
+          : parseChurchLifeDateTimeOrNull(reviewedAtInput);
+      if (reviewedAtInput && reviewedAtInput !== "" && !reviewedAt) {
+        return res.status(400).json({ error: "reviewedAt is invalid." });
+      }
+
+      await db.none(
+        `
+        update volunteer_role_terms
+        set
+          start_date = $3,
+          end_date = $4,
+          term_length_months = $5,
+          status = $6,
+          end_reason = $7,
+          attendance_rate = $8,
+          reliability_rate = $9,
+          training_completed = $10,
+          system_rating = $11,
+          manual_review_score = $12,
+          performance_notes = $13,
+          reviewed_by = $14,
+          reviewed_at = $15,
+          updated_by = $16,
+          updated_at = now()
+        where church_id = $1 and id = $2
+        `,
+        [
+          churchId,
+          termId,
+          startDate,
+          endDate,
+          termLengthMonths,
+          status,
+          endReason,
+          attendanceRate,
+          reliabilityRate,
+          trainingCompleted,
+          systemRating,
+          manualReviewScore,
+          performanceNotes,
+          reviewedBy,
+          reviewedAt,
+          req.user?.id || null,
+        ]
+      );
+
+      const updated = await loadVolunteerRoleTermById(churchId, termId);
+      const endedNow = current.status !== "ENDED" && updated?.status === "ENDED";
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: endedNow ? "VOLUNTEER_TERM_ENDED" : "VOLUNTEER_TERM_UPDATED",
+        entityType: "VOLUNTEER_TERM",
+        entityId: updated?.id || null,
+        entityRef: updated?.memberId || updated?.memberPk || null,
+        before: { term: normalizeVolunteerTermRow(current) },
+        after: { term: normalizeVolunteerTermRow(updated) },
+        meta: { route: "admin/church-life/volunteer-terms:patch" },
+      });
+
+      return res.json({ ok: true, volunteerTerm: normalizeVolunteerTermRow(updated) });
+    } catch (err) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "Member already has an active role term for this ministry." });
+      }
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/volunteer-terms] patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/schedules",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const access = getChurchLifeAccess(req);
+      const canManage = hasChurchLifePermission(access, "schedules.write");
+      const limit = parseChurchLifeLimit(req.query?.limit, 120, 500);
+      const status = normalizeMinistryScheduleStatus(req.query?.status, "");
+      const ministryId = String(req.query?.ministryId || "").trim();
+      const fromDate = req.query?.fromDate ? parseChurchLifeDate(req.query?.fromDate) : null;
+      const toDate = req.query?.toDate ? parseChurchLifeDate(req.query?.toDate) : null;
+      if (req.query?.fromDate && !fromDate) return res.status(400).json({ error: "fromDate must be YYYY-MM-DD." });
+      if (req.query?.toDate && !toDate) return res.status(400).json({ error: "toDate must be YYYY-MM-DD." });
+      if (ministryId && !UUID_REGEX.test(ministryId)) return res.status(400).json({ error: "ministryId must be a UUID." });
+      let campusId = null;
+      try {
+        campusId = await resolveChurchCampusId(churchId, req.query?.campusId, { fieldName: "campusId" });
+      } catch (campusErr) {
+        return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+      }
+
+      const where = ["s.church_id = $1"];
+      const params = [churchId];
+      let idx = 2;
+
+      if (status && MINISTRY_SCHEDULE_STATUSES.has(status)) {
+        where.push(`s.status = $${idx}`);
+        params.push(status);
+        idx += 1;
+      }
+      if (ministryId) {
+        where.push(`s.ministry_id = $${idx}::uuid`);
+        params.push(ministryId);
+        idx += 1;
+      }
+      if (campusId) {
+        where.push(`s.campus_id = $${idx}::uuid`);
+        params.push(campusId);
+        idx += 1;
+      }
+      if (fromDate) {
+        where.push(`s.schedule_date >= $${idx}::date`);
+        params.push(fromDate);
+        idx += 1;
+      }
+      if (toDate) {
+        where.push(`s.schedule_date <= $${idx}::date`);
+        params.push(toDate);
+        idx += 1;
+      }
+      if (!canManage) {
+        where.push(
+          `exists (
+            select 1
+            from ministry_schedule_assignments mine
+            where mine.schedule_id = s.id and mine.member_pk = $${idx}::uuid
+          )`
+        );
+        params.push(req.user?.id || null);
+        idx += 1;
+      }
+
+      params.push(limit);
+      const rows = await db.manyOrNone(
+        `
+        select
+          s.id,
+          s.church_id as "churchId",
+          s.campus_id as "campusId",
+          cc.name as "campusName",
+          cc.code as "campusCode",
+          s.ministry_id as "ministryId",
+          m.name as "ministryName",
+          s.service_id as "serviceId",
+          srv.service_name as "serviceName",
+          s.schedule_date as "scheduleDate",
+          s.title,
+          s.notes,
+          s.status,
+          s.created_at as "createdAt",
+          s.updated_at as "updatedAt",
+          coalesce(assignment_agg.total, 0)::int as "assignmentCount",
+          coalesce(assignment_agg.confirmed, 0)::int as "confirmedCount",
+          coalesce(assignment_agg.served, 0)::int as "servedCount",
+          coalesce(assignment_agg.no_show, 0)::int as "noShowCount"
+        from ministry_schedules s
+        join church_ministries m on m.id = s.ministry_id and m.church_id = s.church_id
+        left join church_services srv on srv.id = s.service_id and srv.church_id = s.church_id
+        left join church_campuses cc on cc.id = s.campus_id
+        left join lateral (
+          select
+            count(*)::int as total,
+            count(*) filter (where a.status = 'CONFIRMED')::int as confirmed,
+            count(*) filter (where a.status = 'SERVED')::int as served,
+            count(*) filter (where a.status = 'NO_SHOW')::int as no_show
+          from ministry_schedule_assignments a
+          where a.schedule_id = s.id
+        ) assignment_agg on true
+        where ${where.join(" and ")}
+        order by s.schedule_date desc, s.created_at desc
+        limit $${idx}
+        `,
+        params
+      );
+
+      return res.json({
+        ok: true,
+        schedules: rows.map(normalizeMinistryScheduleRow),
+        meta: {
+          limit,
+          status: status || null,
+          ministryId: ministryId || null,
+          campusId: campusId || null,
+          fromDate: fromDate || null,
+          toDate: toDate || null,
+          canManage,
+          returned: rows.length,
+        },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/schedules",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const ministryId = String(req.body?.ministryId || "").trim();
+      if (!UUID_REGEX.test(ministryId)) return res.status(400).json({ error: "ministryId is required." });
+      const ministry = await findChurchMinistryById(churchId, ministryId);
+      if (!ministry) return res.status(400).json({ error: "ministryId is not in this church." });
+
+      const scheduleDate = parseChurchLifeDate(req.body?.scheduleDate);
+      if (!scheduleDate) return res.status(400).json({ error: "scheduleDate must be YYYY-MM-DD." });
+
+      const title = String(req.body?.title || `${ministry.name} Schedule`)
+        .trim()
+        .slice(0, 200);
+      if (!title) return res.status(400).json({ error: "title is required." });
+      const notes = String(req.body?.notes || "").trim().slice(0, 2000) || null;
+      const status = normalizeMinistryScheduleStatus(req.body?.status, "DRAFT");
+      const serviceIdInput = String(req.body?.serviceId || "").trim();
+      let serviceId = null;
+      if (serviceIdInput) {
+        if (!UUID_REGEX.test(serviceIdInput)) return res.status(400).json({ error: "serviceId must be a UUID." });
+        const service = await findChurchServiceById(churchId, serviceIdInput);
+        if (!service) return res.status(400).json({ error: "serviceId is not in this church." });
+        serviceId = service.id;
+      }
+      let campusId = null;
+      if (typeof req.body?.campusId !== "undefined") {
+        try {
+          campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
+        } catch (campusErr) {
+          return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+        }
+      } else if (ministry?.campusId) {
+        campusId = ministry.campusId;
+      }
+
+      const inserted = await db.one(
+        `
+        insert into ministry_schedules (
+          church_id, campus_id, ministry_id, service_id, schedule_date, title, notes, status, created_by, updated_by
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+        returning id
+        `,
+        [churchId, campusId, ministry.id, serviceId, scheduleDate, title, notes, status, req.user?.id || null]
+      );
+
+      const schedule = await loadMinistryScheduleWithStats(churchId, inserted.id);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "SCHEDULE_CREATED",
+        entityType: "MINISTRY_SCHEDULE",
+        entityId: schedule?.id || null,
+        entityRef: schedule?.title || null,
+        before: {},
+        after: { schedule: normalizeMinistryScheduleRow(schedule) },
+        meta: { route: "admin/church-life/schedules:create" },
+      });
+
+      return res.status(201).json({ ok: true, schedule: normalizeMinistryScheduleRow(schedule) });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] create error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/schedules/:scheduleId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const scheduleId = String(req.params?.scheduleId || "").trim();
+      if (!UUID_REGEX.test(scheduleId)) return res.status(400).json({ error: "Invalid scheduleId" });
+
+      const current = await loadMinistryScheduleWithStats(churchId, scheduleId);
+      if (!current) return res.status(404).json({ error: "Schedule not found." });
+
+      let ministryId = current.ministryId;
+      if (typeof req.body?.ministryId !== "undefined") {
+        const requestedMinistryId = String(req.body?.ministryId || "").trim();
+        if (!UUID_REGEX.test(requestedMinistryId)) return res.status(400).json({ error: "ministryId must be a UUID." });
+        const ministry = await findChurchMinistryById(churchId, requestedMinistryId);
+        if (!ministry) return res.status(400).json({ error: "ministryId is not in this church." });
+        ministryId = ministry.id;
+      }
+
+      const scheduleDate = parseChurchLifeDate(
+        typeof req.body?.scheduleDate === "undefined" ? current.scheduleDate : req.body?.scheduleDate
+      );
+      if (!scheduleDate) return res.status(400).json({ error: "scheduleDate must be YYYY-MM-DD." });
+      const title = String(typeof req.body?.title === "undefined" ? current.title || "" : req.body?.title || "")
+        .trim()
+        .slice(0, 200);
+      if (!title) return res.status(400).json({ error: "title is required." });
+      const notes = String(typeof req.body?.notes === "undefined" ? current.notes || "" : req.body?.notes || "")
+        .trim()
+        .slice(0, 2000) || null;
+      const status = normalizeMinistryScheduleStatus(
+        typeof req.body?.status === "undefined" ? current.status : req.body?.status,
+        current.status
+      );
+      let serviceId = current.serviceId || null;
+      if (typeof req.body?.serviceId !== "undefined") {
+        const serviceIdInput = String(req.body?.serviceId || "").trim();
+        if (!serviceIdInput) {
+          serviceId = null;
+        } else {
+          if (!UUID_REGEX.test(serviceIdInput)) return res.status(400).json({ error: "serviceId must be a UUID." });
+          const service = await findChurchServiceById(churchId, serviceIdInput);
+          if (!service) return res.status(400).json({ error: "serviceId is not in this church." });
+          serviceId = service.id;
+        }
+      }
+      let campusId = current.campusId || null;
+      if (typeof req.body?.campusId !== "undefined") {
+        try {
+          campusId = await resolveChurchCampusId(churchId, req.body?.campusId, { fieldName: "campusId" });
+        } catch (campusErr) {
+          return res.status(400).json({ error: campusErr?.message || "Invalid campusId" });
+        }
+      }
+
+      await db.none(
+        `
+        update ministry_schedules
+        set
+          campus_id = $3,
+          ministry_id = $4,
+          service_id = $5,
+          schedule_date = $6,
+          title = $7,
+          notes = $8,
+          status = $9,
+          updated_by = $10,
+          updated_at = now()
+        where church_id = $1 and id = $2
+        `,
+        [churchId, scheduleId, campusId, ministryId, serviceId, scheduleDate, title, notes, status, req.user?.id || null]
+      );
+
+      const schedule = await loadMinistryScheduleWithStats(churchId, scheduleId);
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "SCHEDULE_UPDATED",
+        entityType: "MINISTRY_SCHEDULE",
+        entityId: schedule?.id || null,
+        entityRef: schedule?.title || null,
+        before: { schedule: normalizeMinistryScheduleRow(current) },
+        after: { schedule: normalizeMinistryScheduleRow(schedule) },
+        meta: { route: "admin/church-life/schedules:patch" },
+      });
+
+      return res.json({ ok: true, schedule: normalizeMinistryScheduleRow(schedule) });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.get(
+  "/admin/church-life/schedules/:scheduleId/assignments",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.read"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const scheduleId = String(req.params?.scheduleId || "").trim();
+      if (!UUID_REGEX.test(scheduleId)) return res.status(400).json({ error: "Invalid scheduleId" });
+
+      const access = getChurchLifeAccess(req);
+      const canManage = hasChurchLifePermission(access, "schedules.write");
+      const schedule = await loadMinistryScheduleWithStats(churchId, scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found." });
+
+      if (!canManage) {
+        const mine = await db.oneOrNone(
+          `
+          select 1
+          from ministry_schedule_assignments
+          where church_id=$1 and schedule_id=$2 and member_pk=$3
+          limit 1
+          `,
+          [churchId, scheduleId, req.user?.id || null]
+        );
+        if (!mine) return res.status(403).json({ error: "You are not assigned to this schedule." });
+      }
+
+      const status = normalizeMinistryScheduleAssignmentStatus(req.query?.status, "");
+      const where = ["a.church_id = $1", "a.schedule_id = $2"];
+      const params = [churchId, scheduleId];
+      let idx = 3;
+      if (status && MINISTRY_SCHEDULE_ASSIGNMENT_STATUSES.has(status)) {
+        where.push(`a.status = $${idx}`);
+        params.push(status);
+      }
+
+      const rows = await db.manyOrNone(
+        `
+        select
+          a.id,
+          a.church_id as "churchId",
+          a.schedule_id as "scheduleId",
+          a.member_pk as "memberPk",
+          a.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          a.ministry_role_id as "ministryRoleId",
+          r.role_name as "ministryRoleName",
+          a.status,
+          a.assigned_by as "assignedBy",
+          a.responded_at as "respondedAt",
+          a.served_at as "servedAt",
+          a.notes,
+          a.created_at as "createdAt",
+          a.updated_at as "updatedAt"
+        from ministry_schedule_assignments a
+        join members m on m.id = a.member_pk and m.church_id = a.church_id
+        left join church_ministry_roles r on r.id = a.ministry_role_id and r.church_id = a.church_id
+        where ${where.join(" and ")}
+        order by
+          case a.status
+            when 'SERVED' then 0
+            when 'CONFIRMED' then 1
+            when 'ASSIGNED' then 2
+            when 'NO_SHOW' then 3
+            else 4
+          end asc,
+          m.full_name asc
+        `,
+        params
+      );
+
+      return res.json({
+        ok: true,
+        schedule: normalizeMinistryScheduleRow(schedule),
+        assignments: rows.map(normalizeMinistryScheduleAssignmentRow),
+        meta: { status: status || null, canManage, returned: rows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] assignment list error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.post(
+  "/admin/church-life/schedules/:scheduleId/assignments",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const scheduleId = String(req.params?.scheduleId || "").trim();
+      if (!UUID_REGEX.test(scheduleId)) return res.status(400).json({ error: "Invalid scheduleId" });
+      const schedule = await loadMinistryScheduleWithStats(churchId, scheduleId);
+      if (!schedule) return res.status(404).json({ error: "Schedule not found." });
+
+      const payloadRows = Array.isArray(req.body?.assignments)
+        ? req.body.assignments
+        : req.body && typeof req.body === "object"
+          ? [req.body]
+          : [];
+      if (!payloadRows.length) return res.status(400).json({ error: "assignments payload is required." });
+
+      const normalizedRows = payloadRows
+        .map((row) => {
+          const memberPk = String(row?.memberPk || "").trim();
+          const ministryRoleId = String(row?.ministryRoleId || "").trim();
+          const status = normalizeMinistryScheduleAssignmentStatus(row?.status, "ASSIGNED");
+          const notes = String(row?.notes || "").trim().slice(0, 1200) || null;
+          return {
+            memberPk,
+            ministryRoleId: ministryRoleId || null,
+            status,
+            notes,
+          };
+        })
+        .filter((row) => UUID_REGEX.test(row.memberPk));
+
+      if (!normalizedRows.length) {
+        return res.status(400).json({ error: "At least one valid assignment row is required." });
+      }
+
+      const uniqueMemberPks = Array.from(new Set(normalizedRows.map((row) => row.memberPk)));
+      const members = await db.manyOrNone(
+        `
+        select id, member_id as "memberId"
+        from members
+        where church_id = $1 and id = any($2::uuid[])
+        `,
+        [churchId, uniqueMemberPks]
+      );
+      const memberMap = new Map(members.map((row) => [row.id, row]));
+      const invalidMembers = uniqueMemberPks.filter((id) => !memberMap.has(id));
+      if (invalidMembers.length) {
+        return res.status(400).json({
+          error: "Some memberPk values are not in this church.",
+          invalidMemberPks: invalidMembers.slice(0, 20),
+        });
+      }
+
+      if (normalizedRows.some((row) => row.ministryRoleId && !UUID_REGEX.test(row.ministryRoleId))) {
+        return res.status(400).json({ error: "ministryRoleId must be a UUID when provided." });
+      }
+
+      const uniqueRoleIds = Array.from(
+        new Set(normalizedRows.map((row) => row.ministryRoleId).filter((roleId) => UUID_REGEX.test(roleId || "")))
+      );
+      if (uniqueRoleIds.length) {
+        const validRoles = await db.manyOrNone(
+          `
+          select id
+          from church_ministry_roles
+          where church_id = $1
+            and ministry_id = $2
+            and id = any($3::uuid[])
+          `,
+          [churchId, schedule.ministryId, uniqueRoleIds]
+        );
+        const validRoleSet = new Set(validRoles.map((row) => row.id));
+        const invalidRoleIds = uniqueRoleIds.filter((id) => !validRoleSet.has(id));
+        if (invalidRoleIds.length) {
+          return res.status(400).json({
+            error: "Some ministryRoleId values are not part of this schedule's ministry.",
+            invalidRoleIds: invalidRoleIds.slice(0, 20),
+          });
+        }
+      }
+
+      await db.tx(async (t) => {
+        for (const row of normalizedRows) {
+          const member = memberMap.get(row.memberPk);
+          await t.none(
+            `
+            insert into ministry_schedule_assignments (
+              church_id,
+              schedule_id,
+              member_pk,
+              member_id,
+              ministry_role_id,
+              status,
+              assigned_by,
+              responded_at,
+              served_at,
+              notes,
+              created_at,
+              updated_at
+            )
+            values (
+              $1,$2,$3,$4,$5,$6,$7,
+              case when $6 in ('CONFIRMED','DECLINED','NO_SHOW') then now() else null end,
+              case when $6 = 'SERVED' then now() else null end,
+              $8, now(), now()
+            )
+            on conflict (schedule_id, member_pk)
+            do update set
+              member_id = excluded.member_id,
+              ministry_role_id = excluded.ministry_role_id,
+              status = excluded.status,
+              assigned_by = excluded.assigned_by,
+              responded_at = case
+                when excluded.status in ('CONFIRMED','DECLINED','NO_SHOW')
+                  then coalesce(ministry_schedule_assignments.responded_at, now())
+                when excluded.status = 'SERVED'
+                  then coalesce(ministry_schedule_assignments.responded_at, now())
+                else ministry_schedule_assignments.responded_at
+              end,
+              served_at = case
+                when excluded.status = 'SERVED'
+                  then coalesce(ministry_schedule_assignments.served_at, now())
+                when excluded.status in ('ASSIGNED','CONFIRMED','DECLINED','NO_SHOW')
+                  then null
+                else ministry_schedule_assignments.served_at
+              end,
+              notes = excluded.notes,
+              updated_at = now()
+            `,
+            [
+              churchId,
+              scheduleId,
+              row.memberPk,
+              member?.memberId || null,
+              row.ministryRoleId || null,
+              row.status,
+              req.user?.id || null,
+              row.notes,
+            ]
+          );
+        }
+      });
+
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "SCHEDULE_ASSIGNMENT_UPDATED",
+        entityType: "MINISTRY_SCHEDULE",
+        entityId: schedule.id,
+        entityRef: schedule.title || null,
+        before: {},
+        after: { savedAssignments: normalizedRows.length },
+        meta: { route: "admin/church-life/schedules/assignments:upsert" },
+      });
+
+      const assignmentRows = await db.manyOrNone(
+        `
+        select
+          a.id,
+          a.church_id as "churchId",
+          a.schedule_id as "scheduleId",
+          a.member_pk as "memberPk",
+          a.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          a.ministry_role_id as "ministryRoleId",
+          r.role_name as "ministryRoleName",
+          a.status,
+          a.assigned_by as "assignedBy",
+          a.responded_at as "respondedAt",
+          a.served_at as "servedAt",
+          a.notes,
+          a.created_at as "createdAt",
+          a.updated_at as "updatedAt"
+        from ministry_schedule_assignments a
+        join members m on m.id = a.member_pk and m.church_id = a.church_id
+        left join church_ministry_roles r on r.id = a.ministry_role_id and r.church_id = a.church_id
+        where a.church_id = $1 and a.schedule_id = $2
+        order by m.full_name asc
+        `,
+        [churchId, scheduleId]
+      );
+
+      return res.json({
+        ok: true,
+        schedule: normalizeMinistryScheduleRow(schedule),
+        assignments: assignmentRows.map(normalizeMinistryScheduleAssignmentRow),
+        meta: { saved: normalizedRows.length, returned: assignmentRows.length },
+      });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] assignment upsert error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+router.patch(
+  "/admin/church-life/schedules/:scheduleId/assignments/:assignmentId",
+  requireChurchLifeStaff,
+  requireAdminPortalTabsAny("operations"),
+  requireChurchGrowthActive,
+  requireChurchLifePermission("schedules.write"),
+  async (req, res) => {
+    try {
+      const churchId = requireChurch(req, res);
+      if (!churchId) return;
+      const scheduleId = String(req.params?.scheduleId || "").trim();
+      const assignmentId = String(req.params?.assignmentId || "").trim();
+      if (!UUID_REGEX.test(scheduleId) || !UUID_REGEX.test(assignmentId)) {
+        return res.status(400).json({ error: "Invalid scheduleId or assignmentId" });
+      }
+
+      const current = await db.oneOrNone(
+        `
+        select
+          a.id,
+          a.church_id as "churchId",
+          a.schedule_id as "scheduleId",
+          a.member_pk as "memberPk",
+          a.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          a.ministry_role_id as "ministryRoleId",
+          r.role_name as "ministryRoleName",
+          a.status,
+          a.assigned_by as "assignedBy",
+          a.responded_at as "respondedAt",
+          a.served_at as "servedAt",
+          a.notes,
+          a.created_at as "createdAt",
+          a.updated_at as "updatedAt"
+        from ministry_schedule_assignments a
+        join members m on m.id = a.member_pk and m.church_id = a.church_id
+        left join church_ministry_roles r on r.id = a.ministry_role_id and r.church_id = a.church_id
+        where a.church_id = $1 and a.schedule_id = $2 and a.id = $3
+        limit 1
+        `,
+        [churchId, scheduleId, assignmentId]
+      );
+      if (!current) return res.status(404).json({ error: "Schedule assignment not found." });
+
+      let ministryRoleId = current.ministryRoleId || null;
+      if (typeof req.body?.ministryRoleId !== "undefined") {
+        const roleIdInput = String(req.body?.ministryRoleId || "").trim();
+        if (!roleIdInput) {
+          ministryRoleId = null;
+        } else {
+          if (!UUID_REGEX.test(roleIdInput)) return res.status(400).json({ error: "ministryRoleId must be a UUID." });
+          const role = await db.oneOrNone(
+            `
+            select r.id
+            from church_ministry_roles r
+            join ministry_schedules s on s.ministry_id = r.ministry_id and s.church_id = r.church_id
+            where r.church_id = $1 and s.id = $2 and r.id = $3
+            limit 1
+            `,
+            [churchId, scheduleId, roleIdInput]
+          );
+          if (!role) return res.status(400).json({ error: "ministryRoleId is not valid for this schedule's ministry." });
+          ministryRoleId = role.id;
+        }
+      }
+
+      const status = normalizeMinistryScheduleAssignmentStatus(
+        typeof req.body?.status === "undefined" ? current.status : req.body?.status,
+        current.status
+      );
+      const notes = String(typeof req.body?.notes === "undefined" ? current.notes || "" : req.body?.notes || "")
+        .trim()
+        .slice(0, 1200) || null;
+
+      await db.none(
+        `
+        update ministry_schedule_assignments
+        set
+          ministry_role_id = $4,
+          status = $5,
+          assigned_by = $6,
+          responded_at = case
+            when $5 in ('CONFIRMED','DECLINED','NO_SHOW')
+              then coalesce(responded_at, now())
+            when $5 = 'SERVED'
+              then coalesce(responded_at, now())
+            else responded_at
+          end,
+          served_at = case
+            when $5 = 'SERVED'
+              then coalesce(served_at, now())
+            when $5 in ('ASSIGNED','CONFIRMED','DECLINED','NO_SHOW')
+              then null
+            else served_at
+          end,
+          notes = $7,
+          updated_at = now()
+        where church_id = $1 and schedule_id = $2 and id = $3
+        `,
+        [churchId, scheduleId, assignmentId, ministryRoleId, status, req.user?.id || null, notes]
+      );
+
+      const updated = await db.one(
+        `
+        select
+          a.id,
+          a.church_id as "churchId",
+          a.schedule_id as "scheduleId",
+          a.member_pk as "memberPk",
+          a.member_id as "memberId",
+          m.full_name as "memberName",
+          lower(coalesce(m.role, 'member')) as "memberRole",
+          a.ministry_role_id as "ministryRoleId",
+          r.role_name as "ministryRoleName",
+          a.status,
+          a.assigned_by as "assignedBy",
+          a.responded_at as "respondedAt",
+          a.served_at as "servedAt",
+          a.notes,
+          a.created_at as "createdAt",
+          a.updated_at as "updatedAt"
+        from ministry_schedule_assignments a
+        join members m on m.id = a.member_pk and m.church_id = a.church_id
+        left join church_ministry_roles r on r.id = a.ministry_role_id and r.church_id = a.church_id
+        where a.church_id = $1 and a.schedule_id = $2 and a.id = $3
+        limit 1
+        `,
+        [churchId, scheduleId, assignmentId]
+      );
+
+      await writeChurchLifeAuditLog({
+        churchId,
+        actorMemberId: req.user?.id || null,
+        actorRole: req.user?.role || null,
+        action: "SCHEDULE_ASSIGNMENT_UPDATED",
+        entityType: "MINISTRY_ASSIGNMENT",
+        entityId: updated.id,
+        entityRef: updated.memberId || updated.memberPk || null,
+        before: { assignment: normalizeMinistryScheduleAssignmentRow(current) },
+        after: { assignment: normalizeMinistryScheduleAssignmentRow(updated) },
+        meta: { route: "admin/church-life/schedules/assignments:patch" },
+      });
+
+      return res.json({ ok: true, assignment: normalizeMinistryScheduleAssignmentRow(updated) });
+    } catch (err) {
+      if (err?.code === "42P01" || err?.code === "42703") {
+        return res.status(503).json({ error: "Volunteer governance is not available yet. Run migrations and retry." });
+      }
+      console.error("[admin/church-life/schedules] assignment patch error", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
 
 // Admin verification for cash records (prepared/recorded).
 router.get("/admin/cash-givings", requireStaff, requireAdminPortalTabsAny("transactions", "statements"), async (req, res) => {

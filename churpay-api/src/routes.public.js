@@ -1,7 +1,5 @@
 import express from "express";
 import { db } from "./db.js";
-import { buildPayfastRedirect } from "./payfast.js";
-import { resolveChurchPayfastCredentials } from "./payfast-church.js";
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { ensureUniqueJoinCode, joinCodePrefixFromChurchName, normalizeJoinCode } from "./join-code.js";
@@ -13,6 +11,9 @@ import {
   verificationExpired,
   verificationTokenMatches,
 } from "./email-verification.js";
+import { encryptSecret, hasSecretEncryptionKey, maskSecret } from "./secrets-crypto.js";
+import { upsertChurchDonor } from "./church-donors.js";
+import { PaymentGatewayFactory } from "./payments/index.js";
 
 const router = express.Router();
 
@@ -428,6 +429,11 @@ function getPayfastCallbackUrls(paymentIntentId, mPaymentId = null) {
   cancelUrl = appendQueryParam(cancelUrl, "mp", mPaymentId);
 
   return { returnUrl, cancelUrl, notifyUrl };
+}
+
+async function createCheckoutWithGateway(churchId, payload) {
+  const gateway = await PaymentGatewayFactory.get(churchId);
+  return gateway.createIntent({ churchId, ...payload });
 }
 
 function makeMpaymentId() {
@@ -1185,6 +1191,13 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
     const adminEmailConfirm = validateEmail(req.body?.adminEmailConfirm || req.body?.adminEmailConfirmation || req.body?.confirmAdminEmail);
     const adminPassword = typeof req.body?.adminPassword === "string" ? req.body.adminPassword : "";
     const adminPasswordConfirm = typeof req.body?.adminPasswordConfirm === "string" ? req.body.adminPasswordConfirm : "";
+    const payfastConnectRequested = parseBool(
+      req.body?.activatePayments ?? req.body?.payfastConnectRequested ?? req.body?.connectPayfast,
+      false
+    );
+    const payfastMerchantId = normalize(req.body?.payfastMerchantId ?? req.body?.merchantId);
+    const payfastMerchantKey = normalize(req.body?.payfastMerchantKey ?? req.body?.merchantKey);
+    const payfastPassphrase = normalize(req.body?.payfastPassphrase ?? req.body?.passphrase);
     const termsAccepted = parseBool(
       req.body?.acceptTerms ?? req.body?.termsAccepted ?? req.body?.acceptedTerms,
       false
@@ -1195,46 +1208,6 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
     );
 
     const cipcDocument = parseUploadedDocument(req.body?.cipcDocument, "cipc-document");
-    const bankConfirmationDocument = parseUploadedDocument(req.body?.bankConfirmationDocument, "bank-confirmation");
-    const bankAccountsRaw = Array.isArray(req.body?.bankAccounts) ? req.body.bankAccounts : [];
-    const bankAccounts = [];
-
-    for (const raw of bankAccountsRaw) {
-      const bankName = normalize(raw?.bankName || raw?.bank || "");
-      const accountName = normalize(raw?.accountName || raw?.accountHolder || raw?.accountHolderName || "");
-      const accountNumber = normalizeAccountNumber(raw?.accountNumber || raw?.accountNo || raw?.account || "");
-      const branchCode = normalizeBranchCode(raw?.branchCode || raw?.branch_code || "");
-      const accountType = normalize(raw?.accountType || raw?.type || "");
-      const isPrimary = parseBool(raw?.isPrimary, false);
-
-      const hasAnyField = !!(bankName || accountName || accountNumber || branchCode || accountType);
-      if (!hasAnyField) continue;
-
-      if (!bankName || !accountName || !accountNumber) {
-        return res.status(400).json({ error: "Each bank account must include bankName, accountName, and accountNumber" });
-      }
-
-      bankAccounts.push({
-        bankName,
-        accountName,
-        accountNumber,
-        branchCode,
-        accountType,
-        isPrimary,
-      });
-    }
-
-    if (bankAccounts.length > 5) {
-      return res.status(400).json({ error: "A maximum of 5 bank accounts is supported per onboarding request" });
-    }
-
-    const primaryCount = bankAccounts.reduce((acc, row) => acc + (row.isPrimary ? 1 : 0), 0);
-    if (primaryCount > 1) {
-      return res.status(400).json({ error: "Only one bank account can be marked as primary" });
-    }
-    if (bankAccounts.length && primaryCount === 0) {
-      bankAccounts[0].isPrimary = true;
-    }
 
     if (!churchName || !adminFullName || !adminPhone || !adminEmail) {
       return res.status(400).json({ error: "churchName, adminFullName, adminPhone, and adminEmail are required" });
@@ -1257,28 +1230,37 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
     if (!cookiesAccepted) {
       return res.status(400).json({ error: "You must accept cookie consent to submit onboarding." });
     }
-    if (!cipcDocument || !bankConfirmationDocument) {
-      return res.status(400).json({ error: "CIPC and bank confirmation documents are required" });
+    if (!cipcDocument) {
+      return res.status(400).json({ error: "CIPC document is required" });
     }
     if (cipcDocument?.error) {
       return res.status(400).json({ error: `CIPC document error: ${cipcDocument.error}` });
     }
-    if (bankConfirmationDocument?.error) {
-      return res.status(400).json({ error: `Bank confirmation document error: ${bankConfirmationDocument.error}` });
+    if (payfastConnectRequested && (!payfastMerchantId || !payfastMerchantKey)) {
+      return res.status(400).json({ error: "payfastMerchantId and payfastMerchantKey are required when Activate Payments is enabled" });
+    }
+    if (payfastConnectRequested && !hasSecretEncryptionKey()) {
+      return res.status(503).json({
+        error: "Payments activation is temporarily unavailable. Please contact support.",
+      });
     }
 
     const hasOnboardingPasswordHash = await hasColumn("church_onboarding_requests", "admin_password_hash");
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
     if (!hasOnboardingPasswordHash) {
       return res.status(503).json({ error: "Onboarding upgrade in progress. Please retry in a minute." });
     }
     if (!(await supportsOnboardingEmailVerification())) {
       return res.status(503).json({ error: "Onboarding verification upgrade in progress. Please retry shortly." });
     }
-    if (bankAccounts.length && !(await hasTable("church_onboarding_bank_accounts"))) {
-      return res.status(503).json({ error: "Onboarding bank account upgrade in progress. Please retry shortly." });
-    }
     if (!(await hasTable("legal_documents"))) {
       return res.status(503).json({ error: "Terms upgrade in progress. Please retry shortly." });
+    }
+    if (payfastConnectRequested && !hasOnboardingPayfastActivation) {
+      return res.status(503).json({ error: "Payments activation upgrade in progress. Please retry shortly." });
     }
 
     const termsVersion = (await getLegalDocumentVersion("terms")) || 1;
@@ -1293,6 +1275,16 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
       }));
     const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
     const challenge = createVerificationChallenge();
+    // Legacy onboarding schema still has additional onboarding document columns as NOT NULL.
+    // Persist the CIPC file into those columns for backward compatibility.
+    const persistedBankConfirmationDocument = {
+      buffer: cipcDocument.buffer,
+      filename: cipcDocument.filename,
+      mime: cipcDocument.mime,
+    };
+    const encryptedPayfastMerchantKey = payfastConnectRequested ? encryptSecret(payfastMerchantKey) : "";
+    const encryptedPayfastPassphrase =
+      payfastConnectRequested && payfastPassphrase ? encryptSecret(payfastPassphrase) : "";
 
     const row = await db.tx(async (t) => {
       const inserted = await t.one(
@@ -1341,9 +1333,9 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
           cipcDocument.buffer,
           cipcDocument.filename,
           cipcDocument.mime,
-          bankConfirmationDocument.buffer,
-          bankConfirmationDocument.filename,
-          bankConfirmationDocument.mime,
+          persistedBankConfirmationDocument.buffer,
+          persistedBankConfirmationDocument.filename,
+          persistedBankConfirmationDocument.mime,
           challenge.tokenHash,
           challenge.codeHash,
           challenge.expiresAt,
@@ -1368,31 +1360,26 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
         if (err?.code !== "42703" && err?.code !== "42P01") throw err;
       }
 
-      for (const acct of bankAccounts) {
+      if (hasOnboardingPayfastActivation) {
         await t.none(
           `
-          insert into church_onboarding_bank_accounts (
-            request_id,
-            bank_name,
-            account_name,
-            account_number,
-            branch_code,
-            account_type,
-            is_primary,
-            created_at,
-            updated_at
-          ) values (
-            $1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, now(), now()
-          )
+          update church_onboarding_requests
+          set
+            payfast_connect_requested = $2,
+            payfast_merchant_id = case when $2 then nullif($3, '') else null end,
+            payfast_merchant_key = case when $2 then nullif($4, '') else null end,
+            payfast_passphrase = case when $2 then nullif($5, '') else null end,
+            payfast_connect_status = case when $2 then 'pending' else null end,
+            payfast_connect_error = null,
+            payfast_connected_at = null
+          where id = $1
           `,
           [
             inserted.id,
-            acct.bankName,
-            acct.accountName,
-            acct.accountNumber,
-            acct.branchCode,
-            acct.accountType,
-            acct.isPrimary,
+            payfastConnectRequested,
+            payfastMerchantId,
+            encryptedPayfastMerchantKey,
+            encryptedPayfastPassphrase,
           ]
         );
       }
@@ -1415,10 +1402,16 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
         verificationStatus: row.verificationStatus,
         adminEmail,
         adminEmailVerified: false,
+        payfastConnectRequested,
+        payfastConnectStatus: payfastConnectRequested ? "pending" : null,
+        payfastMerchantIdMasked: payfastConnectRequested
+          ? maskSecret(payfastMerchantId, { prefix: 3, suffix: 2 })
+          : "",
       },
       meta: {
         createdAt: row.createdAt,
         verificationRequired: true,
+        paymentsActivationRequested: payfastConnectRequested,
         verification: {
           channel: "email",
           email: adminEmail,
@@ -1428,6 +1421,9 @@ router.post("/church-onboarding", onboardingJsonParser, async (req, res) => {
       },
     });
   } catch (err) {
+    if (err?.code === "PAYFAST_CREDENTIAL_ENCRYPTION_KEY_MISSING") {
+      return res.status(503).json({ error: "Payments activation is temporarily unavailable. Please contact support." });
+    }
     console.error("[public/church-onboarding]", err?.message || err, err?.stack);
     return res.status(500).json({ error: "Failed to submit church onboarding request" });
   }
@@ -1683,6 +1679,11 @@ router.get("/church-onboarding/:requestId", async (req, res) => {
     if (!requestId) return res.status(400).json({ error: "requestId is required" });
     if (!isUuid(requestId)) return res.status(400).json({ error: "requestId must be a valid UUID" });
 
+    const hasOnboardingPayfastActivation = await hasColumn(
+      "church_onboarding_requests",
+      "payfast_connect_requested"
+    ).catch(() => false);
+
     const row = await db.oneOrNone(
       `
       select
@@ -1702,9 +1703,31 @@ router.get("/church-onboarding/:requestId", async (req, res) => {
         cipc_filename as "cipcFilename",
         cipc_mime as "cipcMime",
         octet_length(cipc_document) as "cipcBytes",
-        bank_confirmation_filename as "bankConfirmationFilename",
-        bank_confirmation_mime as "bankConfirmationMime",
-        octet_length(bank_confirmation_document) as "bankConfirmationBytes",
+        ${
+          hasOnboardingPayfastActivation
+            ? 'coalesce(payfast_connect_requested, false) as "payfastConnectRequested",'
+            : 'false as "payfastConnectRequested",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'payfast_connect_status as "payfastConnectStatus",'
+            : 'null::text as "payfastConnectStatus",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'payfast_connect_error as "payfastConnectError",'
+            : 'null::text as "payfastConnectError",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'payfast_connected_at as "payfastConnectedAt",'
+            : 'null::timestamptz as "payfastConnectedAt",'
+        }
+        ${
+          hasOnboardingPayfastActivation
+            ? 'payfast_merchant_id as "payfastMerchantId",'
+            : 'null::text as "payfastMerchantId",'
+        }
         created_at as "createdAt",
         updated_at as "updatedAt",
         verified_at as "verifiedAt"
@@ -1715,10 +1738,12 @@ router.get("/church-onboarding/:requestId", async (req, res) => {
     );
 
     if (!row) return res.status(404).json({ error: "Onboarding request not found" });
+    const { payfastMerchantId, ...safeRow } = row;
 
     return res.json({
       data: {
-        ...row,
+        ...safeRow,
+        payfastMerchantIdMasked: payfastMerchantId ? maskSecret(payfastMerchantId, { prefix: 3, suffix: 2 }) : "",
         verificationStatus: normalizeVerificationStatus(row.verificationStatus),
       },
     });
@@ -1920,18 +1945,6 @@ router.post("/giving-links/:token/pay", async (req, res) => {
     const amount = amountType === "OPEN" ? parseAmount(req.body?.amount) : toCurrencyNumber(link.amountFixed);
     if (!amount || amount <= 0) return res.status(400).json({ error: "Invalid amount" });
 
-    const payfastCreds = await resolveChurchPayfastCredentials(link.churchId);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
-      });
-    }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
     const pricing = buildFeeBreakdown(amount);
     const mPaymentId = makeMpaymentId();
     const itemName = sanitizeItemName(`${link.churchName} - ${link.fundName}`);
@@ -1983,22 +1996,38 @@ router.post("/giving-links/:token/pay", async (req, res) => {
 
     const callbacks = getPayfastCallbackUrls(intent.id, mPaymentId);
 
-    const checkoutUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId,
-      amount: pricing.amountGross,
-      itemName,
-      returnUrl: callbacks.returnUrl,
-      cancelUrl: callbacks.cancelUrl,
-      notifyUrl: callbacks.notifyUrl,
-      customStr1: link.churchId,
-      customStr2: link.fundId,
-      nameFirst,
-      emailAddress: payerEmail || undefined,
-    });
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(link.churchId, {
+        amount: pricing.amountGross,
+        currency: "ZAR",
+        source: "SHARE_LINK",
+        metadata: {
+          paymentIntentId: intent.id,
+          givingLinkId: link.id,
+          fundId: link.fundId,
+          onBehalfOfMemberId: link.requesterMemberId || null,
+        },
+        providerIntentRef: mPaymentId,
+        itemName,
+        returnUrl: callbacks.returnUrl,
+        cancelUrl: callbacks.cancelUrl,
+        notifyUrl: callbacks.notifyUrl,
+        reference1: link.churchId,
+        reference2: link.fundId,
+        payerName: nameFirst,
+        payerEmail: payerEmail || undefined,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+    const checkoutUrl = checkoutResult.checkoutUrl;
 
     return res.status(201).json({
       data: {
@@ -2014,7 +2043,7 @@ router.post("/giving-links/:token/pay", async (req, res) => {
       },
       meta: {
         payerType: "on_behalf",
-        provider: "payfast",
+        provider: checkoutResult.provider || "payfast",
         source: "SHARE_LINK",
       },
     });
@@ -2079,18 +2108,6 @@ router.post("/give/payment-intents", async (req, res) => {
     if (!fund) return res.status(404).json({ error: "Fund not found" });
     if (!fund.active) return res.status(400).json({ error: "Fund is inactive" });
 
-    const payfastCreds = await resolveChurchPayfastCredentials(church.id);
-    if (!payfastCreds?.merchantId || !payfastCreds?.merchantKey) {
-      return res.status(503).json({
-        error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
-        code: "PAYFAST_NOT_CONNECTED",
-      });
-    }
-    const mode = payfastCreds.mode;
-    const merchantId = payfastCreds.merchantId;
-    const merchantKey = payfastCreds.merchantKey;
-    const passphrase = payfastCreds.passphrase || "";
-
     const pricing = buildFeeBreakdown(amount);
     const mPaymentId = makeMpaymentId();
     const itemName = sanitizeItemName(`${church.name} - ${fund.name}`);
@@ -2103,6 +2120,7 @@ router.post("/give/payment-intents", async (req, res) => {
         payer_name, payer_phone, payer_email, payer_type,
         channel, provider, provider_payment_id, m_payment_id, item_name,
         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
+        source,
         created_at, updated_at
       ) values (
         $1,$2,$3,'ZAR','PENDING',
@@ -2110,6 +2128,7 @@ router.post("/give/payment-intents", async (req, res) => {
         $6,$7,$8,'visitor',
         $9,'payfast',null,$10,$11,
         $12,$13,$14,$15,$16,$17,
+        'PUBLIC_GIVE',
         now(),now()
       ) returning id`,
       [
@@ -2135,22 +2154,33 @@ router.post("/give/payment-intents", async (req, res) => {
 
     const callbacks = getPayfastCallbackUrls(intent.id, mPaymentId);
 
-    const checkoutUrl = buildPayfastRedirect({
-      mode,
-      merchantId,
-      merchantKey,
-      passphrase,
-      mPaymentId,
-      amount: pricing.amountGross,
-      itemName,
-      returnUrl: callbacks.returnUrl,
-      cancelUrl: callbacks.cancelUrl,
-      notifyUrl: callbacks.notifyUrl,
-      customStr1: church.id,
-      customStr2: fund.id,
-      nameFirst,
-      emailAddress: payerEmail || undefined,
-    });
+    let checkoutResult = null;
+    try {
+      checkoutResult = await createCheckoutWithGateway(church.id, {
+        amount: pricing.amountGross,
+        currency: "ZAR",
+        source: "PUBLIC_GIVE",
+        metadata: { paymentIntentId: intent.id, fundId: fund.id, joinCode },
+        providerIntentRef: mPaymentId,
+        itemName,
+        returnUrl: callbacks.returnUrl,
+        cancelUrl: callbacks.cancelUrl,
+        notifyUrl: callbacks.notifyUrl,
+        reference1: church.id,
+        reference2: fund.id,
+        payerName: nameFirst,
+        payerEmail: payerEmail || undefined,
+      });
+    } catch (err) {
+      if (err?.code === "PAYFAST_NOT_CONNECTED") {
+        return res.status(503).json({
+          error: "Payments are not activated for this church. Ask your church admin to connect PayFast.",
+          code: "PAYFAST_NOT_CONNECTED",
+        });
+      }
+      throw err;
+    }
+    const checkoutUrl = checkoutResult.checkoutUrl;
 
     return res.status(201).json({
       data: {
@@ -2166,7 +2196,7 @@ router.post("/give/payment-intents", async (req, res) => {
       },
       meta: {
         payerType: "visitor",
-        provider: "payfast",
+        provider: checkoutResult.provider || "payfast",
       },
     });
   } catch (err) {
@@ -2244,6 +2274,7 @@ router.post("/give/cash-givings", async (req, res) => {
         payer_name, payer_phone, payer_email, payer_type,
         channel, provider, provider_payment_id, m_payment_id, item_name,
         platform_fee_amount, platform_fee_pct, platform_fee_fixed, amount_gross, superadmin_cut_amount, superadmin_cut_pct,
+        source,
         service_date, notes, cash_verified_by_admin,
         created_at, updated_at
       ) values (
@@ -2252,6 +2283,7 @@ router.post("/give/cash-givings", async (req, res) => {
         $6,$7,$8,'visitor',
         $9,'cash',null,$10,$11,
         $12,$13,$14,$15,$16,$17,
+        'CASH',
         $18,$19,false,
         now(),now()
       ) returning id, status, amount, amount_gross, platform_fee_amount, created_at`,
@@ -2311,13 +2343,28 @@ router.post("/give/cash-givings", async (req, res) => {
       ]
     );
 
+    try {
+      await upsertChurchDonor({
+        churchId: church.id,
+        payerName,
+        payerEmail: payerEmail || null,
+        payerPhone,
+        amount: pricing.amount,
+        paymentIntentId: intent.id,
+        transactionId: txRow.id,
+        source: "CASH",
+      });
+    } catch (err) {
+      console.error("[public/give/cash-givings] donor upsert failed", err?.message || err);
+    }
+
     // Best-effort: notify church staff to confirm the cash record.
     try {
       const staff = await db.manyOrNone(
         `
         select id
         from members
-        where church_id=$1 and lower(role) in ('admin','accountant')
+        where church_id=$1 and lower(role) in ('admin','accountant','finance','pastor','volunteer','usher')
         `,
         [church.id]
       );
