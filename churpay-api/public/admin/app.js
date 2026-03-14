@@ -1221,25 +1221,56 @@
   }
 
   function syncCommunicationsGuideUi() {
+    const commsActive = isCommunicationsTab();
+    if (el.operationsTitle) el.operationsTitle.textContent = commsActive ? "Comms" : "Church Life";
+    if (el.refreshOperationsBtn) {
+      el.refreshOperationsBtn.textContent = commsActive ? "Refresh Comms" : "Refresh Church Life";
+    }
     if (el.communicationsGuideCard) {
-      el.communicationsGuideCard.classList.toggle("hidden", !isCommunicationsTab());
+      el.communicationsGuideCard.classList.toggle("hidden", !commsActive);
     }
 
     $$("[data-communications-entry]").forEach((button) => {
       const entry = String(button.getAttribute("data-communications-entry") || "").trim().toLowerCase();
-      const active = isCommunicationsTab() && entry === String(state.communicationsEntry || "").trim().toLowerCase();
+      const active = commsActive && entry === String(state.communicationsEntry || "").trim().toLowerCase();
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
+
+    if (el.operationsFollowupsTitle) el.operationsFollowupsTitle.textContent = "Follow-ups";
+    if (el.createFollowupBtn) el.createFollowupBtn.textContent = commsActive ? "Create follow-up" : "New follow-up";
+    if (el.operationsVisitorsTitle) el.operationsVisitorsTitle.textContent = commsActive ? "Visitors" : "Auto follow-ups";
+    if (el.runAutoFollowupsBtn) {
+      el.runAutoFollowupsBtn.textContent = commsActive ? "Run visitor follow-ups" : "Run auto follow-ups";
+    }
+    if (el.operationsBroadcastsTitle) el.operationsBroadcastsTitle.textContent = "Broadcasts";
+    if (el.sendBroadcastBtn) el.sendBroadcastBtn.textContent = commsActive ? "Send broadcast message" : "Send broadcast";
+    if (el.operationsMessagingAudiencesTitle) {
+      el.operationsMessagingAudiencesTitle.textContent = commsActive ? "Messaging audiences" : "Saved audiences";
+    }
+    if (el.operationsMessagingTemplatesTitle) {
+      el.operationsMessagingTemplatesTitle.textContent = commsActive ? "Message templates" : "Templates";
+    }
   }
 
   function setOperationsShellMeta(viewName = state.operationsView) {
     syncCommunicationsGuideUi();
-    if (el.operationsTitle) el.operationsTitle.textContent = "Church Life";
-    if (el.refreshOperationsBtn) el.refreshOperationsBtn.textContent = "Refresh Church Life";
     if (!el.operationsMeta) return;
 
     const view = normalizeChurchLifeView(viewName);
+    if (isCommunicationsTab()) {
+      if (view === "broadcasts") {
+        el.operationsMeta.textContent = "Broadcasts, audiences, templates, and messaging settings stay together in one comms workspace.";
+        return;
+      }
+      if (view === "followups") {
+        el.operationsMeta.textContent = "Visitors, follow-up tasks, and next actions stay together in one comms workspace.";
+        return;
+      }
+      el.operationsMeta.textContent = "Keep visitors, follow-up, broadcasts, and messaging tools in one clear admin workspace.";
+      return;
+    }
+
     if (view === "overview") {
       el.operationsMeta.textContent = "Keep live ministry work visible without turning this into a wall of broken widgets.";
       return;
@@ -3283,7 +3314,9 @@
     if (el.operationsFollowupsMeta) {
       el.operationsFollowupsMeta.textContent = followupsData?.unavailable
         ? followupsData?.error || "Follow-ups are unavailable right now."
-        : `${formatCount(followups.length)} follow-up item(s) loaded.`;
+        : isCommunicationsTab()
+          ? `${formatCount(followups.length)} follow-up item(s) across visitors, new contacts, and care tasks.`
+          : `${formatCount(followups.length)} follow-up item(s) loaded.`;
     }
 
     if (el.operationsFollowupsBody) {
@@ -3293,7 +3326,9 @@
           5,
           followupsData?.unavailable
             ? followupsData?.error || "Follow-ups are unavailable."
-            : "No follow-ups waiting right now."
+            : isCommunicationsTab()
+              ? "No follow-up tasks waiting right now."
+              : "No follow-ups waiting right now."
         );
       } else {
         el.operationsFollowupsBody.innerHTML = followups
@@ -3317,8 +3352,9 @@
           autoPreviewData?.error || "Auto follow-up preview is unavailable right now.";
       } else {
         const meta = autoPreviewData?.meta || {};
-        el.operationsAutoFollowupsMeta.textContent =
-          `${formatCount(previewRows.length)} candidate(s) across a ${formatCount(meta.sampleLimit || previewRows.length)}-person sample.`;
+        el.operationsAutoFollowupsMeta.textContent = isCommunicationsTab()
+          ? `${formatCount(previewRows.length)} visitor and care candidate(s) ready for review.`
+          : `${formatCount(previewRows.length)} candidate(s) across a ${formatCount(meta.sampleLimit || previewRows.length)}-person sample.`;
       }
     }
 
@@ -3329,7 +3365,9 @@
           4,
           autoPreviewData?.unavailable
             ? autoPreviewData?.error || "Auto follow-up preview is unavailable."
-            : "No auto follow-up candidates right now."
+            : isCommunicationsTab()
+              ? "No visitor or care suggestions waiting right now."
+              : "No auto follow-up candidates right now."
         );
       } else {
         el.operationsAutoFollowupsBody.innerHTML = previewRows
@@ -3404,7 +3442,9 @@
     if (el.operationsBroadcastsMeta) {
       el.operationsBroadcastsMeta.textContent = broadcastsData?.unavailable
         ? broadcastsData?.error || "Broadcasts are unavailable right now."
-        : `${formatCount(broadcasts.length)} recent broadcast(s) loaded.`;
+        : isCommunicationsTab()
+          ? `${formatCount(broadcasts.length)} recent broadcast(s), plus messaging audiences and templates.`
+          : `${formatCount(broadcasts.length)} recent broadcast(s) loaded.`;
     }
 
     if (el.operationsBroadcastsBody) {
@@ -3414,7 +3454,9 @@
           4,
           broadcastsData?.unavailable
             ? broadcastsData?.error || "Broadcasts are unavailable."
-            : "No broadcast history yet."
+            : isCommunicationsTab()
+              ? "No broadcast messages sent yet."
+              : "No broadcast history yet."
         );
       } else {
         el.operationsBroadcastsBody.innerHTML = broadcasts
@@ -3908,7 +3950,7 @@
 
     if (currentView === "overview") {
       if (el.operationsMeta) {
-        el.operationsMeta.textContent = "Loading Church Life overview...";
+        el.operationsMeta.textContent = isCommunicationsTab() ? "Loading Comms workspace..." : "Loading Church Life overview...";
       }
       renderSkeletonRows(el.operationsTrendBody, 2, 6);
       renderSkeletonRows(el.operationsQueueBody, 3, 6);
