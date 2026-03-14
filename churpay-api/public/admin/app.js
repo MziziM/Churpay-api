@@ -280,6 +280,8 @@
     createFollowupBtn: $("createFollowupBtn"),
     runAutoFollowupsBtn: $("runAutoFollowupsBtn"),
     operationsVisitorsTitle: $("operationsVisitorsTitle"),
+    operationsVisitorsContext: $("operationsVisitorsContext"),
+    operationsVisitorsIntro: $("operationsVisitorsIntro"),
     operationsAutoFollowupsMeta: $("operationsAutoFollowupsMeta"),
     operationsAutoFollowupsBody: $("operationsAutoFollowupsBody"),
     operationsPrayerMeta: $("operationsPrayerMeta"),
@@ -1024,8 +1026,9 @@
   }
 
   function canUseChurchLifeWorkspace() {
+    if (isChurchAdminRole(state.profile?.role)) return true;
     if (!state.allowedTabs || !state.allowedTabs.length) return true;
-    return state.allowedTabs.includes("operations");
+    return state.allowedTabs.includes("operations") || state.allowedTabs.includes("communications");
   }
 
   function firstAllowedTab() {
@@ -1222,6 +1225,7 @@
 
   function syncCommunicationsGuideUi() {
     const commsActive = isCommunicationsTab();
+    const visitorsActive = commsActive && String(state.communicationsEntry || "").trim().toLowerCase() === "visitors";
     if (el.operationsTitle) el.operationsTitle.textContent = commsActive ? "Comms" : "Church Life";
     if (el.refreshOperationsBtn) {
       el.refreshOperationsBtn.textContent = commsActive ? "Refresh Comms" : "Refresh Church Life";
@@ -1239,9 +1243,21 @@
 
     if (el.operationsFollowupsTitle) el.operationsFollowupsTitle.textContent = "Follow-ups";
     if (el.createFollowupBtn) el.createFollowupBtn.textContent = commsActive ? "Create follow-up" : "New follow-up";
-    if (el.operationsVisitorsTitle) el.operationsVisitorsTitle.textContent = commsActive ? "Visitors" : "Auto follow-ups";
+    if (el.operationsVisitorsContext) {
+      el.operationsVisitorsContext.classList.toggle("hidden", !visitorsActive);
+    }
+    if (el.operationsVisitorsIntro) {
+      el.operationsVisitorsIntro.classList.toggle("hidden", !visitorsActive);
+    }
+    if (el.operationsVisitorsTitle) {
+      el.operationsVisitorsTitle.textContent = visitorsActive ? "Visitors & next steps" : commsActive ? "Visitors" : "Auto follow-ups";
+    }
     if (el.runAutoFollowupsBtn) {
-      el.runAutoFollowupsBtn.textContent = commsActive ? "Run visitor follow-ups" : "Run auto follow-ups";
+      el.runAutoFollowupsBtn.textContent = visitorsActive
+        ? "Review visitor follow-ups"
+        : commsActive
+          ? "Run visitor follow-ups"
+          : "Run auto follow-ups";
     }
     if (el.operationsBroadcastsTitle) el.operationsBroadcastsTitle.textContent = "Broadcasts";
     if (el.sendBroadcastBtn) el.sendBroadcastBtn.textContent = commsActive ? "Send broadcast message" : "Send broadcast";
@@ -1463,10 +1479,12 @@
       return;
     }
     if (tabName === "communications") {
+      state.communicationsEntry = state.communicationsEntry || "followups";
       state.operationsView = "followups";
       syncChurchLifeViewUi();
       setOperationsShellMeta("followups");
       await loadOperationsWorkspace({ view: "followups" });
+      window.setTimeout(() => scrollToCommunicationsEntry(state.communicationsEntry || "followups"), 120);
       return;
     }
     if (tabName === "settings") {
@@ -3352,9 +3370,12 @@
           autoPreviewData?.error || "Auto follow-up preview is unavailable right now.";
       } else {
         const meta = autoPreviewData?.meta || {};
-        el.operationsAutoFollowupsMeta.textContent = isCommunicationsTab()
-          ? `${formatCount(previewRows.length)} visitor and care candidate(s) ready for review.`
-          : `${formatCount(previewRows.length)} candidate(s) across a ${formatCount(meta.sampleLimit || previewRows.length)}-person sample.`;
+        const visitorsActive = isCommunicationsTab() && String(state.communicationsEntry || "").trim().toLowerCase() === "visitors";
+        el.operationsAutoFollowupsMeta.textContent = visitorsActive
+          ? `${formatCount(previewRows.length)} visitor and care candidate(s) ready for review. Start here for first-time guests and people who need a next step.`
+          : isCommunicationsTab()
+            ? `${formatCount(previewRows.length)} visitor and care candidate(s) ready for review.`
+            : `${formatCount(previewRows.length)} candidate(s) across a ${formatCount(meta.sampleLimit || previewRows.length)}-person sample.`;
       }
     }
 
