@@ -67,6 +67,7 @@
     qr: "/admin/finance/qr",
     members: "/admin/people",
     operations: "/admin/church-life",
+    communications: "/admin/comms",
     settings: "/admin/setup",
   };
 
@@ -80,6 +81,7 @@
     qr: "QR Codes",
     members: "People",
     operations: "Church Life",
+    communications: "Comms",
     settings: "Setup",
   };
 
@@ -1035,7 +1037,7 @@
     if (!key) return false;
     if (!state.allowedTabs || !state.allowedTabs.length) return true;
     if (key === "finance") return canUseFinanceWorkspace();
-    if (key === "operations") return canUseChurchLifeWorkspace();
+    if (key === "operations" || key === "communications") return canUseChurchLifeWorkspace();
     return state.allowedTabs.includes(key);
   }
 
@@ -1060,6 +1062,7 @@
     if (path === "/admin/finance/qr") return "qr";
     if (path === "/admin/people") return "members";
     if (path === "/admin/church-life") return "operations";
+    if (path === "/admin/comms") return "communications";
     if (path === "/admin/setup") return "settings";
     return "dashboard";
   }
@@ -1246,13 +1249,14 @@
     if (navTab === "finance") return "Giving & Payments";
     if (navTab === "members") return "People & Roles";
     if (navTab === "operations") return "Church Life";
+    if (navTab === "communications") return "Comms & Follow-up";
     if (navTab === "settings") return "Church Setup";
     return "Control Center";
   }
 
   function workspaceDockConfigForTab(tabName) {
     const navTab = navTabFor(tabName);
-    if (navTab === "operations") return null;
+    if (navTab === "operations" || navTab === "communications") return null;
 
     if (navTab === "finance") {
       return {
@@ -1359,6 +1363,13 @@
       await loadOperationsWorkspace();
       return;
     }
+    if (tabName === "communications") {
+      state.operationsView = "followups";
+      syncChurchLifeViewUi();
+      setOperationsShellMeta("followups");
+      await loadOperationsWorkspace({ view: "followups" });
+      return;
+    }
     if (tabName === "settings") {
       await loadSettingsWorkspace();
     }
@@ -1367,7 +1378,11 @@
   function switchTab(tabName, pushHistory = true) {
     const requested = String(tabName || "").trim().toLowerCase();
     const resolved = isTabAllowed(requested) ? requested : firstAllowedTab();
-    const activePanelTab = resolved;
+    const activePanelTab = resolved === "communications" ? "operations" : resolved;
+
+    if (resolved === "communications") {
+      state.operationsView = "followups";
+    }
 
     state.currentTab = resolved;
     syncChurchLifeViewUi();
