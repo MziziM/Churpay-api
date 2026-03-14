@@ -19,6 +19,7 @@
     totals: [],
     dashboardTransactions: [],
     chartDays: 14,
+    financeWeeks: 12,
     txRows: [],
     txMeta: { limit: 25, offset: 0, count: 0, returned: 0 },
     txFilters: {
@@ -47,27 +48,87 @@
     },
     authTwoFactor: null,
     payfastStatus: null,
+    growthSubscription: null,
+    operationsView: "overview",
+    operationsGroupId: "",
+    operationsGroupRows: [],
+    operationsServiceRows: [],
+    operationsChildrenRows: [],
+    operationsChildrenCheckInRows: [],
+    operationsChildrenService: null,
+  };
+
+  const TAB_PATHS = {
+    dashboard: "/admin/home",
+    finance: "/admin/finance/giving-analytics",
+    transactions: "/admin/finance",
+    statements: "/admin/finance/statements",
+    funds: "/admin/finance/funds",
+    qr: "/admin/finance/qr",
+    members: "/admin/people",
+    operations: "/admin/church-life",
+    settings: "/admin/setup",
   };
 
   const TAB_TITLE = {
-    dashboard: "Dashboard",
+    dashboard: "Home",
+    finance: "Finance",
+    growth: "Growth",
     transactions: "Transactions",
     statements: "Statements",
     funds: "Funds",
     qr: "QR Codes",
-    members: "Members",
-    settings: "Settings",
+    members: "People",
+    operations: "Church Life",
+    settings: "Setup",
+  };
+
+  const CHURCH_LIFE_VIEWS = [
+    "overview",
+    "insights",
+    "services",
+    "followups",
+    "prayer",
+    "broadcasts",
+    "volunteers",
+    "groups",
+    "children",
+    "schedules",
+  ];
+  const CHURCH_LIFE_VIEW_TITLE = {
+    overview: "Overview",
+    insights: "Insights",
+    services: "Services",
+    followups: "Follow-ups",
+    prayer: "Prayer",
+    broadcasts: "Broadcasts",
+    volunteers: "Volunteers",
+    groups: "Groups",
+    children: "Children",
+    schedules: "Schedules",
+  };
+  const CHURCH_LIFE_VIEW_PANEL = {
+    overview: "operationsViewOverview",
+    insights: "operationsViewInsights",
+    services: "operationsViewServices",
+    followups: "operationsViewFollowups",
+    prayer: "operationsViewPrayer",
+    broadcasts: "operationsViewBroadcasts",
+    volunteers: "operationsViewVolunteers",
+    groups: "operationsViewGroups",
+    children: "operationsViewChildren",
+    schedules: "operationsViewSchedules",
   };
 
   const ADMIN_PORTAL_TABS = Object.keys(TAB_TITLE);
   const DEFAULT_ACCOUNTANT_TABS = ["dashboard", "transactions", "statements"];
   const ACCOUNTANT_TAB_LABELS = {
-    dashboard: "Dashboard",
+    dashboard: "Home",
     transactions: "Transactions",
     statements: "Statements",
     funds: "Funds",
     qr: "QR codes",
-    members: "Members",
+    members: "People",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -113,6 +174,10 @@
     refreshBtn: $("refreshBtn"),
     logoutBtn: $("logoutBtn"),
     statusInline: $("statusInline"),
+    workspaceDock: $("workspaceDock"),
+    workspaceDockLabel: $("workspaceDockLabel"),
+    workspaceDockTitle: $("workspaceDockTitle"),
+    workspaceDockActions: $("workspaceDockActions"),
     themeToggleBtn: $("themeToggleBtn"),
 
     statTodayTotal: $("statTodayTotal"),
@@ -125,6 +190,19 @@
     donationChart: $("donationChart"),
     dashboardRecentBody: $("dashboardRecentBody"),
     dashboardTotalsBody: $("dashboardTotalsBody"),
+    financeWeeksSelect: $("financeWeeksSelect"),
+    refreshFinanceBtn: $("refreshFinanceBtn"),
+    financeMeta: $("financeMeta"),
+    financeThisMonthAmount: $("financeThisMonthAmount"),
+    financePreviousMonthAmount: $("financePreviousMonthAmount"),
+    financeAmountChange: $("financeAmountChange"),
+    financeThisMonthDonors: $("financeThisMonthDonors"),
+    financeDonorChange: $("financeDonorChange"),
+    financeThisMonthTransactions: $("financeThisMonthTransactions"),
+    financeTransactionChange: $("financeTransactionChange"),
+    financeRecurringGross: $("financeRecurringGross"),
+    financeWeeklyTrendBody: $("financeWeeklyTrendBody"),
+    financeRecentBody: $("financeRecentBody"),
 
     txSearchInput: $("txSearchInput"),
     txFundSelect: $("txFundSelect"),
@@ -186,6 +264,93 @@
     refreshMembersBtn: $("refreshMembersBtn"),
     memberMeta: $("memberMeta"),
     membersBody: $("membersBody"),
+    refreshOperationsBtn: $("refreshOperationsBtn"),
+    operationsTitle: $("operationsTitle"),
+    operationsMeta: $("operationsMeta"),
+    operationsFollowupsTitle: $("operationsFollowupsTitle"),
+    operationsInsightsMeta: $("operationsInsightsMeta"),
+    operationsServicesMeta: $("operationsServicesMeta"),
+    createServiceBtn: $("createServiceBtn"),
+    registerDoorPersonBtn: $("registerDoorPersonBtn"),
+    operationsFollowupsMeta: $("operationsFollowupsMeta"),
+    createFollowupBtn: $("createFollowupBtn"),
+    runAutoFollowupsBtn: $("runAutoFollowupsBtn"),
+    operationsVisitorsTitle: $("operationsVisitorsTitle"),
+    operationsAutoFollowupsMeta: $("operationsAutoFollowupsMeta"),
+    operationsAutoFollowupsBody: $("operationsAutoFollowupsBody"),
+    operationsPrayerMeta: $("operationsPrayerMeta"),
+    operationsBroadcastsMeta: $("operationsBroadcastsMeta"),
+    sendBroadcastBtn: $("sendBroadcastBtn"),
+    operationsBroadcastsTitle: $("operationsBroadcastsTitle"),
+    operationsBroadcastAudiencesBody: $("operationsBroadcastAudiencesBody"),
+    operationsMessagingAudiencesTitle: $("operationsMessagingAudiencesTitle"),
+    operationsMessagingTemplatesTitle: $("operationsMessagingTemplatesTitle"),
+    operationsBroadcastTemplatesBody: $("operationsBroadcastTemplatesBody"),
+    operationsVolunteersMeta: $("operationsVolunteersMeta"),
+    operationsSchedulesMeta: $("operationsSchedulesMeta"),
+    createGroupBtn: $("createGroupBtn"),
+    operationsGroupsMeta: $("operationsGroupsMeta"),
+    operationsGroupsTotal: $("operationsGroupsTotal"),
+    operationsGroupsActive: $("operationsGroupsActive"),
+    operationsGroupsMembers: $("operationsGroupsMembers"),
+    operationsGroupsMeetings: $("operationsGroupsMeetings"),
+    operationsGroupsBody: $("operationsGroupsBody"),
+    operationsGroupDetailMeta: $("operationsGroupDetailMeta"),
+    operationsGroupMembersBody: $("operationsGroupMembersBody"),
+    operationsGroupMeetingsBody: $("operationsGroupMeetingsBody"),
+    operationsChildrenMeta: $("operationsChildrenMeta"),
+    addChildProfileBtn: $("addChildProfileBtn"),
+    walkInChildCheckinBtn: $("walkInChildCheckinBtn"),
+    operationsChildrenProfiles: $("operationsChildrenProfiles"),
+    operationsChildrenHousehold: $("operationsChildrenHousehold"),
+    operationsChildrenWalkIns: $("operationsChildrenWalkIns"),
+    operationsChildrenOpenCheckins: $("operationsChildrenOpenCheckins"),
+    operationsChildrenBody: $("operationsChildrenBody"),
+    operationsChildrenCheckinsBody: $("operationsChildrenCheckinsBody"),
+    operationsAttendance: $("operationsAttendance"),
+    operationsServicesToday: $("operationsServicesToday"),
+    operationsFollowupsDue: $("operationsFollowupsDue"),
+    operationsUrgentPrayer: $("operationsUrgentPrayer"),
+    operationsTrendBody: $("operationsTrendBody"),
+    operationsQueueBody: $("operationsQueueBody"),
+    operationsInsightsAttendees: $("operationsInsightsAttendees"),
+    operationsInsightsFirstTime: $("operationsInsightsFirstTime"),
+    operationsInsightsReturning: $("operationsInsightsReturning"),
+    operationsInsightsAttendanceDelta: $("operationsInsightsAttendanceDelta"),
+    operationsInsightsParticipation: $("operationsInsightsParticipation"),
+    operationsInsightsGiving: $("operationsInsightsGiving"),
+    operationsInsightsTrendBody: $("operationsInsightsTrendBody"),
+    operationsInsightsRiskBody: $("operationsInsightsRiskBody"),
+    operationsServicesBody: $("operationsServicesBody"),
+    operationsFollowupsOpen: $("operationsFollowupsOpen"),
+    operationsFollowupsUrgent: $("operationsFollowupsUrgent"),
+    operationsFollowupsMine: $("operationsFollowupsMine"),
+    operationsFollowupsBody: $("operationsFollowupsBody"),
+    operationsPrayerNew: $("operationsPrayerNew"),
+    operationsPrayerInProgress: $("operationsPrayerInProgress"),
+    operationsPrayerMine: $("operationsPrayerMine"),
+    operationsPrayerClosed: $("operationsPrayerClosed"),
+    operationsPrayerBody: $("operationsPrayerBody"),
+    operationsBroadcastsTotal: $("operationsBroadcastsTotal"),
+    operationsBroadcastsAudience: $("operationsBroadcastsAudience"),
+    operationsBroadcastsSent: $("operationsBroadcastsSent"),
+    operationsBroadcastsFailed: $("operationsBroadcastsFailed"),
+    operationsBroadcastsBody: $("operationsBroadcastsBody"),
+    operationsVolunteersOpenTerms: $("operationsVolunteersOpenTerms"),
+    operationsVolunteersReviewsDue: $("operationsVolunteersReviewsDue"),
+    operationsVolunteersHighLoad: $("operationsVolunteersHighLoad"),
+    operationsVolunteersOverload: $("operationsVolunteersOverload"),
+    operationsVolunteersBody: $("operationsVolunteersBody"),
+    operationsVolunteerScheduleBody: $("operationsVolunteerScheduleBody"),
+    operationsVolunteerMinistriesBody: $("operationsVolunteerMinistriesBody"),
+    operationsVolunteerRolesBody: $("operationsVolunteerRolesBody"),
+    operationsVolunteerReviewsBody: $("operationsVolunteerReviewsBody"),
+    operationsVolunteerAuditBody: $("operationsVolunteerAuditBody"),
+    operationsSchedulesToday: $("operationsSchedulesToday"),
+    operationsSchedulesAssignments: $("operationsSchedulesAssignments"),
+    operationsSchedulesServed: $("operationsSchedulesServed"),
+    operationsSchedulesNoShow: $("operationsSchedulesNoShow"),
+    operationsSchedulesBody: $("operationsSchedulesBody"),
 
     churchSummary: $("churchSummary"),
     churchForm: $("churchForm"),
@@ -214,6 +379,13 @@
     payfastStatusMeta: $("payfastStatusMeta"),
     openPayfastConnectBtn: $("openPayfastConnectBtn"),
     refreshPayfastStatusBtn: $("refreshPayfastStatusBtn"),
+    growthSubscriptionCard: $("growthSubscriptionCard"),
+    growthSubscriptionStatusBadge: $("growthSubscriptionStatusBadge"),
+    growthSubscriptionMeta: $("growthSubscriptionMeta"),
+    growthPlanSelect: $("growthPlanSelect"),
+    growthPlanHint: $("growthPlanHint"),
+    requestGrowthActivationBtn: $("requestGrowthActivationBtn"),
+    refreshGrowthSubscriptionBtn: $("refreshGrowthSubscriptionBtn"),
 
     payfastConnectDialog: $("payfastConnectDialog"),
     payfastConnectError: $("payfastConnectError"),
@@ -273,6 +445,18 @@
     return `R ${n.toFixed(2)}`;
   }
 
+  function formatMoneyFromCents(value) {
+    const cents = Number(value || 0);
+    if (!Number.isFinite(cents)) return "R 0.00";
+    return formatMoney(cents / 100);
+  }
+
+  function formatCount(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return "0";
+    return new Intl.NumberFormat("en-ZA").format(Math.round(n));
+  }
+
   function formatDate(value) {
     if (!value) return "-";
     const d = new Date(value);
@@ -280,11 +464,97 @@
     return d.toLocaleString();
   }
 
+  function formatDateOnly(value) {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
   function formatDateShort(value) {
     if (!value) return "-";
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "-";
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function toDateInputValue(value) {
+    if (!value) return "";
+    const direct = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(direct)) return direct;
+    const parsed = new Date(direct);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  function toDateTimeLocalValue(value) {
+    if (!value) return "";
+    const parsed = new Date(String(value));
+    if (Number.isNaN(parsed.getTime())) return "";
+    const tzOffsetMs = parsed.getTimezoneOffset() * 60000;
+    return new Date(parsed.getTime() - tzOffsetMs).toISOString().slice(0, 16);
+  }
+
+  function daysRemaining(value) {
+    if (!value) return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return Math.ceil((d.getTime() - Date.now()) / 86400000);
+  }
+
+  function formatPercentChange(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return "n/a";
+    return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  }
+
+  function labelizeToken(value, fallback = "Unknown") {
+    const text = String(value || "").trim();
+    if (!text) return fallback;
+    return text
+      .toLowerCase()
+      .split(/[_\s-]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  function parsePromptDateToIsoDateTime(value) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T09:00:00`;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$/.test(text)) return text.replace(" ", "T") + ":00";
+    return "";
+  }
+
+  function formatContactLine(...values) {
+    return values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  async function safeWorkspaceRequest(read, fallback) {
+    try {
+      return await read();
+    } catch (err) {
+      const statusCode = Number(err?.status || 0);
+      if (statusCode === 403 || statusCode === 404 || statusCode === 429 || statusCode === 503) {
+        return Object.assign({}, fallback || {}, {
+          unavailable: true,
+          error: err?.message || "Unavailable right now.",
+        });
+      }
+      throw err;
+    }
+  }
+
+  function selectOperationsGroup(groupId, { refresh = false } = {}) {
+    state.operationsGroupId = String(groupId || "").trim();
+    if (state.currentTab !== "operations" || state.operationsView !== "groups" || !state.token) return;
+    loadOperationsWorkspace({ view: "groups", force: refresh }).catch((err) => {
+      handlePortalLoadError(err, "Could not load groups.");
+    });
   }
 
   function formatPayerDisplay(row) {
@@ -699,7 +969,17 @@
 
   function isStaffRole(role) {
     const r = String(role || "").toLowerCase();
-    return r === "admin" || r === "accountant" || r === "super";
+    return [
+      "admin",
+      "super",
+      "accountant",
+      "finance",
+      "pastor",
+      "volunteer",
+      "usher",
+      "teacher",
+      "prayer_team_lead",
+    ].includes(r);
   }
 
   function isChurchAdminRole(role) {
@@ -734,27 +1014,54 @@
     state.allowedTabs = normalized.length ? normalized : ADMIN_PORTAL_TABS.slice();
   }
 
+  function canUseFinanceWorkspace() {
+    if (!state.allowedTabs || !state.allowedTabs.length) return true;
+    return ["growth", "transactions", "statements", "funds", "qr"].some((tab) => state.allowedTabs.includes(tab));
+  }
+
+  function canUseChurchLifeWorkspace() {
+    if (!state.allowedTabs || !state.allowedTabs.length) return true;
+    return state.allowedTabs.includes("operations");
+  }
+
   function firstAllowedTab() {
-    return (state.allowedTabs && state.allowedTabs[0]) || "dashboard";
+    const preferred = ["dashboard", "finance", "members", "operations", "settings"];
+    const match = preferred.find((tab) => isTabAllowed(tab));
+    return match || (state.allowedTabs && state.allowedTabs[0]) || "dashboard";
   }
 
   function isTabAllowed(tabName) {
     const key = String(tabName || "").trim().toLowerCase();
     if (!key) return false;
     if (!state.allowedTabs || !state.allowedTabs.length) return true;
+    if (key === "finance") return canUseFinanceWorkspace();
+    if (key === "operations") return canUseChurchLifeWorkspace();
     return state.allowedTabs.includes(key);
   }
 
   function applyTabVisibility() {
-    const allowed = new Set(state.allowedTabs || []);
     $$(".nav-link[data-tab]").forEach((btn) => {
       const tab = String(btn.getAttribute("data-tab") || "").trim().toLowerCase();
-      const visible = !tab || allowed.has(tab);
+      const visible = !tab || isTabAllowed(tab);
       btn.classList.toggle("hidden", !visible);
     });
 
     const desired = isTabAllowed(state.currentTab) ? state.currentTab : firstAllowedTab();
-    switchTab(desired);
+    switchTab(desired, false);
+  }
+
+  function pathToTab(pathname) {
+    const path = String(pathname || "/admin/").replace(/\/+$/, "") || "/admin";
+    if (path === "/admin" || path === "/admin/home") return "dashboard";
+    if (path === "/admin/finance/giving-analytics") return "finance";
+    if (path === "/admin/finance") return "transactions";
+    if (path === "/admin/finance/statements") return "statements";
+    if (path === "/admin/finance/funds") return "funds";
+    if (path === "/admin/finance/qr") return "qr";
+    if (path === "/admin/people") return "members";
+    if (path === "/admin/church-life") return "operations";
+    if (path === "/admin/setup") return "settings";
+    return "dashboard";
   }
 
   async function apiRequest(path, options = {}) {
@@ -885,30 +1192,216 @@
     `;
   }
 
-  function switchTab(tabName) {
-    const resolved = isTabAllowed(tabName) ? tabName : firstAllowedTab();
+  function normalizeChurchLifeView(viewName) {
+    const key = String(viewName || "overview").trim().toLowerCase();
+    return CHURCH_LIFE_VIEWS.includes(key) ? key : "overview";
+  }
+
+  function setOperationsShellMeta(viewName = state.operationsView) {
+    if (el.operationsTitle) el.operationsTitle.textContent = "Church Life";
+    if (el.refreshOperationsBtn) el.refreshOperationsBtn.textContent = "Refresh Church Life";
+    if (!el.operationsMeta) return;
+
+    const view = normalizeChurchLifeView(viewName);
+    if (view === "overview") {
+      el.operationsMeta.textContent = "Keep live ministry work visible without turning this into a wall of broken widgets.";
+      return;
+    }
+
+    el.operationsMeta.textContent = `${CHURCH_LIFE_VIEW_TITLE[view]} keeps the live ministry flow in view without leaving Church Life.`;
+  }
+
+  function syncChurchLifeViewUi() {
+    const currentView = normalizeChurchLifeView(state.operationsView);
+    $$("[data-operations-view]").forEach((button) => {
+      const isActive = normalizeChurchLifeView(button.getAttribute("data-operations-view")) === currentView;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+
+    $$(".operations-view").forEach((panel) => {
+      panel.classList.toggle("hidden", panel.id !== CHURCH_LIFE_VIEW_PANEL[currentView]);
+    });
+  }
+
+  function setOperationsView(viewName, { refresh = false } = {}) {
+    state.operationsView = normalizeChurchLifeView(viewName);
+    syncChurchLifeViewUi();
+    setOperationsShellMeta(state.operationsView);
+
+    if (state.currentTab !== "operations" || !state.token) return;
+    loadOperationsWorkspace({ view: state.operationsView, force: refresh }).catch((err) => {
+      handlePortalLoadError(err, `Could not load ${CHURCH_LIFE_VIEW_TITLE[state.operationsView] || "Church Life"}.`);
+    });
+  }
+
+  function navTabFor(tabName) {
+    if (["finance", "growth", "transactions", "statements", "funds", "qr"].includes(tabName)) return "finance";
+    return tabName;
+  }
+
+  function kickerForTab(tabName) {
+    const navTab = navTabFor(tabName);
+    if (navTab === "dashboard") return "Admin Portal";
+    if (navTab === "finance") return "Giving & Payments";
+    if (navTab === "members") return "People & Roles";
+    if (navTab === "operations") return "Church Life";
+    if (navTab === "settings") return "Church Setup";
+    return "Control Center";
+  }
+
+  function workspaceDockConfigForTab(tabName) {
+    const navTab = navTabFor(tabName);
+    if (navTab === "operations") return null;
+
+    if (navTab === "finance") {
+      return {
+        label: "Finance flow",
+        title: "One path for analytics, transactions, statements, funds, and QR tools.",
+        tabs: ["finance", "transactions", "statements", "funds", "qr"],
+      };
+    }
+
+    return {
+      label: "Church workspaces",
+      title: "Move through the church portal without repeating shortcut tiles in every panel.",
+      tabs: ["finance", "members", "operations", "settings"],
+    };
+  }
+
+  function renderWorkspaceDock(tabName) {
+    if (!el.workspaceDock || !el.workspaceDockActions || !el.workspaceDockLabel || !el.workspaceDockTitle) return;
+
+    const config = workspaceDockConfigForTab(tabName);
+    if (!config || !Array.isArray(config.tabs) || !config.tabs.length) {
+      el.workspaceDock.classList.add("hidden");
+      el.workspaceDockActions.innerHTML = "";
+      return;
+    }
+
+    el.workspaceDock.classList.remove("hidden");
+    el.workspaceDockLabel.textContent = config.label || "Workspace flow";
+    el.workspaceDockTitle.textContent = config.title || "";
+    el.workspaceDockActions.innerHTML = config.tabs
+      .map((tab) => {
+        const isActive = tab === tabName;
+        return `
+          <button
+            class="btn ghost workspace-tab${isActive ? " is-active" : ""}"
+            type="button"
+            data-jump-tab="${escapeHtml(tab)}"
+            aria-pressed="${isActive ? "true" : "false"}"
+          >
+            ${escapeHtml(TAB_TITLE[tab] || tab)}
+          </button>
+        `;
+      })
+      .join("");
+  }
+
+  function ensureStatementDateDefaults() {
+    if (el.statementFromInput && !el.statementFromInput.value) el.statementFromInput.value = isoStartOfMonthLocal();
+    if (el.statementToInput && !el.statementToInput.value) el.statementToInput.value = isoTodayLocal();
+  }
+
+  function handlePortalLoadError(err, fallbackMessage) {
+    if (!err) return;
+    if (err.status === 401) {
+      void onLogout({ silent: true, reason: "Session expired. Please sign in again." });
+      return;
+    }
+    const message = err?.message || fallbackMessage || "Could not load this view.";
+    showInlineStatus(message, "error");
+    toast(message, "error");
+  }
+
+  async function loadSettingsWorkspace() {
+    const tasks = [loadGrowthSubscription()];
+    if (isChurchAdminRole(state.profile?.role)) {
+      tasks.push(loadPayfastStatus());
+    } else {
+      showPayfastSetupCard(false);
+    }
+    await Promise.all(tasks);
+  }
+
+  async function loadCurrentTabData(tabName) {
+    if (tabName === "dashboard") {
+      await loadDashboard();
+      return;
+    }
+    if (tabName === "finance") {
+      await loadFinanceWorkspace();
+      return;
+    }
+    if (tabName === "transactions") {
+      await loadTransactions();
+      return;
+    }
+    if (tabName === "statements") {
+      ensureStatementDateDefaults();
+      await loadStatementSummary();
+      return;
+    }
+    if (tabName === "funds") {
+      await loadFunds();
+      return;
+    }
+    if (tabName === "qr") {
+      await loadFunds();
+      return;
+    }
+    if (tabName === "members") {
+      await loadMembers();
+      return;
+    }
+    if (tabName === "operations") {
+      await loadOperationsWorkspace();
+      return;
+    }
+    if (tabName === "settings") {
+      await loadSettingsWorkspace();
+    }
+  }
+
+  function switchTab(tabName, pushHistory = true) {
+    const requested = String(tabName || "").trim().toLowerCase();
+    const resolved = isTabAllowed(requested) ? requested : firstAllowedTab();
+    const activePanelTab = resolved;
+
     state.currentTab = resolved;
+    syncChurchLifeViewUi();
+    setOperationsShellMeta(state.operationsView);
+
+    const activeNavTab = navTabFor(resolved);
     $$(".nav-link[data-tab]").forEach((btn) => {
-      const active = btn.getAttribute("data-tab") === resolved;
+      const active = btn.getAttribute("data-tab") === activeNavTab;
       btn.classList.toggle("active", active);
     });
 
     $$(".panel[id^='panel-']").forEach((panel) => {
-      panel.classList.toggle("hidden", panel.id !== `panel-${resolved}`);
+      panel.classList.toggle("hidden", panel.id !== `panel-${activePanelTab}`);
     });
 
     el.pageTitle.textContent = TAB_TITLE[resolved] || "Admin";
-    el.pageKicker.textContent = resolved === "dashboard" ? "Admin Portal" : "Control Center";
-    setSidebarOpen(false);
+    el.pageKicker.textContent = kickerForTab(resolved);
+    renderWorkspaceDock(resolved);
 
-    if (resolved === "statements") {
-      if (el.statementFromInput && !el.statementFromInput.value) el.statementFromInput.value = isoStartOfMonthLocal();
-      if (el.statementToInput && !el.statementToInput.value) el.statementToInput.value = isoTodayLocal();
-      loadStatementSummary().catch((err) => toast(err.message || "Could not load statement", "error"));
+    if (pushHistory) {
+      const nextPath = TAB_PATHS[resolved] || TAB_PATHS.dashboard;
+      if (window.location.pathname !== nextPath) {
+        window.history.pushState({ tab: resolved }, "", nextPath);
+      }
     }
-    if (resolved === "settings" && isChurchAdminRole(state.profile?.role)) {
-      loadPayfastStatus().catch((err) => toast(err.message || "Could not load PayFast status", "error"));
-    }
+
+    setSidebarOpen(false);
+    showInlineStatus("");
+
+    if (!state.token) return;
+
+    loadCurrentTabData(resolved).catch((err) => {
+      handlePortalLoadError(err, `Could not load ${TAB_TITLE[resolved] || "this view"}.`);
+    });
   }
 
   async function loginAdmin(identifier, password) {
@@ -1010,6 +1503,11 @@
   function showPayfastSetupCard(show) {
     if (!el.payfastSetupCard) return;
     el.payfastSetupCard.classList.toggle("hidden", !show);
+  }
+
+  function showGrowthSubscriptionCard(show) {
+    if (!el.growthSubscriptionCard) return;
+    el.growthSubscriptionCard.classList.toggle("hidden", !show);
   }
 
   function setPayfastConnectError(message = "") {
@@ -1165,20 +1663,26 @@
     try {
       const data = await apiRequest("/api/admin/portal-settings");
       setAllowedTabs(data?.allowedTabs || []);
-      state.portalSettings = data?.settings || { accountantTabs: [] };
+      state.portalSettings = Object.assign({ accountantTabs: [], churchOperations: null }, data?.settings || {}, {
+        churchOperations: data?.churchOperations || null,
+      });
 
       applyTabVisibility();
 
       const canEdit = isChurchAdminRole(state.profile?.role);
       showAccountantAccessCard(canEdit);
       showPayfastSetupCard(canEdit);
+      showGrowthSubscriptionCard(true);
       if (canEdit) {
         setAccountantTabsInUi(state.portalSettings?.accountantTabs || []);
+      }
+      if (data?.churchOperations) {
+        renderGrowthSubscription({ subscription: data.churchOperations, hasAccess: data.churchOperations?.hasAccess });
       }
     } catch (err) {
       // Fallback for early bootstrap or older deploys.
       setAllowedTabs(ADMIN_PORTAL_TABS);
-      state.portalSettings = { accountantTabs: [] };
+      state.portalSettings = { accountantTabs: [], churchOperations: null };
       applyTabVisibility();
 
       // If church isn't linked yet, hide the config card to avoid confusion.
@@ -1186,6 +1690,7 @@
       if (msg.toLowerCase().includes("join a church")) {
         showAccountantAccessCard(false);
         showPayfastSetupCard(false);
+        showGrowthSubscriptionCard(false);
       }
     }
   }
@@ -1474,6 +1979,157 @@
     renderDashboardStats();
     renderDashboardRecent();
     renderChart();
+  }
+
+  function financeSummaryText(currentValue, previousValue, pct, previousLabel) {
+    const current = Number(currentValue || 0);
+    const previous = Number(previousValue || 0);
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) return "No comparison available yet.";
+    if (current === 0 && previous === 0) return "No movement yet.";
+    if (previous === 0 && current > 0) return `New growth vs ${previousLabel || "last month"}.`;
+    return `${formatPercentChange(pct)} vs ${previousLabel || "last month"}`;
+  }
+
+  function renderFinanceWorkspace(growthData, recentData) {
+    const overview = growthData?.overview || {};
+    const labels = growthData?.labels || {};
+    const weeklyTrend = Array.isArray(growthData?.weeklyTrend) ? growthData.weeklyTrend : [];
+    const recentRows = Array.isArray(recentData?.transactions) ? recentData.transactions : [];
+
+    if (el.financeWeeksSelect) el.financeWeeksSelect.value = String(state.financeWeeks || 12);
+    if (el.financeThisMonthAmount) el.financeThisMonthAmount.textContent = formatMoney(overview.thisMonthAmount || 0);
+    if (el.financePreviousMonthAmount) el.financePreviousMonthAmount.textContent = formatMoney(overview.previousMonthAmount || 0);
+    if (el.financeThisMonthDonors) el.financeThisMonthDonors.textContent = formatCount(overview.thisMonthDonors || 0);
+    if (el.financeThisMonthTransactions) {
+      el.financeThisMonthTransactions.textContent = formatCount(overview.thisMonthTransactions || 0);
+    }
+
+    if (el.financeAmountChange) {
+      el.financeAmountChange.textContent = financeSummaryText(
+        overview.thisMonthAmount,
+        overview.previousMonthAmount,
+        overview.amountChangePct,
+        labels.previousMonth
+      );
+    }
+    if (el.financeDonorChange) {
+      el.financeDonorChange.textContent = financeSummaryText(
+        overview.thisMonthDonors,
+        overview.previousMonthDonors,
+        overview.donorChangePct,
+        labels.previousMonth
+      );
+    }
+    if (el.financeTransactionChange) {
+      el.financeTransactionChange.textContent = financeSummaryText(
+        overview.thisMonthTransactions,
+        overview.previousMonthTransactions,
+        overview.transactionChangePct,
+        labels.previousMonth
+      );
+    }
+
+    if (el.financeRecurringGross) {
+      const recurringCount = Number(overview.activeRecurringCount || 0);
+      const recurringAmount = formatMoney(overview.monthlyRecurringGross || 0);
+      el.financeRecurringGross.textContent = recurringCount
+        ? `Recurring monthly: ${recurringAmount} across ${formatCount(recurringCount)} active plan${
+            recurringCount === 1 ? "" : "s"
+          }.`
+        : `Recurring monthly: ${recurringAmount}.`;
+    }
+
+    if (el.financeWeeklyTrendBody) {
+      if (!weeklyTrend.length) {
+        renderEmpty(
+          el.financeWeeklyTrendBody,
+          3,
+          growthData?.unavailable
+            ? growthData?.error || "Finance analytics are not available right now."
+            : "No weekly giving trend yet."
+        );
+      } else {
+        el.financeWeeklyTrendBody.innerHTML = weeklyTrend
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDateOnly(row.weekStart))}</td>
+              <td>${escapeHtml(formatMoney(row.amount || 0))}</td>
+              <td>${escapeHtml(formatCount(row.transactionCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.financeRecentBody) {
+      const recentVisible = recentRows
+        .filter((row) => {
+          const status = parseTransactionStatus(row);
+          return status === "PAID" || status === "CONFIRMED" || status === "RECORDED" || status === "PREPARED";
+        })
+        .slice(0, 8);
+      if (!recentVisible.length) {
+        renderEmpty(
+          el.financeRecentBody,
+          4,
+          recentData?.unavailable
+            ? recentData?.error || "Recent finance activity is unavailable right now."
+            : "No recent finance activity yet."
+        );
+      } else {
+        el.financeRecentBody.innerHTML = recentVisible
+          .map((row) => {
+            const status = parseTransactionStatus(row);
+            return `
+              <tr>
+                <td>${escapeHtml(row.reference || "-")}</td>
+                <td>${escapeHtml(formatMoney(row.amount || 0))}</td>
+                <td><span class="badge ${statusBadgeClass(status)}">${escapeHtml(status)}</span></td>
+                <td>${escapeHtml(formatDate(row.createdAt || row.created_at))}</td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+    }
+
+    if (el.financeMeta) {
+      const parts = [];
+      if (!growthData?.unavailable) {
+        parts.push(
+          labels.thisMonth && labels.previousMonth
+            ? `${labels.thisMonth} compared with ${labels.previousMonth}.`
+            : `Showing the last ${formatCount(state.financeWeeks || 12)} weeks of giving.`
+        );
+      } else {
+        parts.push(growthData?.error || "Advanced growth analytics are unavailable right now.");
+      }
+      if (recentData?.unavailable) {
+        parts.push("Recent transaction activity is limited on this deploy.");
+      } else {
+        parts.push(`${formatCount(recentRows.length)} recent finance records loaded.`);
+      }
+      el.financeMeta.textContent = parts.join(" ");
+    }
+  }
+
+  async function loadFinanceWorkspace() {
+    if (el.financeMeta) el.financeMeta.textContent = "Loading finance workspace...";
+    renderSkeletonRows(el.financeWeeklyTrendBody, 3, 6);
+    renderSkeletonRows(el.financeRecentBody, 4, 6);
+
+    const [growthData, recentData] = await Promise.all([
+      safeWorkspaceRequest(
+        () => apiRequest("/api/admin/reports/digital-growth" + buildQuery({ weeks: state.financeWeeks || 12 })),
+        { overview: {}, labels: {}, weeklyTrend: [] }
+      ),
+      safeWorkspaceRequest(
+        () => apiRequest("/api/admin/dashboard/transactions/recent" + buildQuery({ limit: 8, offset: 0 })),
+        { transactions: [], meta: { count: 0, returned: 0, limit: 8, offset: 0 } }
+      ),
+    ]);
+
+    renderFinanceWorkspace(growthData, recentData);
   }
 
   async function loadTransactions() {
@@ -2059,6 +2715,2113 @@
     }
   }
 
+  function workspaceBadgeClass(value) {
+    const key = String(value || "").trim().toUpperCase();
+    if (!key) return "pending";
+    if (["ACTIVE", "CONFIRMED", "DONE", "SENT", "PAID", "COMPLETED", "SERVED", "LOW"].includes(key)) return "paid";
+    if (["OPEN", "BOOKED", "TRIALING", "PENDING", "QUEUED", "DRAFT", "IN_PROGRESS", "ASSIGNED", "NEW", "MEDIUM", "HIGH"].includes(key)) {
+      return "pending";
+    }
+    return "failed";
+  }
+
+  function growthPlanLabel(planCode) {
+    return normalizeGrowthPlanCode(planCode) === "GROWTH_ANNUAL" ? "Growth Annual" : "Growth Monthly";
+  }
+
+  function growthPlanHint(planCode) {
+    return normalizeGrowthPlanCode(planCode) === "GROWTH_ANNUAL"
+      ? "Annual billing selected: R 4,990 per year."
+      : "Monthly billing selected: R 499 per month.";
+  }
+
+  function normalizeGrowthPlanCode(value) {
+    const key = String(value || "").trim().toUpperCase();
+    if (key === "GROWTH_ANNUAL" || key === "CHURPAY_GROWTH_ANNUAL_4990") return "GROWTH_ANNUAL";
+    return "GROWTH_MONTHLY";
+  }
+
+  function inferGrowthNextAction(status) {
+    const key = String(status || "").trim().toUpperCase();
+    if (key === "ACTIVE") return "NONE";
+    if (key === "PAST_DUE" || key === "GRACE") return "UPDATE_PAYMENT";
+    if (key === "SUSPENDED" || key === "CANCELED") return "RENEW";
+    return "ACTIVATE";
+  }
+
+  function normalizeGrowthSubscription(raw) {
+    const payload = raw && raw.subscription ? raw : { subscription: raw || null };
+    const subscription = payload?.subscription && typeof payload.subscription === "object" ? payload.subscription : {};
+    const status = String(payload?.status || subscription?.status || "SUSPENDED").trim().toUpperCase();
+    const planCode = normalizeGrowthPlanCode(payload?.planCode || subscription?.planCode || subscription?.plan);
+    return {
+      hasAccess: typeof payload?.hasAccess === "boolean" ? payload.hasAccess : !!subscription?.hasAccess,
+      nextAction: String(payload?.nextAction || inferGrowthNextAction(status)).trim().toUpperCase(),
+      trialDaysRemaining:
+        payload?.trialDaysRemaining == null ? null : Math.max(0, Number(payload.trialDaysRemaining || 0)),
+      graceDaysRemaining:
+        payload?.graceDaysRemaining == null ? null : Math.max(0, Number(payload.graceDaysRemaining || 0)),
+      checkoutUrl: String(payload?.checkoutUrl || "").trim(),
+      checkoutWarning: String(payload?.checkoutWarning || "").trim(),
+      unavailable: !!payload?.unavailable,
+      error: String(payload?.error || "").trim(),
+      planCode,
+      status,
+      currentPeriodEnd: subscription?.currentPeriodEnd || subscription?.current_period_end || null,
+      trialEndsAt: subscription?.trialEndsAt || subscription?.trial_ends_at || null,
+      graceEndsAt: subscription?.graceEndsAt || subscription?.grace_ends_at || null,
+      accessLevel: subscription?.accessLevel || subscription?.access_level || "",
+      banner: subscription?.banner || "",
+      note: subscription?.note || "",
+    };
+  }
+
+  function growthStatusLabel(subscription) {
+    const status = String(subscription?.status || "SUSPENDED").trim().toUpperCase();
+    if (status === "ACTIVE") return "Active";
+    if (status === "TRIALING") return "Trial";
+    if (status === "PAST_DUE") return "Past due";
+    if (status === "GRACE") return "Grace";
+    if (status === "CANCELED") return "Canceled";
+    return "Locked";
+  }
+
+  function growthStatusBadgeClass(subscription) {
+    const status = String(subscription?.status || "SUSPENDED").trim().toUpperCase();
+    if (status === "ACTIVE" || status === "TRIALING") return "active";
+    if (status === "PAST_DUE" || status === "GRACE") return "pending";
+    return "inactive";
+  }
+
+  function syncGrowthPlanHint() {
+    if (!el.growthPlanHint) return;
+    const planCode = normalizeGrowthPlanCode(el.growthPlanSelect?.value || state.growthSubscription?.planCode);
+    el.growthPlanHint.textContent = growthPlanHint(planCode);
+  }
+
+  function renderGrowthSubscription(raw) {
+    const normalized = normalizeGrowthSubscription(raw);
+    state.growthSubscription = normalized;
+    showGrowthSubscriptionCard(true);
+
+    if (el.growthPlanSelect) {
+      el.growthPlanSelect.value = normalized.planCode;
+      el.growthPlanSelect.disabled = !isChurchAdminRole(state.profile?.role);
+    }
+    syncGrowthPlanHint();
+
+    if (el.growthSubscriptionStatusBadge) {
+      el.growthSubscriptionStatusBadge.className = `badge ${growthStatusBadgeClass(normalized)}`;
+      el.growthSubscriptionStatusBadge.textContent = growthStatusLabel(normalized);
+    }
+
+    if (el.growthSubscriptionMeta) {
+      const parts = [`Plan: ${growthPlanLabel(normalized.planCode)}.`];
+      if (normalized.unavailable) {
+        parts.push(normalized.error || "Growth subscription status is unavailable right now.");
+      } else if (normalized.status === "ACTIVE" && normalized.currentPeriodEnd) {
+        parts.push(`Active through ${formatDateOnly(normalized.currentPeriodEnd)}.`);
+      } else if (normalized.status === "TRIALING") {
+        parts.push(
+          normalized.trialDaysRemaining != null
+            ? `${formatCount(normalized.trialDaysRemaining)} day${Number(normalized.trialDaysRemaining) === 1 ? "" : "s"} left in trial.`
+            : "Trial is active."
+        );
+      } else if ((normalized.status === "PAST_DUE" || normalized.status === "GRACE") && normalized.graceDaysRemaining != null) {
+        parts.push(
+          `${formatCount(normalized.graceDaysRemaining)} day${Number(normalized.graceDaysRemaining) === 1 ? "" : "s"} left before lock.`
+        );
+      } else if (!normalized.hasAccess) {
+        parts.push("Church Life tools stay locked until activation is complete.");
+      }
+      if (normalized.checkoutWarning) parts.push(normalized.checkoutWarning);
+      el.growthSubscriptionMeta.textContent = parts.join(" ");
+    }
+
+    if (el.requestGrowthActivationBtn) {
+      const nextAction = normalized.nextAction || inferGrowthNextAction(normalized.status);
+      let label = "Activate ChurPay Growth";
+      if (nextAction === "PAYFAST_CHECKOUT") label = "Continue activation";
+      if (nextAction === "UPDATE_PAYMENT") label = "Update Growth payment";
+      if (nextAction === "RENEW") label = "Renew ChurPay Growth";
+      if (nextAction === "NONE") label = "Growth is active";
+      el.requestGrowthActivationBtn.textContent = label;
+      el.requestGrowthActivationBtn.disabled = !isChurchAdminRole(state.profile?.role) || nextAction === "NONE";
+    }
+  }
+
+  async function loadGrowthSubscription() {
+    showGrowthSubscriptionCard(true);
+    try {
+      const data = await safeWorkspaceRequest(() => apiRequest("/api/admin/church-operations/subscription"), {
+        subscription: state.portalSettings?.churchOperations || state.growthSubscription || null,
+      });
+      renderGrowthSubscription(data);
+    } catch (err) {
+      const message = String(err?.message || "");
+      if (message.toLowerCase().includes("join a church")) {
+        showGrowthSubscriptionCard(false);
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async function requestGrowthActivation() {
+    if (!isChurchAdminRole(state.profile?.role)) {
+      toast("Only church admins can activate ChurPay Growth.", "error");
+      return;
+    }
+
+    const button = el.requestGrowthActivationBtn;
+    const previousLabel = button?.textContent || "Activate ChurPay Growth";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Working...";
+    }
+
+    try {
+      const data = await apiRequest("/api/admin/church-operations/subscription/request", {
+        method: "POST",
+        body: { planCode: normalizeGrowthPlanCode(el.growthPlanSelect?.value || state.growthSubscription?.planCode) },
+      });
+      renderGrowthSubscription(data);
+
+      if (data?.checkoutUrl) {
+        const popup = window.open(data.checkoutUrl, "_blank", "noopener,noreferrer");
+        if (!popup) window.location.assign(data.checkoutUrl);
+        toast("Growth checkout opened. Finish payment to unlock Church Life.", "success", 5200);
+        return;
+      }
+
+      if (data?.alreadyActive) {
+        toast("ChurPay Growth is already active.", "info");
+      } else if (data?.trialStarted) {
+        toast("ChurPay Growth trial started.", "success");
+      } else if (data?.checkoutWarning) {
+        toast(data.checkoutWarning, "info", 5200);
+      } else {
+        toast("Growth activation request saved.", "success");
+      }
+    } catch (err) {
+      toast(err?.message || "Could not activate ChurPay Growth.", "error");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = previousLabel;
+      }
+      if (state.growthSubscription) renderGrowthSubscription(state.growthSubscription);
+    }
+  }
+
+  function calculatePercentDelta(currentValue, previousValue) {
+    const current = Number(currentValue || 0);
+    const previous = Number(previousValue || 0);
+    if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+    return ((current - previous) / Math.abs(previous)) * 100;
+  }
+
+  function riskBadgeClass(value) {
+    const key = String(value || "").trim().toUpperCase();
+    if (!key) return "pending";
+    if (key === "LOW") return "paid";
+    if (key === "MEDIUM") return "pending";
+    return "failed";
+  }
+
+  function churchLifeServiceStatus(row) {
+    if (row?.published === false) return { label: "Draft", tone: "DRAFT" };
+    if (row?.checkInOpen) return { label: "Check-in open", tone: "ACTIVE" };
+    if (row?.isClosed) return { label: "Closed", tone: "PENDING" };
+    return { label: "Published", tone: "ACTIVE" };
+  }
+
+  function isDoneLikeStatus(value) {
+    const key = String(value || "").trim().toUpperCase();
+    return ["DONE", "CLOSED", "COMPLETED", "CANCELLED", "CANCELED"].includes(key);
+  }
+
+  function renderOperationsOverview(overviewData, followupsData) {
+    const attention = overviewData?.attention || {};
+    const snapshot = overviewData?.snapshot || {};
+    const trendWeeks = Array.isArray(overviewData?.trend?.weeks) ? overviewData.trend.weeks : [];
+    const followups = Array.isArray(followupsData?.followups) ? followupsData.followups : [];
+
+    if (el.operationsAttendance) el.operationsAttendance.textContent = formatCount(snapshot.attendanceThisSunday || 0);
+    if (el.operationsServicesToday) el.operationsServicesToday.textContent = formatCount(snapshot.servicesToday || 0);
+    if (el.operationsFollowupsDue) el.operationsFollowupsDue.textContent = formatCount(attention.followupsDue || 0);
+    if (el.operationsUrgentPrayer) el.operationsUrgentPrayer.textContent = formatCount(attention.urgentPrayer || 0);
+
+    if (el.operationsMeta) {
+      if (isCommunicationsTab()) {
+        const openFollowups = followups.filter((row) => !isDoneLikeStatus(row.status));
+        el.operationsMeta.textContent = `${formatCount(attention.firstTimeGuests || 0)} first-time guest(s), ${formatCount(
+          openFollowups.length
+        )} open follow-up item(s), and outbound comms tools in one workspace.`;
+        return;
+      }
+      const parts = [];
+      if (overviewData?.unavailable) {
+        parts.push(overviewData?.error || "Church Life overview is unavailable right now.");
+      } else {
+        parts.push(
+          `Giving health: ${String(snapshot.givingHealth || "stable").toLowerCase()}. 4-week retention: ${Math.round(
+            Number(overviewData?.trend?.retention4w || 0) * 100
+          )}%.`
+        );
+        parts.push(
+          `${formatCount(attention.firstTimeGuests || 0)} first-time guest(s) and ${formatCount(attention.missedThreeWeeks || 0)} people at risk.`
+        );
+      }
+      if (followupsData?.unavailable) parts.push("Care queue is limited on this deploy.");
+      el.operationsMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsTrendBody) {
+      if (!trendWeeks.length) {
+        renderEmpty(
+          el.operationsTrendBody,
+          2,
+          overviewData?.unavailable ? overviewData?.error || "Church Life trend is unavailable." : "No attendance trend yet."
+        );
+      } else {
+        el.operationsTrendBody.innerHTML = trendWeeks
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDateOnly(row.weekStart))}</td>
+              <td>${escapeHtml(formatCount(row.attendance || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsQueueBody) {
+      if (!followups.length) {
+        renderEmpty(
+          el.operationsQueueBody,
+          3,
+          followupsData?.unavailable ? followupsData?.error || "Care queue is unavailable." : "No follow-ups due right now."
+        );
+      } else {
+        el.operationsQueueBody.innerHTML = followups
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.title || row.personName || row.visitorName || "Follow-up")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "OPEN"))}</span></td>
+              <td>${escapeHtml(formatDateOnly(row.dueAt || row.createdAt))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsInsights(insightsData) {
+    const overview = insightsData?.overview || {};
+    const weeklyTrend = Array.isArray(insightsData?.weeklyTrend) ? insightsData.weeklyTrend : [];
+    const atRiskMembers = Array.isArray(insightsData?.atRiskMembers) ? insightsData.atRiskMembers : [];
+    const currentWeek = weeklyTrend.length ? weeklyTrend[weeklyTrend.length - 1] : null;
+    const previousWeek = weeklyTrend.length > 1 ? weeklyTrend[weeklyTrend.length - 2] : null;
+    const attendanceDelta = calculatePercentDelta(currentWeek?.uniqueAttendees || 0, previousWeek?.uniqueAttendees || 0);
+
+    if (el.operationsInsightsAttendees) {
+      el.operationsInsightsAttendees.textContent = formatCount(currentWeek?.uniqueAttendees || overview.uniqueAttendees || 0);
+    }
+    if (el.operationsInsightsFirstTime) {
+      el.operationsInsightsFirstTime.textContent = formatCount(currentWeek?.firstTimeVisitors || overview.firstTimeVisitors || 0);
+    }
+    if (el.operationsInsightsReturning) {
+      el.operationsInsightsReturning.textContent = formatCount(currentWeek?.returningVisitors || overview.returningVisitors || 0);
+    }
+    if (el.operationsInsightsAttendanceDelta) {
+      el.operationsInsightsAttendanceDelta.textContent = attendanceDelta === null ? "n/a" : formatPercentChange(attendanceDelta);
+    }
+    if (el.operationsInsightsParticipation) {
+      el.operationsInsightsParticipation.textContent = `${Number(currentWeek?.donorParticipationRatePct || 0).toFixed(1)}%`;
+    }
+    if (el.operationsInsightsGiving) {
+      el.operationsInsightsGiving.textContent = formatMoney(currentWeek?.givingAmount || 0);
+    }
+
+    if (el.operationsInsightsMeta) {
+      const parts = [];
+      if (insightsData?.unavailable) {
+        parts.push(insightsData?.error || "Insights are unavailable right now.");
+      } else {
+        parts.push(`Last ${formatCount(overview.weeks || 8)} week(s) loaded.`);
+        parts.push(`Retention: ${Number(overview.retentionRatePct || 0).toFixed(1)}%.`);
+        parts.push(`${formatCount(atRiskMembers.length)} at-risk member(s) flagged.`);
+      }
+      el.operationsInsightsMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsInsightsTrendBody) {
+      if (!weeklyTrend.length) {
+        renderEmpty(
+          el.operationsInsightsTrendBody,
+          5,
+          insightsData?.unavailable ? insightsData?.error || "Insights are unavailable." : "No weekly insight trend yet."
+        );
+      } else {
+        el.operationsInsightsTrendBody.innerHTML = weeklyTrend
+          .slice(-8)
+          .reverse()
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDateOnly(row.weekStart))}</td>
+              <td>${escapeHtml(formatCount(row.uniqueAttendees || 0))}</td>
+              <td>${escapeHtml(formatCount(row.firstTimeVisitors || 0))}</td>
+              <td>${escapeHtml(formatCount(row.donorCount || 0))}</td>
+              <td>${escapeHtml(formatMoney(row.givingAmount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsInsightsRiskBody) {
+      if (!atRiskMembers.length) {
+        renderEmpty(
+          el.operationsInsightsRiskBody,
+          4,
+          insightsData?.unavailable ? insightsData?.error || "Risk signals are unavailable." : "No high-risk members flagged right now."
+        );
+      } else {
+        el.operationsInsightsRiskBody.innerHTML = atRiskMembers
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.fullName || row.memberId || "Member")}</td>
+              <td>${escapeHtml(formatDateOnly(row.lastServiceDate))}</td>
+              <td>${escapeHtml(`${Number(row.attendanceDropPct || 0).toFixed(0)}%`)}</td>
+              <td><span class="badge ${riskBadgeClass(row.riskBand)}">${escapeHtml(String(row.riskBand || "LOW"))}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsServices(servicesData) {
+    const services = Array.isArray(servicesData?.services) ? servicesData.services : [];
+    const todayIso = isoTodayLocal();
+    const upcomingRows = services
+      .filter((row) => String(row?.serviceDate || "") >= todayIso)
+      .sort((a, b) => String(a?.serviceDate || "").localeCompare(String(b?.serviceDate || "")));
+    const recentRows = services
+      .filter((row) => String(row?.serviceDate || "") < todayIso)
+      .sort((a, b) => String(b?.serviceDate || "").localeCompare(String(a?.serviceDate || "")));
+    const orderedRows = upcomingRows.concat(recentRows);
+    const openRows = services.filter((row) => row?.checkInOpen);
+    state.operationsServiceRows = orderedRows;
+
+    if (el.operationsServicesMeta) {
+      const parts = [];
+      if (servicesData?.unavailable) {
+        parts.push(servicesData?.error || "Services are unavailable right now.");
+      } else {
+        parts.push(`${formatCount(upcomingRows.length)} upcoming service(s).`);
+        parts.push(`${formatCount(openRows.length)} service(s) open for check-in.`);
+      }
+      el.operationsServicesMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsServicesBody) {
+      if (!orderedRows.length) {
+        renderEmpty(
+          el.operationsServicesBody,
+          7,
+          servicesData?.unavailable ? servicesData?.error || "Services are unavailable." : "No services available yet."
+        );
+      } else {
+        el.operationsServicesBody.innerHTML = orderedRows
+          .map((row) => {
+            const serviceStatus = churchLifeServiceStatus(row);
+            const connectGroupManaged = isConnectGroupServiceRow(row);
+            const checkInDisabledReason =
+              row?.published === false
+                ? "Publish this service to enable check-in."
+                : row?.isClosed
+                  ? "Closed services are read-only."
+                  : "";
+            const actionButtons = connectGroupManaged
+              ? `<span class="table-note">Managed in Groups</span>`
+              : `
+                <div class="actions-cell">
+                  ${
+                    checkInDisabledReason
+                      ? ""
+                      : `
+                        <button class="btn ghost" type="button" data-service-action="member" data-id="${escapeHtml(row.id)}">Member</button>
+                        <button class="btn ghost" type="button" data-service-action="visitor" data-id="${escapeHtml(row.id)}">Visitor</button>
+                      `
+                  }
+                  <button class="btn ghost" type="button" data-service-action="edit" data-id="${escapeHtml(row.id)}">Edit</button>
+                  <button class="btn ghost" type="button" data-service-action="stream" data-id="${escapeHtml(row.id)}">Stream</button>
+                </div>
+                ${checkInDisabledReason ? `<span class="table-note">${escapeHtml(checkInDisabledReason)}</span>` : ""}
+              `;
+            return `
+              <tr>
+                <td>${escapeHtml(row.serviceName || "Service")}</td>
+                <td>${escapeHtml(formatDateOnly(row.serviceDate))}</td>
+                <td>${escapeHtml(row.campusName || "Main / Unassigned")}</td>
+                <td><span class="badge ${workspaceBadgeClass(serviceStatus.tone)}">${escapeHtml(serviceStatus.label)}</span></td>
+                <td>${escapeHtml(formatCount(row.checkInsCount || 0))}</td>
+                <td>${escapeHtml(formatCount(row.childrenCheckInsCount || 0))}</td>
+                <td class="member-actions-cell">${actionButtons}</td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsFollowups(followupsData, autoPreviewData) {
+    const followups = Array.isArray(followupsData?.followups) ? followupsData.followups : [];
+    const openRows = followups.filter((row) => !isDoneLikeStatus(row.status));
+    const urgentRows = openRows.filter((row) => ["URGENT", "HIGH"].includes(String(row?.priority || "").toUpperCase()));
+    const mineRows = openRows.filter((row) => String(row?.assignedMemberId || "") === String(state.profile?.id || ""));
+    const previewRows = [
+      ...(Array.isArray(autoPreviewData?.firstTimeVisitors) ? autoPreviewData.firstTimeVisitors.map((row) => ({ rule: "First-time", ...row })) : []),
+      ...(Array.isArray(autoPreviewData?.missedThreeWeeks) ? autoPreviewData.missedThreeWeeks.map((row) => ({ rule: "Missed 3 weeks", ...row })) : []),
+      ...(Array.isArray(autoPreviewData?.atRiskPredicted) ? autoPreviewData.atRiskPredicted.map((row) => ({ rule: "At risk", ...row })) : []),
+    ];
+
+    if (el.operationsFollowupsOpen) el.operationsFollowupsOpen.textContent = formatCount(openRows.length);
+    if (el.operationsFollowupsUrgent) el.operationsFollowupsUrgent.textContent = formatCount(urgentRows.length);
+    if (el.operationsFollowupsMine) el.operationsFollowupsMine.textContent = formatCount(mineRows.length);
+
+    if (el.operationsFollowupsMeta) {
+      el.operationsFollowupsMeta.textContent = followupsData?.unavailable
+        ? followupsData?.error || "Follow-ups are unavailable right now."
+        : `${formatCount(followups.length)} follow-up item(s) loaded.`;
+    }
+
+    if (el.operationsFollowupsBody) {
+      if (!followups.length) {
+        renderEmpty(
+          el.operationsFollowupsBody,
+          5,
+          followupsData?.unavailable
+            ? followupsData?.error || "Follow-ups are unavailable."
+            : "No follow-ups waiting right now."
+        );
+      } else {
+        el.operationsFollowupsBody.innerHTML = followups
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.title || row.personName || row.visitorName || "Follow-up")}</td>
+              <td>${escapeHtml(row.personName || row.visitorName || row.memberId || "Member")}</td>
+              <td>${escapeHtml(row.assignedMemberName || "Unassigned")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "OPEN"))}</span></td>
+              <td>${escapeHtml(formatDate(row.dueAt || row.createdAt))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsAutoFollowupsMeta) {
+      if (autoPreviewData?.unavailable) {
+        el.operationsAutoFollowupsMeta.textContent =
+          autoPreviewData?.error || "Auto follow-up preview is unavailable right now.";
+      } else {
+        const meta = autoPreviewData?.meta || {};
+        el.operationsAutoFollowupsMeta.textContent =
+          `${formatCount(previewRows.length)} candidate(s) across a ${formatCount(meta.sampleLimit || previewRows.length)}-person sample.`;
+      }
+    }
+
+    if (el.operationsAutoFollowupsBody) {
+      if (!previewRows.length) {
+        renderEmpty(
+          el.operationsAutoFollowupsBody,
+          4,
+          autoPreviewData?.unavailable
+            ? autoPreviewData?.error || "Auto follow-up preview is unavailable."
+            : "No auto follow-up candidates right now."
+        );
+      } else {
+        el.operationsAutoFollowupsBody.innerHTML = previewRows
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.rule || "Rule")}</td>
+              <td>${escapeHtml(row.fullName || row.memberId || "Member")}</td>
+              <td>${escapeHtml(formatContactLine(row.phone, row.email) || "-")}</td>
+              <td>${escapeHtml(formatDateOnly(row.firstServiceDate || row.lastServiceDate || row.predictedAt || row.scoredAt))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsPrayer(prayerData) {
+    const prayerRequests = Array.isArray(prayerData?.prayerRequests) ? prayerData.prayerRequests : [];
+    const newRows = prayerRequests.filter((row) => String(row?.status || "").toUpperCase() === "NEW");
+    const inProgressRows = prayerRequests.filter((row) => ["ASSIGNED", "IN_PROGRESS"].includes(String(row?.status || "").toUpperCase()));
+    const mineRows = prayerRequests.filter((row) => String(row?.assignedToUserId || "") === String(state.profile?.id || ""));
+    const closedRows = prayerRequests.filter((row) => String(row?.status || "").toUpperCase() === "CLOSED");
+
+    if (el.operationsPrayerNew) el.operationsPrayerNew.textContent = formatCount(newRows.length);
+    if (el.operationsPrayerInProgress) el.operationsPrayerInProgress.textContent = formatCount(inProgressRows.length);
+    if (el.operationsPrayerMine) el.operationsPrayerMine.textContent = formatCount(mineRows.length);
+    if (el.operationsPrayerClosed) el.operationsPrayerClosed.textContent = formatCount(closedRows.length);
+
+    if (el.operationsPrayerMeta) {
+      el.operationsPrayerMeta.textContent = prayerData?.unavailable
+        ? prayerData?.error || "Prayer requests are unavailable right now."
+        : `${formatCount(prayerRequests.length)} prayer request(s) loaded.`;
+    }
+
+    if (el.operationsPrayerBody) {
+      if (!prayerRequests.length) {
+        renderEmpty(
+          el.operationsPrayerBody,
+          4,
+          prayerData?.unavailable ? prayerData?.error || "Prayer requests are unavailable." : "No prayer requests right now."
+        );
+      } else {
+        el.operationsPrayerBody.innerHTML = prayerRequests
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.subject || row.memberName || "Prayer request")}</td>
+              <td>${escapeHtml(row.memberName || row.memberId || "Member")}</td>
+              <td>${escapeHtml(row.assignedToUserName || row.assignedTeam || "Unassigned")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "NEW"))}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsBroadcasts(broadcastsData, audiencesData, templatesData) {
+    const broadcasts = Array.isArray(broadcastsData?.broadcasts) ? broadcastsData.broadcasts : [];
+    const audiences = Array.isArray(audiencesData?.audiences) ? audiencesData.audiences : [];
+    const templates = Array.isArray(templatesData?.templates) ? templatesData.templates : [];
+    const totalAudience = broadcasts.reduce((sum, row) => sum + Number(row?.audienceCount || 0), 0);
+    const totalSent = broadcasts.reduce((sum, row) => sum + Number(row?.sentCount || 0), 0);
+    const totalFailed = broadcasts.reduce((sum, row) => sum + Number(row?.failedCount || 0), 0);
+
+    if (el.operationsBroadcastsTotal) el.operationsBroadcastsTotal.textContent = formatCount(broadcasts.length);
+    if (el.operationsBroadcastsAudience) el.operationsBroadcastsAudience.textContent = formatCount(totalAudience);
+    if (el.operationsBroadcastsSent) el.operationsBroadcastsSent.textContent = formatCount(totalSent);
+    if (el.operationsBroadcastsFailed) el.operationsBroadcastsFailed.textContent = formatCount(totalFailed);
+
+    if (el.operationsBroadcastsMeta) {
+      el.operationsBroadcastsMeta.textContent = broadcastsData?.unavailable
+        ? broadcastsData?.error || "Broadcasts are unavailable right now."
+        : `${formatCount(broadcasts.length)} recent broadcast(s) loaded.`;
+    }
+
+    if (el.operationsBroadcastsBody) {
+      if (!broadcasts.length) {
+        renderEmpty(
+          el.operationsBroadcastsBody,
+          4,
+          broadcastsData?.unavailable
+            ? broadcastsData?.error || "Broadcasts are unavailable."
+            : "No broadcast history yet."
+        );
+      } else {
+        el.operationsBroadcastsBody.innerHTML = broadcasts
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.title || "Broadcast")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "DRAFT"))}</span></td>
+              <td>${escapeHtml(formatCount(row.audienceCount || 0))}</td>
+              <td>${escapeHtml(formatDate(row.sentAt || row.createdAt))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsBroadcastAudiencesBody) {
+      if (!audiences.length) {
+        renderEmpty(
+          el.operationsBroadcastAudiencesBody,
+          3,
+          audiencesData?.unavailable
+            ? audiencesData?.error || "Saved audiences are unavailable."
+            : "No saved audiences yet."
+        );
+      } else {
+        el.operationsBroadcastAudiencesBody.innerHTML = audiences
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.name || "Audience")}</td>
+              <td>${escapeHtml(labelizeToken(row.segmentKey, "All members"))}${row.segmentTag ? `: ${escapeHtml(row.segmentTag)}` : ""}</td>
+              <td><span class="badge ${row.active === false ? "failed" : "paid"}">${escapeHtml(row.active === false ? "Inactive" : "Active")}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsBroadcastTemplatesBody) {
+      if (!templates.length) {
+        renderEmpty(
+          el.operationsBroadcastTemplatesBody,
+          3,
+          templatesData?.unavailable
+            ? templatesData?.error || "Templates are unavailable."
+            : "No broadcast templates yet."
+        );
+      } else {
+        el.operationsBroadcastTemplatesBody.innerHTML = templates
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.name || row.title || "Template")}</td>
+              <td>${escapeHtml(labelizeToken(row.defaultSegmentKey, "All members"))}${row.defaultSegmentTag ? `: ${escapeHtml(row.defaultSegmentTag)}` : ""}</td>
+              <td><span class="badge ${row.active === false ? "failed" : "paid"}">${escapeHtml(row.active === false ? "Inactive" : "Active")}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsVolunteers(volunteerData, schedulesData, ministriesData, rolesData, reviewsData, auditData) {
+    const summary = volunteerData?.summary || {};
+    const overloadMembers = Array.isArray(volunteerData?.overloadMembers) ? volunteerData.overloadMembers : [];
+    const schedules = Array.isArray(schedulesData?.schedules) ? schedulesData.schedules : [];
+    const ministries = Array.isArray(ministriesData?.ministries) ? ministriesData.ministries : [];
+    const roles = Array.isArray(rolesData?.ministryRoles) ? rolesData.ministryRoles : [];
+    const reviews = Array.isArray(reviewsData?.volunteerTerms) ? reviewsData.volunteerTerms : [];
+    const auditLogs = Array.isArray(auditData?.logs) ? auditData.logs : [];
+    const todayIso = isoTodayLocal();
+    const todayRows = schedules.filter((row) => String(row?.scheduleDate || "") === todayIso);
+
+    if (el.operationsVolunteersOpenTerms) el.operationsVolunteersOpenTerms.textContent = formatCount(summary.openTerms || 0);
+    if (el.operationsVolunteersReviewsDue) el.operationsVolunteersReviewsDue.textContent = formatCount(summary.reviewsDue || 0);
+    if (el.operationsVolunteersHighLoad) el.operationsVolunteersHighLoad.textContent = formatCount(summary.highLoadMembers || 0);
+    if (el.operationsVolunteersOverload) el.operationsVolunteersOverload.textContent = formatCount(summary.overloadMembers || 0);
+
+    if (el.operationsVolunteersMeta) {
+      const parts = [];
+      if (volunteerData?.unavailable) parts.push(volunteerData?.error || "Volunteer insights are unavailable right now.");
+      else parts.push(`${formatCount(overloadMembers.length)} overload alert(s) loaded.`);
+      if (schedulesData?.unavailable) parts.push("Today's schedule preview is unavailable.");
+      else parts.push(`${formatCount(todayRows.length)} schedule(s) on today's run sheet.`);
+      if (!ministriesData?.unavailable) parts.push(`${formatCount(ministries.length)} ministry setup item(s) loaded.`);
+      el.operationsVolunteersMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsVolunteersBody) {
+      if (!overloadMembers.length) {
+        renderEmpty(
+          el.operationsVolunteersBody,
+          3,
+          volunteerData?.unavailable ? volunteerData?.error || "Volunteer insights are unavailable." : "No overload alerts right now."
+        );
+      } else {
+        el.operationsVolunteersBody.innerHTML = overloadMembers
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.memberName || row.memberId || "Volunteer")}</td>
+              <td>${escapeHtml(formatCount(row.activeRoles || 0))}</td>
+              <td><span class="badge ${Number(row.activeRoles || 0) >= 4 ? "failed" : "pending"}">${escapeHtml(
+                Number(row.activeRoles || 0) >= 4 ? "Overload" : "High load"
+              )}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsVolunteerScheduleBody) {
+      if (!todayRows.length) {
+        renderEmpty(
+          el.operationsVolunteerScheduleBody,
+          4,
+          schedulesData?.unavailable ? schedulesData?.error || "Schedules are unavailable." : "No schedules today."
+        );
+      } else {
+        el.operationsVolunteerScheduleBody.innerHTML = todayRows
+          .slice(0, 8)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.title || row.ministryName || "Schedule")}</td>
+              <td>${escapeHtml(formatCount(row.assignmentCount || 0))}</td>
+              <td>${escapeHtml(formatCount(row.servedCount || 0))}</td>
+              <td>${escapeHtml(formatCount(row.noShowCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsVolunteerMinistriesBody) {
+      if (!ministries.length) {
+        renderEmpty(
+          el.operationsVolunteerMinistriesBody,
+          4,
+          ministriesData?.unavailable ? ministriesData?.error || "Ministries are unavailable." : "No ministries configured yet."
+        );
+      } else {
+        el.operationsVolunteerMinistriesBody.innerHTML = ministries
+          .slice(0, 10)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.name || "Ministry")}</td>
+              <td>${escapeHtml(row.campusName || "Main / Unassigned")}</td>
+              <td>${escapeHtml(formatCount(row.roleCount || 0))}</td>
+              <td>${escapeHtml(formatCount(row.activeVolunteerCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsVolunteerRolesBody) {
+      if (!roles.length) {
+        renderEmpty(
+          el.operationsVolunteerRolesBody,
+          4,
+          rolesData?.unavailable ? rolesData?.error || "Roles are unavailable." : "No ministry roles configured yet."
+        );
+      } else {
+        el.operationsVolunteerRolesBody.innerHTML = roles
+          .slice(0, 10)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.roleName || "Role")}</td>
+              <td>${escapeHtml(row.ministryName || "Ministry")}</td>
+              <td>${escapeHtml(`${formatCount(row.defaultTermMonths || 0)} mo`)}</td>
+              <td>${escapeHtml(formatCount(row.activeTermsCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsVolunteerReviewsBody) {
+      if (!reviews.length) {
+        renderEmpty(
+          el.operationsVolunteerReviewsBody,
+          4,
+          reviewsData?.unavailable ? reviewsData?.error || "Reviews are unavailable." : "No volunteer reviews due right now."
+        );
+      } else {
+        el.operationsVolunteerReviewsBody.innerHTML = reviews
+          .slice(0, 10)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.memberName || row.memberId || "Volunteer")}</td>
+              <td>${escapeHtml(row.ministryRoleName || row.ministryName || "Role")}</td>
+              <td>${escapeHtml(formatDateOnly(row.endDate))}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "ACTIVE"))}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsVolunteerAuditBody) {
+      if (!auditLogs.length) {
+        renderEmpty(
+          el.operationsVolunteerAuditBody,
+          3,
+          auditData?.unavailable ? auditData?.error || "Audit history is unavailable." : "No recent audit activity."
+        );
+      } else {
+        el.operationsVolunteerAuditBody.innerHTML = auditLogs
+          .slice(0, 10)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDate(row.createdAt))}</td>
+              <td>${escapeHtml(labelizeToken(row.action, "Action"))}</td>
+              <td>${escapeHtml(row.actorName || row.actorMemberRef || "System")}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsSchedules(schedulesData) {
+    const schedules = Array.isArray(schedulesData?.schedules) ? schedulesData.schedules : [];
+    const todayIso = isoTodayLocal();
+    const todayRows = schedules.filter((row) => String(row?.scheduleDate || "") === todayIso);
+    const todaySummary = todayRows.reduce(
+      (acc, row) => {
+        acc.assignments += Number(row?.assignmentCount || 0);
+        acc.served += Number(row?.servedCount || 0);
+        acc.noShow += Number(row?.noShowCount || 0);
+        return acc;
+      },
+      { assignments: 0, served: 0, noShow: 0 }
+    );
+
+    if (el.operationsSchedulesToday) el.operationsSchedulesToday.textContent = formatCount(todayRows.length);
+    if (el.operationsSchedulesAssignments) el.operationsSchedulesAssignments.textContent = formatCount(todaySummary.assignments);
+    if (el.operationsSchedulesServed) el.operationsSchedulesServed.textContent = formatCount(todaySummary.served);
+    if (el.operationsSchedulesNoShow) el.operationsSchedulesNoShow.textContent = formatCount(todaySummary.noShow);
+
+    if (el.operationsSchedulesMeta) {
+      el.operationsSchedulesMeta.textContent = schedulesData?.unavailable
+        ? schedulesData?.error || "Schedules are unavailable right now."
+        : `${formatCount(schedules.length)} schedule(s) loaded.`;
+    }
+
+    if (el.operationsSchedulesBody) {
+      if (!schedules.length) {
+        renderEmpty(
+          el.operationsSchedulesBody,
+          5,
+          schedulesData?.unavailable ? schedulesData?.error || "Schedules are unavailable." : "No schedules created yet."
+        );
+      } else {
+        el.operationsSchedulesBody.innerHTML = schedules
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.title || "Schedule")}</td>
+              <td>${escapeHtml(formatDateOnly(row.scheduleDate))}</td>
+              <td>${escapeHtml(row.ministryName || row.serviceName || "Ministry")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "DRAFT"))}</span></td>
+              <td>${escapeHtml(formatCount(row.assignmentCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsGroups(groupsData, membersData, meetingsData) {
+    const groups = Array.isArray(groupsData?.groups) ? groupsData.groups : [];
+    state.operationsGroupRows = groups;
+    const members = Array.isArray(membersData?.members) ? membersData.members : [];
+    const meetings = Array.isArray(meetingsData?.meetings) ? meetingsData.meetings : [];
+    const selectedGroup = groups.find((row) => String(row?.id || "") === String(state.operationsGroupId || "")) || null;
+    const totalMembers = groups.reduce((sum, row) => sum + Number(row?.memberCount || 0), 0);
+    const activeGroups = groups.filter((row) => row?.active !== false);
+
+    if (el.operationsGroupsTotal) el.operationsGroupsTotal.textContent = formatCount(groups.length);
+    if (el.operationsGroupsActive) el.operationsGroupsActive.textContent = formatCount(activeGroups.length);
+    if (el.operationsGroupsMembers) el.operationsGroupsMembers.textContent = formatCount(totalMembers);
+    if (el.operationsGroupsMeetings) el.operationsGroupsMeetings.textContent = formatCount(meetings.length);
+
+    if (el.operationsGroupsMeta) {
+      const parts = [];
+      if (groupsData?.unavailable) parts.push(groupsData?.error || "Groups are unavailable right now.");
+      else parts.push(`${formatCount(groups.length)} group(s) loaded.`);
+      if (selectedGroup?.name) parts.push(`Selected: ${selectedGroup.name}.`);
+      el.operationsGroupsMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsGroupsBody) {
+      if (!groups.length) {
+        renderEmpty(
+          el.operationsGroupsBody,
+          5,
+          groupsData?.unavailable ? groupsData?.error || "Groups are unavailable." : "No groups created yet."
+        );
+      } else {
+        el.operationsGroupsBody.innerHTML = groups
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.name || "Group")}</td>
+              <td>${escapeHtml(row.leaderName || "Unassigned")}</td>
+              <td>${escapeHtml(labelizeToken(row.groupType, "Group"))}</td>
+              <td>${escapeHtml(formatCount(row.memberCount || 0))}</td>
+              <td class="member-actions-cell">
+                <div class="actions-cell">
+                  <button class="btn ghost" type="button" data-group-action="open" data-id="${escapeHtml(row.id)}">Open</button>
+                  <button class="btn ghost" type="button" data-group-action="toggle" data-id="${escapeHtml(row.id)}">${
+                    row.active === false ? "Restore" : "Pause"
+                  }</button>
+                </div>
+              </td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsGroupDetailMeta) {
+      if (!selectedGroup) {
+        el.operationsGroupDetailMeta.textContent = groups.length
+          ? "Select a group to see members and meetings."
+          : "Create a group to start organizing members and meetings.";
+      } else {
+        el.operationsGroupDetailMeta.textContent = formatContactLine(
+          selectedGroup.name,
+          selectedGroup.leaderName ? `Leader: ${selectedGroup.leaderName}` : "",
+          selectedGroup.defaultLocation ? `Location: ${selectedGroup.defaultLocation}` : ""
+        );
+      }
+    }
+
+    if (el.operationsGroupMembersBody) {
+      if (!selectedGroup) {
+        renderEmpty(el.operationsGroupMembersBody, 4, "No group selected yet.");
+      } else if (!members.length) {
+        renderEmpty(
+          el.operationsGroupMembersBody,
+          4,
+          membersData?.unavailable ? membersData?.error || "Group members are unavailable." : "No members added to this group yet."
+        );
+      } else {
+        el.operationsGroupMembersBody.innerHTML = members
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.fullName || row.memberId || "Member")}</td>
+              <td>${escapeHtml(labelizeToken(row.role, "Member"))}</td>
+              <td>${escapeHtml(formatContactLine(row.phone, row.email) || "-")}</td>
+              <td>${escapeHtml(formatDateOnly(row.joinedOn || row.createdAt))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+
+    if (el.operationsGroupMeetingsBody) {
+      if (!selectedGroup) {
+        renderEmpty(el.operationsGroupMeetingsBody, 4, "No group selected yet.");
+      } else if (!meetings.length) {
+        renderEmpty(
+          el.operationsGroupMeetingsBody,
+          4,
+          meetingsData?.unavailable ? meetingsData?.error || "Meetings are unavailable." : "No meetings logged for this group yet."
+        );
+      } else {
+        el.operationsGroupMeetingsBody.innerHTML = meetings
+          .slice(0, 12)
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDateOnly(row.meetingDate))}</td>
+              <td>${escapeHtml(row.location || selectedGroup?.defaultLocation || "-")}</td>
+              <td><span class="badge ${workspaceBadgeClass(row.status)}">${escapeHtml(String(row.status || "SCHEDULED"))}</span></td>
+              <td>${escapeHtml(formatCount(row.attendanceCount || row.presentCount || 0))}</td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  function renderOperationsChildren(childrenData, checkinsData) {
+    const children = Array.isArray(childrenData?.children) ? childrenData.children : [];
+    const checkIns = Array.isArray(checkinsData?.checkIns) ? checkinsData.checkIns : [];
+    const householdCount = children.filter((row) => String(row?.source || "").toUpperCase() === "HOUSEHOLD").length;
+    const walkInCount = children.filter((row) => String(row?.source || "").toUpperCase() === "WALK_IN").length;
+    state.operationsChildrenRows = children;
+    state.operationsChildrenCheckInRows = checkIns;
+    state.operationsChildrenService = checkinsData?.service || null;
+
+    if (el.operationsChildrenProfiles) el.operationsChildrenProfiles.textContent = formatCount(children.length);
+    if (el.operationsChildrenHousehold) el.operationsChildrenHousehold.textContent = formatCount(householdCount);
+    if (el.operationsChildrenWalkIns) el.operationsChildrenWalkIns.textContent = formatCount(walkInCount);
+    if (el.operationsChildrenOpenCheckins) el.operationsChildrenOpenCheckins.textContent = formatCount(checkIns.length);
+
+    if (el.operationsChildrenMeta) {
+      const parts = [];
+      if (childrenData?.unavailable) parts.push(childrenData?.error || "Children profiles are unavailable right now.");
+      else parts.push(`${formatCount(children.length)} child profile(s) loaded.`);
+      if (!checkinsData?.unavailable && checkinsData?.service?.serviceName) {
+        parts.push(`Live service: ${checkinsData.service.serviceName}.`);
+      }
+      el.operationsChildrenMeta.textContent = parts.join(" ");
+    }
+
+    if (el.operationsChildrenBody) {
+      if (!children.length) {
+        renderEmpty(
+          el.operationsChildrenBody,
+          5,
+          childrenData?.unavailable ? childrenData?.error || "Children profiles are unavailable." : "No children profiles yet."
+        );
+      } else {
+        el.operationsChildrenBody.innerHTML = children
+          .map((row) => {
+            const rowKey = operationsChildRowKey(row);
+            const canEdit = String(row?.source || "").toUpperCase() === "HOUSEHOLD" || isEditableWalkInChildRow(row);
+            return `
+              <tr>
+                <td>${escapeHtml(row.childName || row.childMemberName || "Child")}</td>
+                <td>${escapeHtml(row.parentMemberName || row.parentName || "-")}</td>
+                <td>${escapeHtml(labelizeToken(row.source, "Unknown"))}</td>
+                <td>${escapeHtml(formatDate(row.lastSeenAt || row.updatedAt || row.createdAt))}</td>
+                <td class="member-actions-cell">
+                  <div class="actions-cell">
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-child-profile-action="checkin"
+                      data-id="${escapeHtml(rowKey)}"
+                    >Check in</button>
+                    ${
+                      canEdit
+                        ? `
+                          <button
+                            class="btn ghost"
+                            type="button"
+                            data-child-profile-action="edit"
+                            data-id="${escapeHtml(rowKey)}"
+                          >Edit</button>
+                        `
+                        : `<span class="table-note">Use Add child profile to save this child.</span>`
+                    }
+                  </div>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+    }
+
+    if (el.operationsChildrenCheckinsBody) {
+      if (!checkIns.length) {
+        renderEmpty(
+          el.operationsChildrenCheckinsBody,
+          5,
+          checkinsData?.unavailable ? checkinsData?.error || "Children check-ins are unavailable." : "No open children check-ins right now."
+        );
+      } else {
+        el.operationsChildrenCheckinsBody.innerHTML = checkIns
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.childName || row.childMemberName || "Child")}</td>
+              <td>${escapeHtml(row.parentName || row.parentMemberName || "-")}</td>
+              <td>${escapeHtml(row.serviceName || checkinsData?.service?.serviceName || "-")}</td>
+              <td>${escapeHtml(formatDate(row.checkedInAt || row.createdAt))}</td>
+              <td class="member-actions-cell">
+                <div class="actions-cell">
+                  <button class="btn ghost" type="button" data-child-checkin-action="pickup" data-id="${escapeHtml(row.id)}">Pickup</button>
+                </div>
+              </td>
+            </tr>
+          `)
+          .join("");
+      }
+    }
+  }
+
+  async function loadOperationsWorkspace({ view = state.operationsView } = {}) {
+    const currentView = normalizeChurchLifeView(view);
+    state.operationsView = currentView;
+    syncCommunicationsEntryForView(currentView);
+    syncChurchLifeViewUi();
+    setOperationsShellMeta(currentView);
+
+    if (currentView === "overview") {
+      if (el.operationsMeta) {
+        el.operationsMeta.textContent = "Loading Church Life overview...";
+      }
+      renderSkeletonRows(el.operationsTrendBody, 2, 6);
+      renderSkeletonRows(el.operationsQueueBody, 3, 6);
+
+      const [overviewData, followupsData] = await Promise.all([
+        safeWorkspaceRequest(() => apiRequest("/api/admin/operations/overview"), {
+          attention: {},
+          snapshot: {},
+          trend: { weeks: [], retention4w: 0 },
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/followups" + buildQuery({ limit: 8 })), {
+          followups: [],
+        }),
+      ]);
+
+      renderOperationsOverview(overviewData, followupsData);
+      return;
+    }
+
+    if (currentView === "insights") {
+      if (el.operationsInsightsMeta) el.operationsInsightsMeta.textContent = "Loading growth insights...";
+      renderSkeletonRows(el.operationsInsightsTrendBody, 5, 6);
+      renderSkeletonRows(el.operationsInsightsRiskBody, 4, 6);
+
+      const insightsData = await safeWorkspaceRequest(
+        () => apiRequest("/api/admin/operations/insights" + buildQuery({ weeks: 8, serviceLimit: 20 })),
+        { overview: {}, weeklyTrend: [], atRiskMembers: [] }
+      );
+      renderOperationsInsights(insightsData);
+      return;
+    }
+
+    if (currentView === "services") {
+      if (el.operationsServicesMeta) el.operationsServicesMeta.textContent = "Loading services...";
+      renderSkeletonRows(el.operationsServicesBody, 4, 7);
+
+      const servicesData = await safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/services" + buildQuery({ limit: 40 })), {
+        services: [],
+      });
+      renderOperationsServices(servicesData);
+      return;
+    }
+
+    if (currentView === "followups") {
+      if (el.operationsFollowupsMeta) {
+        el.operationsFollowupsMeta.textContent = isCommunicationsTab() ? "Loading follow-up workspace..." : "Loading follow-ups...";
+      }
+      renderSkeletonRows(el.operationsFollowupsBody, 5, 6);
+      renderSkeletonRows(el.operationsAutoFollowupsBody, 4, 6);
+
+      const [followupsData, autoPreviewData] = await Promise.all([
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/followups" + buildQuery({ limit: 40 })), {
+          followups: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/auto-followups/preview" + buildQuery({ sampleLimit: 24 })), {
+          firstTimeVisitors: [],
+          missedThreeWeeks: [],
+          atRiskPredicted: [],
+          meta: {},
+        }),
+      ]);
+      renderOperationsFollowups(followupsData, autoPreviewData);
+      return;
+    }
+
+    if (currentView === "prayer") {
+      if (el.operationsPrayerMeta) el.operationsPrayerMeta.textContent = "Loading prayer inbox...";
+      renderSkeletonRows(el.operationsPrayerBody, 4, 6);
+
+      const prayerData = await safeWorkspaceRequest(
+        () => apiRequest("/api/admin/church-life/prayer-requests" + buildQuery({ limit: 40 })),
+        { prayerRequests: [] }
+      );
+      renderOperationsPrayer(prayerData);
+      return;
+    }
+
+    if (currentView === "broadcasts") {
+      if (el.operationsBroadcastsMeta) {
+        el.operationsBroadcastsMeta.textContent = isCommunicationsTab()
+          ? "Loading broadcasts and messaging settings..."
+          : "Loading broadcasts...";
+      }
+      renderSkeletonRows(el.operationsBroadcastsBody, 4, 6);
+      renderSkeletonRows(el.operationsBroadcastAudiencesBody, 3, 5);
+      renderSkeletonRows(el.operationsBroadcastTemplatesBody, 3, 5);
+
+      const [broadcastsData, audiencesData, templatesData] = await Promise.all([
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/broadcasts" + buildQuery({ limit: 20 })), {
+          broadcasts: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/broadcast-audiences" + buildQuery({ limit: 20 })), {
+          audiences: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/broadcast-templates" + buildQuery({ limit: 20 })), {
+          templates: [],
+        }),
+      ]);
+      renderOperationsBroadcasts(broadcastsData, audiencesData, templatesData);
+      return;
+    }
+
+    if (currentView === "volunteers") {
+      if (el.operationsVolunteersMeta) el.operationsVolunteersMeta.textContent = "Loading volunteer governance...";
+      renderSkeletonRows(el.operationsVolunteersBody, 3, 5);
+      renderSkeletonRows(el.operationsVolunteerScheduleBody, 4, 5);
+      renderSkeletonRows(el.operationsVolunteerMinistriesBody, 4, 5);
+      renderSkeletonRows(el.operationsVolunteerRolesBody, 4, 5);
+      renderSkeletonRows(el.operationsVolunteerReviewsBody, 4, 5);
+      renderSkeletonRows(el.operationsVolunteerAuditBody, 3, 5);
+
+      const [volunteerData, schedulesData, ministriesData, rolesData, reviewsData, auditData] = await Promise.all([
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/volunteer-terms/attention" + buildQuery({ days: 30 })), {
+          summary: {},
+          overloadMembers: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/schedules" + buildQuery({ limit: 20 })), {
+          schedules: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/ministries" + buildQuery({ limit: 20 })), {
+          ministries: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/ministry-roles" + buildQuery({ limit: 20 })), {
+          ministryRoles: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/volunteer-terms/reviews-due" + buildQuery({ days: 45, limit: 20 })), {
+          volunteerTerms: [],
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/audit-logs" + buildQuery({ limit: 12 })), {
+          logs: [],
+        }),
+      ]);
+
+      renderOperationsVolunteers(volunteerData, schedulesData, ministriesData, rolesData, reviewsData, auditData);
+      return;
+    }
+
+    if (currentView === "groups") {
+      if (el.operationsGroupsMeta) el.operationsGroupsMeta.textContent = "Loading groups...";
+      renderSkeletonRows(el.operationsGroupsBody, 5, 6);
+      renderSkeletonRows(el.operationsGroupMembersBody, 4, 6);
+      renderSkeletonRows(el.operationsGroupMeetingsBody, 4, 6);
+
+      const groupsData = await safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/groups" + buildQuery({ limit: 40 })), {
+        groups: [],
+      });
+      const groups = Array.isArray(groupsData?.groups) ? groupsData.groups : [];
+      if (!state.operationsGroupId || !groups.some((row) => String(row?.id || "") === String(state.operationsGroupId || ""))) {
+        state.operationsGroupId = String(groups[0]?.id || "").trim();
+      }
+      let membersData = { members: [] };
+      let meetingsData = { meetings: [] };
+      if (state.operationsGroupId) {
+        [membersData, meetingsData] = await Promise.all([
+          safeWorkspaceRequest(() => apiRequest(`/api/admin/church-life/groups/${encodeURIComponent(state.operationsGroupId)}/members`), {
+            members: [],
+          }),
+          safeWorkspaceRequest(() => apiRequest(`/api/admin/church-life/groups/${encodeURIComponent(state.operationsGroupId)}/meetings` + buildQuery({ limit: 12 })), {
+            meetings: [],
+          }),
+        ]);
+      }
+      renderOperationsGroups(groupsData, membersData, meetingsData);
+      return;
+    }
+
+    if (currentView === "children") {
+      if (el.operationsChildrenMeta) el.operationsChildrenMeta.textContent = "Loading children workspace...";
+      renderSkeletonRows(el.operationsChildrenBody, 4, 5);
+      renderSkeletonRows(el.operationsChildrenCheckinsBody, 5, 6);
+
+      const [childrenData, checkinsData] = await Promise.all([
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/children-household" + buildQuery({ includeAll: true, limit: 40 })), {
+          children: [],
+          meta: { sourceBreakdown: {} },
+        }),
+        safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/children-check-ins" + buildQuery({ status: "open", limit: 40 })), {
+          checkIns: [],
+          summary: {},
+          service: null,
+        }),
+      ]);
+      renderOperationsChildren(childrenData, checkinsData);
+      return;
+    }
+
+    if (currentView === "schedules") {
+      if (el.operationsSchedulesMeta) el.operationsSchedulesMeta.textContent = "Loading schedules...";
+      renderSkeletonRows(el.operationsSchedulesBody, 5, 6);
+
+      const schedulesData = await safeWorkspaceRequest(() => apiRequest("/api/admin/church-life/schedules" + buildQuery({ limit: 40 })), {
+        schedules: [],
+      });
+      renderOperationsSchedules(schedulesData);
+    }
+  }
+
+  async function createFollowupFromPrompt() {
+    const title = await promptAction({
+      title: "New follow-up",
+      body: "Start with the follow-up title.",
+      label: "Title",
+      placeholder: "First-time visitor welcome call",
+      okLabel: "Next",
+    });
+    if (title === null) return;
+    const memberRef = await promptAction({
+      title: "Member Ref",
+      body: "Enter a member ID/phone/email if this follow-up is for an existing member, or leave blank for a visitor.",
+      label: "Member ref",
+      placeholder: "Optional",
+      okLabel: "Next",
+    });
+    if (memberRef === null) return;
+
+    let visitorName = "";
+    if (!String(memberRef || "").trim()) {
+      const visitor = await promptAction({
+        title: "Visitor Name",
+        body: "A visitor name is required when there is no member ref.",
+        label: "Visitor name",
+        placeholder: "Guest name",
+        okLabel: "Next",
+      });
+      if (visitor === null) return;
+      visitorName = String(visitor || "").trim();
+      if (!visitorName) {
+        toast("Visitor name is required if no member ref is supplied.", "error");
+        return;
+      }
+    }
+
+    const dueDate = await promptAction({
+      title: "Due Date",
+      body: "Optional. Use YYYY-MM-DD or YYYY-MM-DD HH:MM.",
+      label: "Due date",
+      placeholder: "2026-03-20",
+      okLabel: "Create follow-up",
+    });
+    if (dueDate === null) return;
+    const dueAt = parsePromptDateToIsoDateTime(dueDate);
+    if (dueDate && dueAt === "") {
+      toast("Due date must be YYYY-MM-DD or YYYY-MM-DD HH:MM.", "error");
+      return;
+    }
+
+    await apiRequest("/api/admin/church-life/followups", {
+      method: "POST",
+      body: {
+        title: String(title || "").trim(),
+        followupType: "CARE",
+        memberRef: String(memberRef || "").trim() || null,
+        visitorName: visitorName || null,
+        dueAt: dueAt || null,
+      },
+    });
+    toast("Follow-up created.", "success");
+    await loadOperationsWorkspace({ view: "followups" });
+  }
+
+  async function runAutoFollowups() {
+    const confirmed = await confirmAction({
+      title: "Run auto follow-ups",
+      body: "This will open follow-ups for first-time visitors, members who missed 3 weeks, and predicted at-risk members.",
+      okLabel: "Run now",
+    });
+    if (!confirmed) return;
+
+    await apiRequest("/api/admin/church-life/auto-followups/run", {
+      method: "POST",
+      body: { limitPerRule: 100 },
+    });
+    toast("Auto follow-ups generated.", "success");
+    await loadOperationsWorkspace({ view: "followups" });
+  }
+
+  async function sendBroadcastFromPrompt() {
+    const title = await promptAction({
+      title: "Send broadcast",
+      body: "This sends a simple in-app broadcast to all members.",
+      label: "Title",
+      placeholder: "Weekend service reminder",
+      okLabel: "Next",
+    });
+    if (title === null) return;
+    const body = await promptAction({
+      title: "Broadcast body",
+      body: "Keep it short and direct.",
+      label: "Message",
+      placeholder: "See you at service this Sunday at 09:00.",
+      okLabel: "Send broadcast",
+    });
+    if (body === null) return;
+    if (!String(title || "").trim() || !String(body || "").trim()) {
+      toast("Broadcast title and message are required.", "error");
+      return;
+    }
+
+    await apiRequest("/api/admin/church-life/broadcasts", {
+      method: "POST",
+      body: {
+        title: String(title || "").trim(),
+        body: String(body || "").trim(),
+        segmentKey: "ALL_MEMBERS",
+      },
+    });
+    toast("Broadcast sent.", "success");
+    await loadOperationsWorkspace({ view: "broadcasts" });
+  }
+
+  async function createGroupFromPrompt() {
+    const name = await promptAction({
+      title: "Create group",
+      body: "Start with the group name.",
+      label: "Group name",
+      placeholder: "Young Adults Midweek",
+      okLabel: "Next",
+    });
+    if (name === null) return;
+    if (!String(name || "").trim()) {
+      toast("Group name is required.", "error");
+      return;
+    }
+
+    const location = await promptAction({
+      title: "Default location",
+      body: "Optional. This will be used for meetings unless you change it later.",
+      label: "Location",
+      placeholder: "Main hall",
+      okLabel: "Create group",
+    });
+    if (location === null) return;
+
+    const data = await apiRequest("/api/admin/church-life/groups", {
+      method: "POST",
+      body: {
+        name: String(name || "").trim(),
+        groupType: "SMALL_GROUP",
+        defaultLocation: String(location || "").trim() || null,
+      },
+    });
+    state.operationsGroupId = String(data?.group?.id || "").trim();
+    toast("Group created.", "success");
+    await loadOperationsWorkspace({ view: "groups" });
+  }
+
+  async function toggleGroupActive(groupId) {
+    const current = state.operationsGroupRows.find((row) => String(row?.id || "") === String(groupId || "")) || null;
+    if (!current) return;
+    const nextActive = current.active === false;
+    const confirmed = await confirmAction({
+      title: nextActive ? "Restore group" : "Pause group",
+      body: `${nextActive ? "Restore" : "Pause"} ${current.name || "this group"}?`,
+      okLabel: nextActive ? "Restore" : "Pause",
+    });
+    if (!confirmed) return;
+
+    await apiRequest(`/api/admin/church-life/groups/${encodeURIComponent(groupId)}`, {
+      method: "PATCH",
+      body: { active: nextActive },
+    });
+    toast(`Group ${nextActive ? "restored" : "paused"}.`, "success");
+    await loadOperationsWorkspace({ view: "groups" });
+  }
+
+  async function pickupChildrenCheckIn(checkInId) {
+    const confirmed = await confirmAction({
+      title: "Complete pickup",
+      body: "Mark this child as picked up?",
+      okLabel: "Complete pickup",
+    });
+    if (!confirmed) return;
+
+    await apiRequest(`/api/admin/church-life/children-check-ins/${encodeURIComponent(checkInId)}/pickup`, {
+      method: "POST",
+      body: {},
+    });
+    toast("Child pickup recorded.", "success");
+    await loadOperationsWorkspace({ view: "children" });
+  }
+
+  function operationsChildRowKey(row) {
+    return String(row?.selectionKey || row?.id || "").trim();
+  }
+
+  function isEditableWalkInChildRow(row) {
+    return String(row?.selectionKey || "")
+      .trim()
+      .toLowerCase()
+      .startsWith("walkin:");
+  }
+
+  function isConnectGroupServiceRow(row) {
+    return String(row?.serviceCategory || "").trim().toUpperCase() === "CONNECT_GROUP";
+  }
+
+  function findOperationsServiceRow(serviceId) {
+    return state.operationsServiceRows.find((row) => String(row?.id || "") === String(serviceId || "").trim()) || null;
+  }
+
+  function findOperationsChildRow(rowKey) {
+    const targetKey = String(rowKey || "").trim();
+    return state.operationsChildrenRows.find((row) => operationsChildRowKey(row) === targetKey) || null;
+  }
+
+  async function ensureOperationsServiceRows() {
+    if (Array.isArray(state.operationsServiceRows) && state.operationsServiceRows.length) return state.operationsServiceRows;
+    const data = await apiRequest("/api/admin/church-life/services" + buildQuery({ limit: 40 }));
+    const rows = Array.isArray(data?.services) ? data.services : [];
+    state.operationsServiceRows = rows;
+    return rows;
+  }
+
+  async function pickOperationalService(preferredServiceId = "") {
+    const requestedId = String(preferredServiceId || "").trim();
+    const rows = await ensureOperationsServiceRows();
+    if (!rows.length) return null;
+
+    if (requestedId) {
+      const requested = rows.find((row) => String(row?.id || "") === requestedId);
+      if (requested) return requested;
+    }
+
+    const usableRows = rows.filter((row) => !isConnectGroupServiceRow(row));
+    const publishedRows = usableRows.filter((row) => row?.published !== false);
+    const todayIso = isoTodayLocal();
+    const upcomingRows = publishedRows
+      .filter((row) => String(row?.serviceDate || "") >= todayIso)
+      .sort((left, right) => {
+        const dateCompare = String(left?.serviceDate || "").localeCompare(String(right?.serviceDate || ""));
+        if (dateCompare !== 0) return dateCompare;
+        return String(left?.startsAt || "").localeCompare(String(right?.startsAt || ""));
+      });
+
+    return upcomingRows[0] || publishedRows[0] || usableRows[0] || rows[0] || null;
+  }
+
+  async function resolveOperationsParentMember(parentRef) {
+    const lookup = String(parentRef || "").trim();
+    if (!lookup) throw new Error("Parent phone, email, or member ID is required.");
+
+    const data = await apiRequest("/api/admin/church-life/children-household" + buildQuery({ parentRef: lookup, limit: 1 }));
+    const parent = data?.parent || null;
+    if (!parent?.memberPk) {
+      throw new Error("Parent was not found in this church. Use phone, email, or member ID.");
+    }
+    return parent;
+  }
+
+  async function createOrEditServiceFromPrompt(serviceId = "") {
+    const current = serviceId ? findOperationsServiceRow(serviceId) : null;
+    const actionLabel = current ? "Update service" : "Create service";
+
+    const serviceName = await promptAction({
+      title: current ? "Edit service" : "Add service",
+      body: "Use the service name your team will recognize tomorrow.",
+      label: "Service name",
+      placeholder: "Sunday Celebration",
+      value: current?.serviceName || "",
+      okLabel: "Next",
+    });
+    if (serviceName === null) return;
+    if (!String(serviceName || "").trim()) {
+      toast("Service name is required.", "error");
+      return;
+    }
+
+    const serviceDate = await promptAction({
+      title: "Service date",
+      body: "Pick the date for this service.",
+      label: "Date",
+      value: toDateInputValue(current?.serviceDate || isoTodayLocal()),
+      okLabel: "Next",
+      inputType: "date",
+    });
+    if (serviceDate === null) return;
+    if (!String(serviceDate || "").trim()) {
+      toast("Service date is required.", "error");
+      return;
+    }
+
+    const startsAt = await promptAction({
+      title: "Start time",
+      body: "Optional. Leave blank if you want to add it later.",
+      label: "Starts at",
+      value: toDateTimeLocalValue(current?.startsAt),
+      placeholder: "Optional",
+      okLabel: "Next",
+      inputType: "datetime-local",
+    });
+    if (startsAt === null) return;
+
+    const endsAt = await promptAction({
+      title: "End time",
+      body: "Optional. Leave blank if you want to add it later.",
+      label: "Ends at",
+      value: toDateTimeLocalValue(current?.endsAt),
+      placeholder: "Optional",
+      okLabel: "Next",
+      inputType: "datetime-local",
+    });
+    if (endsAt === null) return;
+
+    const location = await promptAction({
+      title: "Location",
+      body: "Optional but useful for staff and children's teams.",
+      label: "Location",
+      placeholder: "Main auditorium",
+      value: current?.location || "",
+      okLabel: actionLabel,
+    });
+    if (location === null) return;
+
+    await apiRequest(
+      current ? `/api/admin/church-life/services/${encodeURIComponent(serviceId)}` : "/api/admin/church-life/services",
+      {
+        method: current ? "PATCH" : "POST",
+        body: {
+          serviceName: String(serviceName || "").trim(),
+          serviceDate: String(serviceDate || "").trim(),
+          startsAt: String(startsAt || "").trim() || null,
+          endsAt: String(endsAt || "").trim() || null,
+          location: String(location || "").trim() || null,
+          published: current ? current.published !== false : true,
+        },
+      }
+    );
+
+    state.operationsServiceRows = [];
+    toast(current ? "Service updated." : "Service created.", "success");
+    await loadOperationsWorkspace({ view: "services" });
+  }
+
+  async function openServiceStreamLink(serviceId) {
+    const data = await apiRequest(`/api/admin/church-life/services/${encodeURIComponent(serviceId)}/stream-link`);
+    const link = String(data?.stream?.link || "").trim();
+    if (!link) throw new Error("Stream link is not available for this service.");
+
+    await copyToClipboard(link, "Service stream link copied.");
+    const popup = window.open(link, "_blank", "noopener,noreferrer");
+    if (!popup) {
+      toast("Stream link copied. Paste it into a browser if a new tab did not open.", "info", 4200);
+    }
+  }
+
+  async function checkInMemberToServiceFromPrompt(serviceId = "") {
+    const service = await pickOperationalService(serviceId);
+    if (!service?.id) throw new Error("Add and publish a service first.");
+    if (isConnectGroupServiceRow(service)) throw new Error("This service is managed from Groups.");
+
+    const memberRef = await promptAction({
+      title: "Member check-in",
+      body: `Check a person into ${service.serviceName || "this service"} on ${formatDateOnly(service.serviceDate)} using phone, email, or member ID.`,
+      label: "Phone, email, or member ID",
+      placeholder: "0710000000",
+      okLabel: "Check in member",
+    });
+    if (memberRef === null) return;
+    if (!String(memberRef || "").trim()) {
+      toast("Phone, email, or member ID is required.", "error");
+      return;
+    }
+
+    await apiRequest("/api/admin/church-life/check-ins/usher", {
+      method: "POST",
+      body: {
+        serviceId: service.id,
+        memberRef: String(memberRef || "").trim(),
+      },
+    });
+
+    state.operationsServiceRows = [];
+    toast("Member checked in.", "success");
+    await loadOperationsWorkspace({ view: "services" });
+  }
+
+  async function checkInVisitorToServiceFromPrompt(serviceId = "") {
+    const service = await pickOperationalService(serviceId);
+    if (!service?.id) throw new Error("Add and publish a service first.");
+    if (isConnectGroupServiceRow(service)) throw new Error("This service is managed from Groups.");
+
+    const visitorName = await promptAction({
+      title: "Visitor check-in",
+      body: `Capture the visitor for ${service.serviceName || "this service"} on ${formatDateOnly(service.serviceDate)}.`,
+      label: "Visitor name",
+      placeholder: "Guest name",
+      okLabel: "Next",
+    });
+    if (visitorName === null) return;
+    if (!String(visitorName || "").trim()) {
+      toast("Visitor name is required.", "error");
+      return;
+    }
+
+    const visitorPhone = await promptAction({
+      title: "Visitor phone",
+      body: "Optional, but helpful for follow-up.",
+      label: "Phone",
+      placeholder: "0710000000",
+      okLabel: "Next",
+    });
+    if (visitorPhone === null) return;
+
+    const visitorEmail = await promptAction({
+      title: "Visitor email",
+      body: "Optional. Leave blank if you do not have it.",
+      label: "Email",
+      placeholder: "guest@example.com",
+      okLabel: "Check in visitor",
+      inputType: "email",
+    });
+    if (visitorEmail === null) return;
+
+    await apiRequest("/api/admin/church-life/check-ins/usher", {
+      method: "POST",
+      body: {
+        serviceId: service.id,
+        checkInSubject: "VISITOR",
+        visitorName: String(visitorName || "").trim(),
+        visitorPhone: String(visitorPhone || "").trim() || null,
+        visitorEmail: String(visitorEmail || "").trim() || null,
+      },
+    });
+
+    state.operationsServiceRows = [];
+    toast("Visitor checked in and added to Church Life.", "success");
+    await loadOperationsWorkspace({ view: "services" });
+  }
+
+  async function registerDoorPersonFromPrompt() {
+    const fullName = await promptAction({
+      title: "Register person",
+      body: "Create or refresh the member record before check-in.",
+      label: "Full name",
+      placeholder: "Member full name",
+      okLabel: "Next",
+    });
+    if (fullName === null) return;
+    if (!String(fullName || "").trim()) {
+      toast("Full name is required.", "error");
+      return;
+    }
+
+    const phone = await promptAction({
+      title: "Phone",
+      body: "Phone or email is required.",
+      label: "Phone",
+      placeholder: "0710000000",
+      okLabel: "Next",
+    });
+    if (phone === null) return;
+
+    const email = await promptAction({
+      title: "Email",
+      body: "Optional if phone is provided.",
+      label: "Email",
+      placeholder: "member@example.com",
+      okLabel: "Next",
+      inputType: "email",
+    });
+    if (email === null) return;
+    if (!String(phone || "").trim() && !String(email || "").trim()) {
+      toast("Phone or email is required.", "error");
+      return;
+    }
+
+    const dateOfBirth = await promptAction({
+      title: "Date of birth",
+      body: "This is required to complete the member record.",
+      label: "Date of birth",
+      okLabel: "Register person",
+      inputType: "date",
+    });
+    if (dateOfBirth === null) return;
+    if (!String(dateOfBirth || "").trim()) {
+      toast("Date of birth is required.", "error");
+      return;
+    }
+
+    const data = await apiRequest("/api/admin/church-life/check-ins/register-member", {
+      method: "POST",
+      body: {
+        fullName: String(fullName || "").trim(),
+        phone: String(phone || "").trim() || null,
+        email: String(email || "").trim() || null,
+        dateOfBirth: String(dateOfBirth || "").trim(),
+      },
+    });
+
+    const member = data?.member || {};
+    const memberRef = String(member?.phone || phone || member?.email || email || "").trim();
+    const service = await pickOperationalService();
+
+    toast(data?.existing ? "Person updated and ready." : "Person registered.", "success");
+
+    if (service?.id && memberRef) {
+      const confirmCheckIn = await confirmAction({
+        title: "Check into service now?",
+        body: `Check ${member.fullName || fullName} into ${service.serviceName || "the next service"} on ${formatDateOnly(
+          service.serviceDate
+        )}?`,
+        okLabel: "Check in now",
+      });
+      if (confirmCheckIn) {
+        await apiRequest("/api/admin/church-life/check-ins/usher", {
+          method: "POST",
+          body: {
+            serviceId: service.id,
+            memberRef,
+          },
+        });
+        toast("Person registered and checked in.", "success");
+      }
+    }
+
+    state.operationsServiceRows = [];
+    await loadOperationsWorkspace({ view: "services" });
+  }
+
+  async function addChildProfileFromPrompt() {
+    const parentRef = await promptAction({
+      title: "Add child profile",
+      body: "Use the parent phone, email, or member ID already in ChurPay.",
+      label: "Parent reference",
+      placeholder: "0710000000",
+      okLabel: "Next",
+    });
+    if (parentRef === null) return;
+
+    const parent = await resolveOperationsParentMember(parentRef);
+
+    const childName = await promptAction({
+      title: "Child name",
+      body: `Create a child profile under ${parent.fullName || "this parent"}.`,
+      label: "Child name",
+      placeholder: "Child full name",
+      okLabel: "Next",
+    });
+    if (childName === null) return;
+    if (!String(childName || "").trim()) {
+      toast("Child name is required.", "error");
+      return;
+    }
+
+    const dateOfBirth = await promptAction({
+      title: "Date of birth",
+      body: "Optional, but helpful for age grouping.",
+      label: "Date of birth",
+      okLabel: "Next",
+      inputType: "date",
+    });
+    if (dateOfBirth === null) return;
+
+    const schoolGrade = await promptAction({
+      title: "School grade",
+      body: "Optional. Leave blank if you do not have it.",
+      label: "School grade",
+      placeholder: "Grade 4",
+      okLabel: "Add child",
+    });
+    if (schoolGrade === null) return;
+
+    await apiRequest(`/api/admin/church-life/member-profiles/${encodeURIComponent(parent.memberPk)}/children`, {
+      method: "POST",
+      body: {
+        childName: String(childName || "").trim(),
+        dateOfBirth: String(dateOfBirth || "").trim() || null,
+        schoolGrade: String(schoolGrade || "").trim() || null,
+        relationship: "CHILD",
+        shareAddress: true,
+      },
+    });
+
+    toast("Child profile added.", "success");
+    await loadOperationsWorkspace({ view: "children" });
+  }
+
+  async function editChildProfileFromPrompt(rowKey) {
+    const row = findOperationsChildRow(rowKey);
+    if (!row) throw new Error("Child profile not found.");
+
+    if (String(row?.source || "").toUpperCase() === "WALK_IN") {
+      if (!isEditableWalkInChildRow(row)) {
+        throw new Error("This returning child needs a saved household profile. Use Add child profile first.");
+      }
+
+      const childName = await promptAction({
+        title: "Edit walk-in child",
+        body: "Update the walk-in record so tomorrow's data is clean.",
+        label: "Child name",
+        placeholder: "Child name",
+        value: row?.childName || row?.childMemberName || "",
+        okLabel: "Next",
+      });
+      if (childName === null) return;
+      if (!String(childName || "").trim()) {
+        toast("Child name is required.", "error");
+        return;
+      }
+
+      const parentName = await promptAction({
+        title: "Parent name",
+        body: "Optional, but recommended.",
+        label: "Parent name",
+        placeholder: "Parent name",
+        value: row?.parentMemberName || row?.parentName || "",
+        okLabel: "Next",
+      });
+      if (parentName === null) return;
+
+      const parentPhone = await promptAction({
+        title: "Parent phone",
+        body: "Optional.",
+        label: "Parent phone",
+        placeholder: "0710000000",
+        value: row?.parentPhone || "",
+        okLabel: "Next",
+      });
+      if (parentPhone === null) return;
+
+      const parentEmail = await promptAction({
+        title: "Parent email",
+        body: "Optional.",
+        label: "Parent email",
+        placeholder: "parent@example.com",
+        value: row?.parentEmail || "",
+        okLabel: "Save child",
+        inputType: "email",
+      });
+      if (parentEmail === null) return;
+
+      await apiRequest(
+        `/api/admin/church-life/children-household/walk-ins/${encodeURIComponent(String(row.selectionKey || "").trim())}`,
+        {
+          method: "PATCH",
+          body: {
+            childName: String(childName || "").trim(),
+            parentName: String(parentName || "").trim() || null,
+            parentPhone: String(parentPhone || "").trim() || null,
+            parentEmail: String(parentEmail || "").trim() || null,
+          },
+        }
+      );
+    } else {
+      const parentMemberPk = String(row?.parentMemberPk || row?.parentMemberPks?.[0] || "").trim();
+      const childId = String(row?.id || "").trim();
+      if (!parentMemberPk || !childId) {
+        throw new Error("This child profile cannot be edited from the current record.");
+      }
+
+      const childName = await promptAction({
+        title: "Edit child profile",
+        body: `Update ${row?.childName || row?.childMemberName || "this child"} for tomorrow's service.`,
+        label: "Child name",
+        placeholder: "Child name",
+        value: row?.childName || row?.childMemberName || "",
+        okLabel: "Next",
+      });
+      if (childName === null) return;
+      if (!String(childName || "").trim()) {
+        toast("Child name is required.", "error");
+        return;
+      }
+
+      const dateOfBirth = await promptAction({
+        title: "Date of birth",
+        body: "Optional.",
+        label: "Date of birth",
+        value: toDateInputValue(row?.dateOfBirth),
+        okLabel: "Next",
+        inputType: "date",
+      });
+      if (dateOfBirth === null) return;
+
+      const schoolGrade = await promptAction({
+        title: "School grade",
+        body: "Optional.",
+        label: "School grade",
+        placeholder: "Grade 4",
+        value: row?.schoolGrade || "",
+        okLabel: "Save child",
+      });
+      if (schoolGrade === null) return;
+
+      await apiRequest(
+        `/api/admin/church-life/member-profiles/${encodeURIComponent(parentMemberPk)}/children/${encodeURIComponent(childId)}`,
+        {
+          method: "PATCH",
+          body: {
+            childName: String(childName || "").trim(),
+            dateOfBirth: String(dateOfBirth || "").trim() || null,
+            schoolGrade: String(schoolGrade || "").trim() || null,
+          },
+        }
+      );
+    }
+
+    toast("Child profile updated.", "success");
+    await loadOperationsWorkspace({ view: "children" });
+  }
+
+  async function checkInChildFromRow(rowKey) {
+    const row = findOperationsChildRow(rowKey);
+    if (!row) throw new Error("Child profile not found.");
+
+    const service = state.operationsChildrenService?.id
+      ? state.operationsChildrenService
+      : await pickOperationalService();
+    if (!service?.id) throw new Error("Add and publish a service first.");
+
+    const source = String(row?.source || "").toUpperCase();
+    const body = { serviceId: service.id };
+    if (source === "HOUSEHOLD") {
+      body.householdChildId = String(row?.id || row?.householdChildIds?.[0] || "").trim();
+    } else {
+      body.childName = String(row?.childName || row?.childMemberName || "").trim();
+      body.parentName = String(row?.parentMemberName || row?.parentName || "").trim() || null;
+      body.parentPhone = String(row?.parentPhone || "").trim() || null;
+      body.parentEmail = String(row?.parentEmail || "").trim() || null;
+    }
+
+    if (!body.householdChildId && !body.childName) {
+      throw new Error("This child record is missing the details needed for check-in.");
+    }
+
+    await apiRequest("/api/admin/church-life/children-check-ins", {
+      method: "POST",
+      body,
+    });
+
+    state.operationsServiceRows = [];
+    toast("Child checked in.", "success");
+    await loadOperationsWorkspace({ view: "children" });
+  }
+
+  async function walkInChildCheckinFromPrompt() {
+    const service = state.operationsChildrenService?.id
+      ? state.operationsChildrenService
+      : await pickOperationalService();
+    if (!service?.id) throw new Error("Add and publish a service first.");
+
+    const childName = await promptAction({
+      title: "Walk-in child check-in",
+      body: `Capture a walk-in child for ${service.serviceName || "the next service"} on ${formatDateOnly(service.serviceDate)}.`,
+      label: "Child name",
+      placeholder: "Child name",
+      okLabel: "Next",
+    });
+    if (childName === null) return;
+    if (!String(childName || "").trim()) {
+      toast("Child name is required.", "error");
+      return;
+    }
+
+    const parentName = await promptAction({
+      title: "Parent name",
+      body: "Optional, but recommended.",
+      label: "Parent name",
+      placeholder: "Parent name",
+      okLabel: "Next",
+    });
+    if (parentName === null) return;
+
+    const parentPhone = await promptAction({
+      title: "Parent phone",
+      body: "Optional.",
+      label: "Parent phone",
+      placeholder: "0710000000",
+      okLabel: "Next",
+    });
+    if (parentPhone === null) return;
+
+    const parentEmail = await promptAction({
+      title: "Parent email",
+      body: "Optional.",
+      label: "Parent email",
+      placeholder: "parent@example.com",
+      okLabel: "Check in child",
+      inputType: "email",
+    });
+    if (parentEmail === null) return;
+
+    await apiRequest("/api/admin/church-life/children-check-ins", {
+      method: "POST",
+      body: {
+        serviceId: service.id,
+        childName: String(childName || "").trim(),
+        parentName: String(parentName || "").trim() || null,
+        parentPhone: String(parentPhone || "").trim() || null,
+        parentEmail: String(parentEmail || "").trim() || null,
+      },
+    });
+
+    state.operationsServiceRows = [];
+    toast("Walk-in child checked in.", "success");
+    await loadOperationsWorkspace({ view: "children" });
+  }
+
   async function onSaveChurch(event) {
     event.preventDefault();
     const busyLabel = state.church ? "Updating..." : "Creating...";
@@ -2166,17 +4929,9 @@
 
   async function refreshAll() {
     showInlineStatus("Refreshing portal data...", "info");
+    state.currentTab = pathToTab(window.location.pathname);
     await Promise.all([loadProfile(), loadChurch(), loadFunds()]);
     await loadPortalSettings();
-    if (isChurchAdminRole(state.profile?.role)) {
-      await loadPayfastStatus();
-    }
-
-    const tasks = [];
-    if (isTabAllowed("dashboard")) tasks.push(loadDashboard());
-    if (isTabAllowed("transactions")) tasks.push(loadTransactions());
-    if (isTabAllowed("members")) tasks.push(loadMembers());
-    await Promise.all(tasks);
     showInlineStatus("Portal refreshed.", "info");
     window.setTimeout(() => showInlineStatus(""), 1600);
   }
@@ -2193,8 +4948,13 @@
     state.dashboardTransactions = [];
     state.txRows = [];
     state.members = [];
+    state.growthSubscription = null;
+    state.operationsView = "overview";
+    state.operationsGroupId = "";
+    state.operationsGroupRows = [];
     state.statementFilters = { from: "", to: "", allStatuses: false };
     renderQrCard(null);
+    syncChurchLifeViewUi();
     showAuth(true);
     showInlineStatus("");
     showAuthError("");
@@ -2206,17 +4966,9 @@
   }
 
   async function bootstrapPortal() {
+    state.currentTab = pathToTab(window.location.pathname);
     await Promise.all([loadProfile(), loadChurch(), loadFunds()]);
     await loadPortalSettings();
-    if (isChurchAdminRole(state.profile?.role)) {
-      await loadPayfastStatus();
-    }
-
-    const tasks = [];
-    if (isTabAllowed("dashboard")) tasks.push(loadDashboard());
-    if (isTabAllowed("transactions")) tasks.push(loadTransactions());
-    if (isTabAllowed("members")) tasks.push(loadMembers());
-    await Promise.all(tasks);
   }
 
   async function onLoginSubmit(event) {
@@ -2261,8 +5013,6 @@
       showLoading(true);
 
       await bootstrapPortal();
-      switchTab(firstAllowedTab());
-
       toast("Welcome back.", "success");
     } catch (err) {
       setToken("");
@@ -2283,7 +5033,7 @@
     $$(".nav-link[data-tab]").forEach((node) => {
       node.addEventListener("click", () => {
         const tab = node.getAttribute("data-tab") || "dashboard";
-        switchTab(tab);
+        switchTab(tab, true);
       });
     });
   }
@@ -2342,6 +5092,24 @@
       applyTheme("system");
     });
 
+    document.addEventListener("click", (event) => {
+      const origin = event.target;
+      if (!(origin instanceof Element)) return;
+      const operationsTrigger = origin.closest("[data-operations-view]");
+      if (operationsTrigger) {
+        const view = String(operationsTrigger.getAttribute("data-operations-view") || "").trim();
+        if (view) {
+          setOperationsView(view);
+          return;
+        }
+      }
+      const trigger = origin.closest("[data-jump-tab]");
+      if (!trigger) return;
+      const tab = String(trigger.getAttribute("data-jump-tab") || "").trim();
+      if (!tab) return;
+      switchTab(tab, true);
+    });
+
     el.chartRangeSelect.addEventListener("change", async () => {
       state.chartDays = Number(el.chartRangeSelect.value || 14);
       try {
@@ -2350,6 +5118,30 @@
         toast(err.message || "Could not refresh chart", "error");
       }
     });
+
+    if (el.financeWeeksSelect) {
+      el.financeWeeksSelect.addEventListener("change", async () => {
+        state.financeWeeks = Math.max(4, Math.min(52, Number(el.financeWeeksSelect.value || 12)));
+        try {
+          await loadFinanceWorkspace();
+        } catch (err) {
+          toast(err.message || "Could not refresh finance workspace", "error");
+        }
+      });
+    }
+
+    if (el.refreshFinanceBtn) {
+      el.refreshFinanceBtn.addEventListener("click", async () => {
+        try {
+          setBusy(el.refreshFinanceBtn, true, "Refreshing...", "Refresh finance");
+          await loadFinanceWorkspace();
+        } catch (err) {
+          toast(err.message || "Could not refresh finance workspace", "error");
+        } finally {
+          setBusy(el.refreshFinanceBtn, false, "Refreshing...", "Refresh finance");
+        }
+      });
+    }
 
     el.applyTxFiltersBtn.addEventListener("click", async () => {
       try {
@@ -2483,6 +5275,153 @@
       }
     });
 
+    if (el.refreshOperationsBtn) {
+      el.refreshOperationsBtn.addEventListener("click", async () => {
+        try {
+          setBusy(el.refreshOperationsBtn, true, "Refreshing...", "Refresh Church Life");
+          await loadOperationsWorkspace();
+        } catch (err) {
+          toast(err.message || "Could not refresh Church Life", "error");
+        } finally {
+          setBusy(el.refreshOperationsBtn, false, "Refreshing...", "Refresh Church Life");
+        }
+      });
+    }
+
+    if (el.createFollowupBtn) {
+      el.createFollowupBtn.addEventListener("click", () => {
+        createFollowupFromPrompt().catch((err) => toast(err?.message || "Could not create follow-up.", "error"));
+      });
+    }
+
+    if (el.runAutoFollowupsBtn) {
+      el.runAutoFollowupsBtn.addEventListener("click", async () => {
+        try {
+          setBusy(el.runAutoFollowupsBtn, true, "Running...", "Run auto follow-ups");
+          await runAutoFollowups();
+        } catch (err) {
+          toast(err?.message || "Could not run auto follow-ups.", "error");
+        } finally {
+          setBusy(el.runAutoFollowupsBtn, false, "Running...", "Run auto follow-ups");
+        }
+      });
+    }
+
+    if (el.sendBroadcastBtn) {
+      el.sendBroadcastBtn.addEventListener("click", () => {
+        sendBroadcastFromPrompt().catch((err) => toast(err?.message || "Could not send broadcast.", "error"));
+      });
+    }
+
+    if (el.createGroupBtn) {
+      el.createGroupBtn.addEventListener("click", () => {
+        createGroupFromPrompt().catch((err) => toast(err?.message || "Could not create group.", "error"));
+      });
+    }
+
+    if (el.createServiceBtn) {
+      el.createServiceBtn.addEventListener("click", () => {
+        createOrEditServiceFromPrompt().catch((err) => toast(err?.message || "Could not save service.", "error"));
+      });
+    }
+
+    if (el.registerDoorPersonBtn) {
+      el.registerDoorPersonBtn.addEventListener("click", () => {
+        registerDoorPersonFromPrompt().catch((err) => toast(err?.message || "Could not register person.", "error"));
+      });
+    }
+
+    if (el.addChildProfileBtn) {
+      el.addChildProfileBtn.addEventListener("click", () => {
+        addChildProfileFromPrompt().catch((err) => toast(err?.message || "Could not add child profile.", "error"));
+      });
+    }
+
+    if (el.walkInChildCheckinBtn) {
+      el.walkInChildCheckinBtn.addEventListener("click", () => {
+        walkInChildCheckinFromPrompt().catch((err) => toast(err?.message || "Could not check in child.", "error"));
+      });
+    }
+
+    if (el.operationsGroupsBody) {
+      el.operationsGroupsBody.addEventListener("click", (event) => {
+        const origin = event.target;
+        if (!(origin instanceof Element)) return;
+        const actionEl = origin.closest("button[data-group-action][data-id]");
+        if (!actionEl) return;
+        const groupId = actionEl.getAttribute("data-id");
+        const action = actionEl.getAttribute("data-group-action");
+        if (!groupId || !action) return;
+        if (action === "open") {
+          state.operationsGroupId = groupId;
+          void loadOperationsWorkspace({ view: "groups" });
+          return;
+        }
+        if (action === "toggle") {
+          void toggleGroupActive(groupId).catch((err) => toast(err?.message || "Could not update group.", "error"));
+        }
+      });
+    }
+
+    if (el.operationsServicesBody) {
+      el.operationsServicesBody.addEventListener("click", (event) => {
+        const origin = event.target;
+        if (!(origin instanceof Element)) return;
+        const actionEl = origin.closest("button[data-service-action][data-id]");
+        if (!actionEl) return;
+        const serviceId = actionEl.getAttribute("data-id");
+        const action = actionEl.getAttribute("data-service-action");
+        if (!serviceId || !action) return;
+        if (action === "member") {
+          void checkInMemberToServiceFromPrompt(serviceId).catch((err) => toast(err?.message || "Could not check in member.", "error"));
+          return;
+        }
+        if (action === "visitor") {
+          void checkInVisitorToServiceFromPrompt(serviceId).catch((err) => toast(err?.message || "Could not check in visitor.", "error"));
+          return;
+        }
+        if (action === "edit") {
+          void createOrEditServiceFromPrompt(serviceId).catch((err) => toast(err?.message || "Could not update service.", "error"));
+          return;
+        }
+        if (action === "stream") {
+          void openServiceStreamLink(serviceId).catch((err) => toast(err?.message || "Could not open stream link.", "error"));
+        }
+      });
+    }
+
+    if (el.operationsChildrenBody) {
+      el.operationsChildrenBody.addEventListener("click", (event) => {
+        const origin = event.target;
+        if (!(origin instanceof Element)) return;
+        const actionEl = origin.closest("button[data-child-profile-action][data-id]");
+        if (!actionEl) return;
+        const rowKey = actionEl.getAttribute("data-id");
+        const action = actionEl.getAttribute("data-child-profile-action");
+        if (!rowKey || !action) return;
+        if (action === "checkin") {
+          void checkInChildFromRow(rowKey).catch((err) => toast(err?.message || "Could not check in child.", "error"));
+          return;
+        }
+        if (action === "edit") {
+          void editChildProfileFromPrompt(rowKey).catch((err) => toast(err?.message || "Could not update child.", "error"));
+        }
+      });
+    }
+
+    if (el.operationsChildrenCheckinsBody) {
+      el.operationsChildrenCheckinsBody.addEventListener("click", (event) => {
+        const origin = event.target;
+        if (!(origin instanceof Element)) return;
+        const actionEl = origin.closest("button[data-child-checkin-action][data-id]");
+        if (!actionEl) return;
+        const checkInId = actionEl.getAttribute("data-id");
+        const action = actionEl.getAttribute("data-child-checkin-action");
+        if (!checkInId || action !== "pickup") return;
+        void pickupChildrenCheckIn(checkInId).catch((err) => toast(err?.message || "Could not record pickup.", "error"));
+      });
+    }
+
     el.churchForm.addEventListener("submit", onSaveChurch);
     el.adminProfileForm.addEventListener("submit", onSaveAdminProfile);
 
@@ -2540,6 +5479,34 @@
       });
     }
 
+    if (el.growthPlanSelect) {
+      el.growthPlanSelect.addEventListener("change", () => {
+        syncGrowthPlanHint();
+      });
+    }
+
+    if (el.requestGrowthActivationBtn) {
+      el.requestGrowthActivationBtn.addEventListener("click", () => {
+        requestGrowthActivation().catch((err) => {
+          toast(err?.message || "Could not activate ChurPay Growth.", "error");
+        });
+      });
+    }
+
+    if (el.refreshGrowthSubscriptionBtn) {
+      el.refreshGrowthSubscriptionBtn.addEventListener("click", async () => {
+        try {
+          setBusy(el.refreshGrowthSubscriptionBtn, true, "Refreshing...", "Refresh status");
+          await loadGrowthSubscription();
+          toast("Growth status refreshed.", "info", 1600);
+        } catch (err) {
+          toast(err?.message || "Could not refresh Growth status.", "error");
+        } finally {
+          setBusy(el.refreshGrowthSubscriptionBtn, false, "Refreshing...", "Refresh status");
+        }
+      });
+    }
+
     if (el.payfastModalCloseBtn) {
       el.payfastModalCloseBtn.addEventListener("click", () => closePayfastConnectDialog());
     }
@@ -2553,11 +5520,17 @@
         onPayfastDisconnect().catch((err) => toast(err.message || "Could not disconnect PayFast.", "error"));
       });
     }
+
+    window.addEventListener("popstate", () => {
+      const parsed = pathToTab(window.location.pathname);
+      switchTab(parsed, false);
+    });
   }
 
   async function init() {
     installBrandLogoFallback();
     bindEvents();
+    syncChurchLifeViewUi();
     setSidebarOpen(false);
 
     const preferredTheme = window.localStorage.getItem(THEME_KEY) || "system";
@@ -2570,7 +5543,8 @@
     if (!storedToken) {
       stopInactivityWatch();
       showAuth(true);
-      switchTab("dashboard");
+      syncGrowthPlanHint();
+      switchTab(pathToTab(window.location.pathname), false);
       showLoading(false);
       return;
     }
@@ -2579,7 +5553,6 @@
       setToken(storedToken);
       showAuth(false);
       startInactivityWatch();
-      switchTab("dashboard");
       await bootstrapPortal();
       toast("Session restored.", "info", 1800);
     } catch (err) {

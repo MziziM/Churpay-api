@@ -8,7 +8,7 @@
   <link rel="shortcut icon" href="/assets/brand/churpay-logo.svg?v=20260216e" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="/brand/tokens.css?v=20260212c" />
-  <link rel="stylesheet" href="/admin/styles.css?v=20260217a" />
+  <link rel="stylesheet" href="/admin/styles.css?v=20260314f" />
 </head>
 <body>
   <div id="loadingScreen" class="loading-screen">
@@ -125,13 +125,11 @@
       </a>
       <div class="sidebar-divider"></div>
       <nav id="navTabs" class="sidebar-nav" aria-label="Admin navigation">
-        <button class="nav-link active" data-tab="dashboard" type="button">Dashboard</button>
-        <button class="nav-link" data-tab="transactions" type="button">Transactions</button>
-        <button class="nav-link" data-tab="statements" type="button">Statements</button>
-        <button class="nav-link" data-tab="funds" type="button">Funds</button>
-        <button class="nav-link" data-tab="qr" type="button">QR Codes</button>
-        <button class="nav-link" data-tab="members" type="button">Members</button>
-        <button class="nav-link" data-tab="settings" type="button">Settings</button>
+        <button class="nav-link active" data-tab="dashboard" type="button">Home</button>
+        <button class="nav-link" data-tab="finance" type="button">Finance</button>
+        <button class="nav-link" data-tab="members" type="button">People</button>
+        <button class="nav-link" data-tab="operations" type="button">Church Life</button>
+        <button class="nav-link" data-tab="settings" type="button">Setup</button>
       </nav>
       <div class="sidebar-footer">
         <button id="themeToggleBtn" type="button" class="btn ghost full">Switch to light mode</button>
@@ -149,7 +147,7 @@
           <img src="/assets/brand/churpay-logo.svg?v=20260216e" alt="Churpay" class="topbar-logo" data-logo />
           <div>
             <p id="pageKicker" class="page-kicker">Admin Portal</p>
-            <h1 id="pageTitle">Dashboard</h1>
+            <h1 id="pageTitle">Home</h1>
           </div>
         </div>
         <div class="topbar-right">
@@ -163,6 +161,15 @@
       </header>
 
       <div id="statusInline" class="status-inline hidden"></div>
+      <section id="workspaceDock" class="workspace-dock hidden" aria-label="Workspace shortcuts">
+        <div class="workspace-dock-head">
+          <div>
+            <p id="workspaceDockLabel" class="meta-line">Workspace flow</p>
+            <h2 id="workspaceDockTitle" class="workspace-dock-title">Church workspaces</h2>
+          </div>
+        </div>
+        <div id="workspaceDockActions" class="workspace-tab-strip"></div>
+      </section>
 
       <main class="content">
         <section id="panel-dashboard" class="panel">
@@ -176,15 +183,15 @@
               <h3 id="statWeekTotal">R 0.00</h3>
             </article>
             <article class="stat-card">
-              <p>Month total</p>
+              <p>This month</p>
               <h3 id="statMonthTotal">R 0.00</h3>
             </article>
             <article class="stat-card">
-              <p>Total donors</p>
+              <p>Active donors</p>
               <h3 id="statDonors">0</h3>
             </article>
             <article class="stat-card">
-              <p>Total transactions</p>
+              <p>Transactions</p>
               <h3 id="statTransactions">0</h3>
             </article>
           </div>
@@ -234,6 +241,89 @@
                     </tr>
                   </thead>
                   <tbody id="dashboardTotalsBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-finance" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>Finance</h2>
+              <button id="refreshFinanceBtn" class="btn ghost" type="button">Refresh finance</button>
+            </div>
+            <p id="financeMeta" class="meta-line">See what is moving in giving, then open the finance tool you need.</p>
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Trend window</span>
+                <select id="financeWeeksSelect">
+                  <option value="4">Last 4 weeks</option>
+                  <option value="8">Last 8 weeks</option>
+                  <option value="12" selected>Last 12 weeks</option>
+                  <option value="24">Last 24 weeks</option>
+                </select>
+              </label>
+            </div>
+            <p class="meta-line">Use the workspace rail above to move between giving analytics, transactions, statements, funds, and QR tools.</p>
+          </div>
+
+          <div class="card card-grid">
+            <article class="stat-card">
+              <p>This month</p>
+              <h3 id="financeThisMonthAmount">R 0.00</h3>
+              <div id="financeAmountChange" class="meta-line">-</div>
+            </article>
+            <article class="stat-card">
+              <p>Previous month</p>
+              <h3 id="financePreviousMonthAmount">R 0.00</h3>
+              <div id="financeRecurringGross" class="meta-line">Recurring: R 0.00</div>
+            </article>
+            <article class="stat-card">
+              <p>Donors this month</p>
+              <h3 id="financeThisMonthDonors">0</h3>
+              <div id="financeDonorChange" class="meta-line">-</div>
+            </article>
+            <article class="stat-card">
+              <p>Transactions this month</p>
+              <h3 id="financeThisMonthTransactions">0</h3>
+              <div id="financeTransactionChange" class="meta-line">-</div>
+            </article>
+          </div>
+
+          <div class="card two-col-grid">
+            <section>
+              <div class="card-head">
+                <h2>Weekly giving trend</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Week</th>
+                      <th>Amount</th>
+                      <th>Transactions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="financeWeeklyTrendBody"></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <div class="card-head">
+                <h2>Recent finance activity</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Reference</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody id="financeRecentBody"></tbody>
                 </table>
               </div>
             </section>
@@ -481,7 +571,7 @@
         <section id="panel-members" class="panel hidden">
           <div class="card">
             <div class="card-head">
-              <h2>Members</h2>
+              <h2>People</h2>
               <button id="refreshMembersBtn" class="btn ghost" type="button">Refresh</button>
             </div>
 
@@ -524,6 +614,641 @@
               </table>
             </div>
           </div>
+        </section>
+
+        <section id="panel-operations" class="panel hidden">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h2 id="operationsTitle">Church Life</h2>
+                <p id="operationsMeta" class="meta-line">Keep live ministry work visible without turning this into a wall of broken widgets.</p>
+              </div>
+              <button id="refreshOperationsBtn" class="btn ghost" type="button">Refresh Church Life</button>
+            </div>
+            <div class="workspace-tab-strip" role="tablist" aria-label="Church Life tabs">
+              <button class="btn ghost workspace-tab is-active" type="button" data-operations-view="overview">Overview</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="insights">Insights</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="services">Services</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="followups">Follow-ups</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="prayer">Prayer</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="broadcasts">Broadcasts</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="volunteers">Volunteers</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="groups">Groups</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="children">Children</button>
+              <button class="btn ghost workspace-tab" type="button" data-operations-view="schedules">Schedules</button>
+            </div>
+          </div>
+
+          <section id="operationsViewOverview" class="operations-view">
+            <div class="card card-grid">
+              <article class="stat-card"><p>Attendance this Sunday</p><h3 id="operationsAttendance">0</h3></article>
+              <article class="stat-card"><p>Services today</p><h3 id="operationsServicesToday">0</h3></article>
+              <article class="stat-card"><p>Follow-ups due</p><h3 id="operationsFollowupsDue">0</h3></article>
+              <article class="stat-card"><p>Urgent prayer</p><h3 id="operationsUrgentPrayer">0</h3></article>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Church Life tabs</h2>
+              </div>
+              <p class="meta-line">Everything that was split across the old Church Life center is back here in one calmer workspace.</p>
+              <div class="filter-grid compact-grid">
+                <button class="btn ghost" type="button" data-operations-view="insights">Insights</button>
+                <button class="btn ghost" type="button" data-operations-view="services">Services</button>
+                <button class="btn ghost" type="button" data-operations-view="followups">Follow-ups</button>
+                <button class="btn ghost" type="button" data-operations-view="prayer">Prayer</button>
+                <button class="btn ghost" type="button" data-operations-view="broadcasts">Broadcasts</button>
+                <button class="btn ghost" type="button" data-operations-view="volunteers">Volunteers</button>
+                <button class="btn ghost" type="button" data-operations-view="groups">Groups</button>
+                <button class="btn ghost" type="button" data-operations-view="children">Children</button>
+                <button class="btn ghost" type="button" data-operations-view="schedules">Schedules</button>
+              </div>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Attendance trend</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Week</th>
+                        <th>Attendance</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsTrendBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Care queue</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Title</th>
+                        <th>Status</th>
+                        <th>Due</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsQueueBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="operationsViewInsights" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Growth insights</h2>
+              </div>
+              <p id="operationsInsightsMeta" class="meta-line">See the weekly health of attendance, giving, and at-risk people before you decide where to intervene.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Attendees this week</p><h3 id="operationsInsightsAttendees">0</h3></article>
+              <article class="stat-card"><p>First-time this week</p><h3 id="operationsInsightsFirstTime">0</h3></article>
+              <article class="stat-card"><p>Returning this week</p><h3 id="operationsInsightsReturning">0</h3></article>
+              <article class="stat-card"><p>Attendance vs last week</p><h3 id="operationsInsightsAttendanceDelta">n/a</h3></article>
+              <article class="stat-card"><p>Donor participation</p><h3 id="operationsInsightsParticipation">0%</h3></article>
+              <article class="stat-card"><p>Giving this week</p><h3 id="operationsInsightsGiving">R 0.00</h3></article>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Weekly trend</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Week</th>
+                        <th>Attendees</th>
+                        <th>First-time</th>
+                        <th>Donors</th>
+                        <th>Giving</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsInsightsTrendBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>At-risk members</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Last seen</th>
+                        <th>Attendance drop</th>
+                        <th>Risk</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsInsightsRiskBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="operationsViewServices" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Services</h2>
+                <div class="filter-actions">
+                  <button id="createServiceBtn" class="btn ghost" type="button">Add service</button>
+                  <button id="registerDoorPersonBtn" class="btn ghost" type="button">Register person</button>
+                </div>
+              </div>
+              <p id="operationsServicesMeta" class="meta-line">Keep upcoming and recently closed services visible without opening a second portal.</p>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Service</th>
+                      <th>Date</th>
+                      <th>Campus</th>
+                      <th>Status</th>
+                      <th>Check-ins</th>
+                      <th>Children</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsServicesBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="operationsViewFollowups" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2 id="operationsFollowupsTitle">Follow-ups</h2>
+                <button id="createFollowupBtn" class="btn ghost" type="button">New follow-up</button>
+              </div>
+              <p id="operationsFollowupsMeta" class="meta-line">Work the care queue by urgency, assignment, and due date.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Open tasks</p><h3 id="operationsFollowupsOpen">0</h3></article>
+              <article class="stat-card"><p>Urgent tasks</p><h3 id="operationsFollowupsUrgent">0</h3></article>
+              <article class="stat-card"><p>Assigned to me</p><h3 id="operationsFollowupsMine">0</h3></article>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Person</th>
+                      <th>Assigned</th>
+                      <th>Status</th>
+                      <th>Due</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsFollowupsBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2 id="operationsVisitorsTitle">Auto follow-ups</h2>
+                <button id="runAutoFollowupsBtn" class="btn ghost" type="button">Run auto follow-ups</button>
+              </div>
+              <p id="operationsAutoFollowupsMeta" class="meta-line">Preview the visitor and at-risk follow-ups ChurPay Growth can open for you automatically.</p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rule</th>
+                      <th>Person</th>
+                      <th>Contact</th>
+                      <th>Signal</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsAutoFollowupsBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="operationsViewPrayer" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Prayer</h2>
+              </div>
+              <p id="operationsPrayerMeta" class="meta-line">See urgent needs, what is in progress, and what still needs a human touch.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>New</p><h3 id="operationsPrayerNew">0</h3></article>
+              <article class="stat-card"><p>In progress</p><h3 id="operationsPrayerInProgress">0</h3></article>
+              <article class="stat-card"><p>Assigned to me</p><h3 id="operationsPrayerMine">0</h3></article>
+              <article class="stat-card"><p>Closed</p><h3 id="operationsPrayerClosed">0</h3></article>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Request</th>
+                      <th>Member</th>
+                      <th>Assigned</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsPrayerBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="operationsViewBroadcasts" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2 id="operationsBroadcastsTitle">Broadcasts</h2>
+                <button id="sendBroadcastBtn" class="btn ghost" type="button">Send broadcast</button>
+              </div>
+              <p id="operationsBroadcastsMeta" class="meta-line">Keep communication history close to the rest of Church Life, without turning this screen into a marketing dashboard.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Recent broadcasts</p><h3 id="operationsBroadcastsTotal">0</h3></article>
+              <article class="stat-card"><p>Audience reached</p><h3 id="operationsBroadcastsAudience">0</h3></article>
+              <article class="stat-card"><p>Sent</p><h3 id="operationsBroadcastsSent">0</h3></article>
+              <article class="stat-card"><p>Failed</p><h3 id="operationsBroadcastsFailed">0</h3></article>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Status</th>
+                      <th>Audience</th>
+                      <th>Sent</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsBroadcastsBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2 id="operationsMessagingAudiencesTitle">Saved audiences</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Segment</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsBroadcastAudiencesBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2 id="operationsMessagingTemplatesTitle">Templates</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Default segment</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsBroadcastTemplatesBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="operationsViewVolunteers" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Volunteers</h2>
+              </div>
+              <p id="operationsVolunteersMeta" class="meta-line">Spot overloaded people early and keep ministry teams reliable.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Open terms</p><h3 id="operationsVolunteersOpenTerms">0</h3></article>
+              <article class="stat-card"><p>Reviews due</p><h3 id="operationsVolunteersReviewsDue">0</h3></article>
+              <article class="stat-card"><p>High load</p><h3 id="operationsVolunteersHighLoad">0</h3></article>
+              <article class="stat-card"><p>Overload</p><h3 id="operationsVolunteersOverload">0</h3></article>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Overload watch</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Volunteer</th>
+                        <th>Active roles</th>
+                        <th>Attention</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteersBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Today&apos;s schedules</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Schedule</th>
+                        <th>Assignments</th>
+                        <th>Served</th>
+                        <th>No-show</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteerScheduleBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Ministries</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Campus</th>
+                        <th>Roles</th>
+                        <th>Volunteers</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteerMinistriesBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Roles</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Role</th>
+                        <th>Ministry</th>
+                        <th>Term</th>
+                        <th>Active terms</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteerRolesBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Reviews due</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Volunteer</th>
+                        <th>Role</th>
+                        <th>Ends</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteerReviewsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Recent audit</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>When</th>
+                        <th>Action</th>
+                        <th>Actor</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsVolunteerAuditBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="operationsViewGroups" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Groups</h2>
+                <button id="createGroupBtn" class="btn ghost" type="button">Create group</button>
+              </div>
+              <p id="operationsGroupsMeta" class="meta-line">Bring small groups, leaders, members, and meetings back into one working flow.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Total groups</p><h3 id="operationsGroupsTotal">0</h3></article>
+              <article class="stat-card"><p>Active groups</p><h3 id="operationsGroupsActive">0</h3></article>
+              <article class="stat-card"><p>Members in groups</p><h3 id="operationsGroupsMembers">0</h3></article>
+              <article class="stat-card"><p>Meetings loaded</p><h3 id="operationsGroupsMeetings">0</h3></article>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Group list</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Leader</th>
+                        <th>Type</th>
+                        <th>Members</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsGroupsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Selected group</h2>
+                </div>
+                <p id="operationsGroupDetailMeta" class="meta-line">Select a group to see members and meetings.</p>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Member</th>
+                        <th>Role</th>
+                        <th>Contact</th>
+                        <th>Joined</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsGroupMembersBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Recent meetings</h2>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Location</th>
+                      <th>Status</th>
+                      <th>Attendance</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsGroupMeetingsBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="operationsViewChildren" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Children</h2>
+                <div class="filter-actions">
+                  <button id="addChildProfileBtn" class="btn ghost" type="button">Add child profile</button>
+                  <button id="walkInChildCheckinBtn" class="btn ghost" type="button">Walk-in child check-in</button>
+                </div>
+              </div>
+              <p id="operationsChildrenMeta" class="meta-line">Keep household profiles and live children&apos;s check-ins moving from the same workspace.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Profiles loaded</p><h3 id="operationsChildrenProfiles">0</h3></article>
+              <article class="stat-card"><p>Household profiles</p><h3 id="operationsChildrenHousehold">0</h3></article>
+              <article class="stat-card"><p>Walk-ins</p><h3 id="operationsChildrenWalkIns">0</h3></article>
+              <article class="stat-card"><p>Open check-ins</p><h3 id="operationsChildrenOpenCheckins">0</h3></article>
+            </div>
+
+            <div class="card two-col-grid">
+              <section>
+                <div class="card-head">
+                  <h2>Children profiles</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Child</th>
+                        <th>Parent</th>
+                        <th>Source</th>
+                        <th>Last seen</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsChildrenBody"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <div class="card-head">
+                  <h2>Open check-ins</h2>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Child</th>
+                        <th>Parent</th>
+                        <th>Service</th>
+                        <th>Checked in</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="operationsChildrenCheckinsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="operationsViewSchedules" class="operations-view hidden">
+            <div class="card">
+              <div class="card-head">
+                <h2>Schedules</h2>
+              </div>
+              <p id="operationsSchedulesMeta" class="meta-line">See what is happening today and what is already staffed for the next run of services.</p>
+            </div>
+
+            <div class="card card-grid">
+              <article class="stat-card"><p>Today schedules</p><h3 id="operationsSchedulesToday">0</h3></article>
+              <article class="stat-card"><p>Assignments</p><h3 id="operationsSchedulesAssignments">0</h3></article>
+              <article class="stat-card"><p>Served</p><h3 id="operationsSchedulesServed">0</h3></article>
+              <article class="stat-card"><p>No-show</p><h3 id="operationsSchedulesNoShow">0</h3></article>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Title</th>
+                      <th>Date</th>
+                      <th>Ministry</th>
+                      <th>Status</th>
+                      <th>Assignments</th>
+                    </tr>
+                  </thead>
+                  <tbody id="operationsSchedulesBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section id="panel-settings" class="panel hidden">
@@ -570,6 +1295,28 @@
                 <button id="saveAdminProfileBtn" class="btn primary" type="submit">Update profile</button>
               </form>
             </section>
+          </div>
+
+          <div id="growthSubscriptionCard" class="card">
+            <div class="card-head">
+              <h2>ChurPay Growth</h2>
+              <span id="growthSubscriptionStatusBadge" class="badge inactive">Locked</span>
+            </div>
+            <p id="growthSubscriptionMeta" class="meta-line">Manage the Growth subscription that powers Church Life and church communications.</p>
+            <div class="filter-grid compact-grid">
+              <label class="field">
+                <span>Plan</span>
+                <select id="growthPlanSelect">
+                  <option value="GROWTH_MONTHLY">Growth Monthly</option>
+                  <option value="GROWTH_ANNUAL">Growth Annual</option>
+                </select>
+              </label>
+              <div>
+                <span id="growthPlanHint" class="meta-line">Monthly billing selected: R499 per month.</span>
+              </div>
+              <button id="requestGrowthActivationBtn" class="btn primary" type="button">Activate ChurPay Growth</button>
+              <button id="refreshGrowthSubscriptionBtn" class="btn ghost" type="button">Refresh status</button>
+            </div>
           </div>
 
           <div id="payfastSetupCard" class="card hidden">
@@ -628,6 +1375,6 @@
     </div>
   </section>
 
-  <script src="/admin/app.js?v=20260217a"></script>
+  <script src="/admin/app.js?v=20260314h"></script>
 </body>
 </html>
