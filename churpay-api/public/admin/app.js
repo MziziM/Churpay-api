@@ -50,6 +50,7 @@
     payfastStatus: null,
     growthSubscription: null,
     operationsView: "overview",
+    communicationsEntry: "followups",
     operationsGroupId: "",
     operationsGroupRows: [],
     operationsServiceRows: [],
@@ -269,6 +270,7 @@
     refreshOperationsBtn: $("refreshOperationsBtn"),
     operationsTitle: $("operationsTitle"),
     operationsMeta: $("operationsMeta"),
+    communicationsGuideCard: $("communicationsGuideCard"),
     operationsFollowupsTitle: $("operationsFollowupsTitle"),
     operationsInsightsMeta: $("operationsInsightsMeta"),
     operationsServicesMeta: $("operationsServicesMeta"),
@@ -1200,7 +1202,39 @@
     return CHURCH_LIFE_VIEWS.includes(key) ? key : "overview";
   }
 
+  function isCommunicationsTab() {
+    return state.currentTab === "communications";
+  }
+
+  function communicationsEntryView(entryName) {
+    const entry = String(entryName || "").trim().toLowerCase();
+    if (entry === "broadcasts" || entry === "messaging") return "broadcasts";
+    return "followups";
+  }
+
+  function communicationsEntryTargetId(entryName) {
+    const entry = String(entryName || "").trim().toLowerCase();
+    if (entry === "visitors") return "communicationsVisitorsCard";
+    if (entry === "broadcasts") return "communicationsBroadcastsCard";
+    if (entry === "messaging") return "communicationsMessagingCard";
+    return "communicationsFollowupsCard";
+  }
+
+  function syncCommunicationsGuideUi() {
+    if (el.communicationsGuideCard) {
+      el.communicationsGuideCard.classList.toggle("hidden", !isCommunicationsTab());
+    }
+
+    $$("[data-communications-entry]").forEach((button) => {
+      const entry = String(button.getAttribute("data-communications-entry") || "").trim().toLowerCase();
+      const active = isCommunicationsTab() && entry === String(state.communicationsEntry || "").trim().toLowerCase();
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
   function setOperationsShellMeta(viewName = state.operationsView) {
+    syncCommunicationsGuideUi();
     if (el.operationsTitle) el.operationsTitle.textContent = "Church Life";
     if (el.refreshOperationsBtn) el.refreshOperationsBtn.textContent = "Refresh Church Life";
     if (!el.operationsMeta) return;
@@ -1212,6 +1246,39 @@
     }
 
     el.operationsMeta.textContent = `${CHURCH_LIFE_VIEW_TITLE[view]} keeps the live ministry flow in view without leaving Church Life.`;
+  }
+
+  function scrollToCommunicationsEntry(entryName) {
+    const target = $(communicationsEntryTargetId(entryName));
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function syncCommunicationsEntryForView(viewName) {
+    if (!isCommunicationsTab()) return;
+    const view = normalizeChurchLifeView(viewName);
+    if (view === "followups") {
+      if (!["visitors", "followups"].includes(state.communicationsEntry)) {
+        state.communicationsEntry = "followups";
+      }
+      return;
+    }
+    if (view === "broadcasts") {
+      if (!["broadcasts", "messaging"].includes(state.communicationsEntry)) {
+        state.communicationsEntry = "broadcasts";
+      }
+      return;
+    }
+    state.communicationsEntry = "";
+  }
+
+  function openCommunicationsEntry(entryName) {
+    const entry = String(entryName || "").trim().toLowerCase();
+    if (!entry) return;
+    state.communicationsEntry = entry;
+    const view = communicationsEntryView(entry);
+    setOperationsView(view);
+    window.setTimeout(() => scrollToCommunicationsEntry(entry), 120);
   }
 
   function syncChurchLifeViewUi() {
@@ -1229,10 +1296,11 @@
 
   function setOperationsView(viewName, { refresh = false } = {}) {
     state.operationsView = normalizeChurchLifeView(viewName);
+    syncCommunicationsEntryForView(state.operationsView);
     syncChurchLifeViewUi();
     setOperationsShellMeta(state.operationsView);
 
-    if (state.currentTab !== "operations" || !state.token) return;
+    if (!["operations", "communications"].includes(state.currentTab) || !state.token) return;
     loadOperationsWorkspace({ view: state.operationsView, force: refresh }).catch((err) => {
       handlePortalLoadError(err, `Could not load ${CHURCH_LIFE_VIEW_TITLE[state.operationsView] || "Church Life"}.`);
     });
@@ -1381,10 +1449,12 @@
     const activePanelTab = resolved === "communications" ? "operations" : resolved;
 
     if (resolved === "communications") {
+      state.communicationsEntry = "followups";
       state.operationsView = "followups";
     }
 
     state.currentTab = resolved;
+    syncCommunicationsEntryForView(state.operationsView);
     syncChurchLifeViewUi();
     setOperationsShellMeta(state.operationsView);
 
@@ -5110,6 +5180,14 @@
     document.addEventListener("click", (event) => {
       const origin = event.target;
       if (!(origin instanceof Element)) return;
+      const communicationsTrigger = origin.closest("[data-communications-entry]");
+      if (communicationsTrigger) {
+        const entry = String(communicationsTrigger.getAttribute("data-communications-entry") || "").trim();
+        if (entry) {
+          openCommunicationsEntry(entry);
+          return;
+        }
+      }
       const operationsTrigger = origin.closest("[data-operations-view]");
       if (operationsTrigger) {
         const view = String(operationsTrigger.getAttribute("data-operations-view") || "").trim();

@@ -640,6 +640,21 @@
             </div>
           </div>
 
+          <div id="communicationsGuideCard" class="card hidden">
+            <div class="card-head">
+              <div>
+                <h2>Comms workspace</h2>
+                <p class="meta-line">Open the right communications flow without leaving the existing Church Life workspace.</p>
+              </div>
+            </div>
+            <div class="filter-grid compact-grid">
+              <button class="btn ghost workspace-tab" type="button" data-communications-entry="visitors">Visitors</button>
+              <button class="btn ghost workspace-tab" type="button" data-communications-entry="followups">Follow-ups</button>
+              <button class="btn ghost workspace-tab" type="button" data-communications-entry="broadcasts">Broadcasts</button>
+              <button class="btn ghost workspace-tab" type="button" data-communications-entry="messaging">Messaging settings</button>
+            </div>
+          </div>
+
           <section id="operationsViewOverview" class="operations-view">
             <div class="card card-grid">
               <article class="stat-card"><p>Attendance this Sunday</p><h3 id="operationsAttendance">0</h3></article>
@@ -648,7 +663,7 @@
               <article class="stat-card"><p>Urgent prayer</p><h3 id="operationsUrgentPrayer">0</h3></article>
             </div>
 
-            <div class="card">
+            <div id="communicationsFollowupsCard" class="card">
               <div class="card-head">
                 <h2>Church Life tabs</h2>
               </div>
@@ -704,7 +719,7 @@
           </section>
 
           <section id="operationsViewInsights" class="operations-view hidden">
-            <div class="card">
+            <div id="communicationsVisitorsCard" class="card">
               <div class="card-head">
                 <h2>Growth insights</h2>
               </div>
@@ -762,7 +777,7 @@
           </section>
 
           <section id="operationsViewServices" class="operations-view hidden">
-            <div class="card">
+            <div id="communicationsBroadcastsCard" class="card">
               <div class="card-head">
                 <h2>Services</h2>
                 <div class="filter-actions">
@@ -911,7 +926,7 @@
               </div>
             </div>
 
-            <div class="card two-col-grid">
+            <div id="communicationsMessagingCard" class="card two-col-grid">
               <section>
                 <div class="card-head">
                   <h2 id="operationsMessagingAudiencesTitle">Saved audiences</h2>
